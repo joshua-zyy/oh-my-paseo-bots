@@ -1,0 +1,6 @@
+{
+  "id": "paseo-guys",
+  "name": "Paseo Guys",
+  "description": "固定 Bot 团队，复用 Paseo 原生执行与协作",
+  "requirements": { "paseo": ">=0.12.0 <0.13.0" }
+}
