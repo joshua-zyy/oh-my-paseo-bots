@@ -333,12 +333,17 @@ export class BotStore {
     return this.withLock(id, () => this.readDocument(id));
   }
 
-  async listBots(): Promise<BotIdentity[]> {
+  async listBots(onCorrupt?: (id: string, error: StoreError) => void): Promise<BotIdentity[]> {
     const names = await this.listStoreFiles();
     const bots: BotIdentity[] = [];
     for (const id of names) {
-      const document = await this.getBot(id);
-      if (document) bots.push(document.bot);
+      try {
+        const document = await this.getBot(id);
+        if (document) bots.push(document.bot);
+      } catch (error) {
+        if (!(error instanceof StoreError) || error.code !== 'corrupt_store' || !onCorrupt) throw error;
+        onCorrupt(id, error);
+      }
     }
     return bots;
   }

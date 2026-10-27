@@ -71,6 +71,17 @@ describe('固定 Bot 身份', () => {
       ['chief', 'writer'],
     );
   });
+  it('聚合可报告损坏存档并继续列出其他 Bot，单独读取仍严格报错', async () => {
+    const { baseDir, store } = await makeStore();
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
+    await store.createBot({ id: 'expert', name: '专家', role: '执行' });
+    await writeFile(path.join(baseDir, 'broken.json'), '{');
+    const corrupt: string[] = [];
+    assert.deepEqual((await store.listBots(id => corrupt.push(id))).map(bot => bot.id), ['chief', 'expert']);
+    assert.deepEqual(corrupt, ['broken']);
+    await assert.rejects(() => store.getBot('broken'), (error: unknown) => error instanceof StoreError && error.code === 'corrupt_store');
+    assert.equal(await readFile(path.join(baseDir, 'broken.json'), 'utf8'), '{');
+  });
 });
 
 describe('原生会话关联', () => {
