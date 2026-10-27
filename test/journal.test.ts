@@ -71,7 +71,14 @@ describe('Bot 工作日志', () => {
   it('缺失日志返回空数组', async () => {
     const { journal } = await makeJournal();
     assert.deepEqual(await journal.read('chief'), []);
-    assert.deepEqual(await journal.inspect('chief'), { entries: [], total: 0, corruptCount: 0, corruptLines: [] });
+    assert.deepEqual(await journal.inspect('chief'), {
+      entries: [],
+      total: 0,
+      corruptCount: 0,
+      corruptLines: [],
+      offset: 0,
+      nextOffset: null,
+    });
     await assert.rejects(
       () => journal.inspect('..'),
       (error: unknown) => {
@@ -150,7 +157,14 @@ describe('Bot 工作日志', () => {
     assert.ok(raw.endsWith(`${JSON.stringify(appended)}\n`), '新记录应完整独立成行');
 
     const inspection = await journal.inspect('chief');
-    assert.deepEqual(Object.keys(inspection).sort(), ['corruptCount', 'corruptLines', 'entries', 'total']);
+    assert.deepEqual(Object.keys(inspection).sort(), [
+      'corruptCount',
+      'corruptLines',
+      'entries',
+      'nextOffset',
+      'offset',
+      'total',
+    ]);
     assert.equal(inspection.total, 2);
     assert.deepEqual(
       inspection.entries.map((entry) => [entry.agentId, entry.kind]),
@@ -214,6 +228,121 @@ describe('Bot 工作日志', () => {
     const lines = (await readFile(path.join(baseDir, 'chief.jsonl'), 'utf8')).split('\n').filter(Boolean);
     assert.equal(lines.length, 205);
     assert.deepEqual(Object.keys(JSON.parse(lines[0] ?? '{}')).sort(), ['agentId', 'kind', 'observedAt', 'turnId']);
+  });
+
+  it('offset 按最新有效记录跳过，页内仍从旧到新，跨页不重叠且覆盖全量', async () => {
+    const { journal } = await makeJournal();
+    const total = 205;
+    for (let index = 0; index < total; index += 1) {
+      await journal.append('chief', { agentId: `agent-${index}`, turnId: null, kind: 'turn_started' });
+    }
+
+    const pageIds = async (limit: number, offset?: number): Promise<string[]> => {
+      const inspection = await journal.inspect('chief', offset === undefined ? { limit } : { limit, offset });
+      // 总数与损坏统计不随分页变化
+      assert.equal(inspection.total, total);
+      assert.equal(inspection.corruptCount, 0);
+      return inspection.entries.map((entry) => entry.agentId);
+    };
+    const ids = (start: number, count: number): string[] =>
+      Array.from({ length: count }, (_, index) => `agent-${start + index}`);
+
+    // offset 0 与省略 offset 等价，首页是最近的 limit 条
+    assert.deepEqual(await pageIds(50), ids(155, 50));
+    assert.deepEqual(await pageIds(50, 0), ids(155, 50));
+
+    // 页边界：offset 正好等于已读条数时接续，不重叠也不跳条
+    assert.deepEqual(await pageIds(50, 50), ids(105, 50));
+    assert.deepEqual(await pageIds(50, 100), ids(55, 50));
+    assert.deepEqual(await pageIds(50, 150), ids(5, 50));
+
+    // 末页不足 limit 条时照常返回剩下的最早记录
+    assert.deepEqual(await pageIds(50, 200), ids(0, 5));
+    assert.deepEqual(await pageIds(1, 1), ['agent-203']);
+    assert.deepEqual(await pageIds(1, 204), ['agent-0']);
+
+    // nextOffset 指向下一页的 offset，最后一页为 null
+    const boundaries: Array<[number, number, number | null]> = [
+      [50, 0, 50],
+      [50, 50, 100],
+      [50, 150, 200],
+      [50, 200, null],
+      [1, 204, null],
+      [7, 0, 7],
+    ];
+    for (const [limit, offset, nextOffset] of boundaries) {
+      const inspection = await journal.inspect('chief', { limit, offset });
+      assert.deepEqual([inspection.offset, inspection.nextOffset], [offset, nextOffset], `limit ${limit} offset ${offset}`);
+    }
+
+    // 走完整条分页链：每页从旧到新，拼起来正好是全部记录（最新页在最前）
+    const walked: string[][] = [];
+    const nextOffsets: (number | null)[] = [];
+    let offset = 0;
+    let nextOffset: number | null = 0;
+    while (nextOffset !== null) {
+      const inspection = await journal.inspect('chief', { limit: 7, offset });
+      walked.push(inspection.entries.map((entry) => entry.agentId));
+      assert.equal(inspection.offset, offset);
+      nextOffset = inspection.nextOffset;
+      nextOffsets.push(nextOffset);
+      if (nextOffset !== null) offset = nextOffset;
+    }
+    assert.equal(walked.length, Math.ceil(total / 7));
+    assert.deepEqual(nextOffsets.at(-1), null);
+    assert.deepEqual(
+      walked
+        .slice()
+        .reverse()
+        .flat(),
+      Array.from({ length: total }, (_, index) => `agent-${index}`),
+    );
+    assert.equal(new Set(walked.flat()).size, total, '跨页不应重复或遗漏记录');
+  });
+
+  it('非法 offset 被拒绝，超过记录总数返回空页且 nextOffset 为 null', async () => {
+    const { journal } = await makeJournal();
+    for (let index = 0; index < 3; index += 1) {
+      await journal.append('chief', { agentId: `agent-${index}`, turnId: null, kind: 'turn_started' });
+    }
+
+    const atEnd = await journal.inspect('chief', { limit: 2, offset: 3 });
+    assert.deepEqual([atEnd.entries.length, atEnd.total, atEnd.offset, atEnd.nextOffset], [0, 3, 3, null]);
+
+    const beyondEnd = await journal.inspect('chief', { limit: 2, offset: 1000 });
+    assert.deepEqual([beyondEnd.entries.length, beyondEnd.total, beyondEnd.offset, beyondEnd.nextOffset], [0, 3, 1000, null]);
+
+    for (const offset of [-1, 1.5, Number.NaN, -0.5, '2']) {
+      await assert.rejects(
+        () => journal.inspect('chief', { limit: 2, offset } as never),
+        (error: unknown) => {
+          assertJournalError(error, 'invalid_input');
+          return true;
+        },
+        `offset ${String(offset)} 应被拒绝`,
+      );
+    }
+  });
+
+  it('offset 只跳过有效记录，损坏行仍全量计数', async () => {
+    const { baseDir, journal } = await makeJournal();
+    await journal.append('chief', { agentId: 'agent-1', turnId: null, kind: 'turn_started' });
+    await journal.append('chief', { agentId: 'agent-2', turnId: null, kind: 'turn_started' });
+    const file = path.join(baseDir, 'chief.jsonl');
+    const lines = (await readFile(file, 'utf8')).split('\n').filter(Boolean);
+    await writeFile(file, `${lines[0]}\n{ broken\n${lines[1]}\n`, 'utf8');
+
+    const newest = await journal.inspect('chief', { limit: 1 });
+    assert.deepEqual(newest.entries.map((entry) => entry.agentId), ['agent-2']);
+    assert.deepEqual([newest.total, newest.corruptCount, newest.corruptLines], [2, 1, [2]]);
+    assert.deepEqual([newest.offset, newest.nextOffset], [0, 1]);
+
+    const older = await journal.inspect('chief', { limit: 1, offset: 1 });
+    assert.deepEqual(older.entries.map((entry) => entry.agentId), ['agent-1']);
+    assert.deepEqual([older.total, older.corruptCount, older.corruptLines], [2, 1, [2]]);
+    assert.deepEqual([older.offset, older.nextOffset], [1, null]);
+
+    assert.equal(await readFile(file, 'utf8'), `${lines[0]}\n{ broken\n${lines[1]}\n`, 'inspect 不应修改坏字节');
   });
 
   it('损坏行号最多 20 条，corruptCount 仍是全量计数', async () => {

@@ -27,7 +27,7 @@ export interface JournalEntry extends Observation {
   observedAt: string;
 }
 
-/** 有界读取结果：最新 `limit` 条有效记录，外加全量计数与损坏行号。 */
+/** 有界读取结果：从最新有效记录起跳过 `offset` 条后的最新 `limit` 条，外加全量计数与损坏行号。 */
 export interface JournalInspection {
   entries: JournalEntry[];
   /** 文件中全部有效记录数，与 `entries.length` 无关。 */
@@ -35,11 +35,17 @@ export interface JournalInspection {
   corruptCount: number;
   /** 流式读取中最早遇到的至多 20 个损坏行号（从 1 起），完整计数见 `corruptCount`。 */
   corruptLines: number[];
+  /** 本次从最新有效记录起跳过的条数，与入参一致；省略时为 0。 */
+  offset: number;
+  /** 继续翻到更早记录时应传入的 `offset`；已没有更早记录时为 `null`。 */
+  nextOffset: number | null;
 }
 
 export interface InspectOptions {
   /** 返回的最新记录条数，默认 50，上限 200。 */
   limit?: number;
+  /** 从最新有效记录起跳过的条数，默认 0；只跳过有效记录，损坏行不影响页码。 */
+  offset?: number;
 }
 
 export type JournalErrorCode = 'invalid_input' | 'corrupt_log';
@@ -95,6 +101,7 @@ const MAX_CORRUPT_LINES = 20;
 
 const inspectOptionsSchema = z.object({
   limit: z.number().int().min(1).max(MAX_INSPECT_LIMIT).optional(),
+  offset: z.number().int().min(0).optional(),
 });
 
 function parseInput<S extends z.ZodType>(schema: S, value: unknown, field: string): z.output<S> {
@@ -155,7 +162,7 @@ export class BotJournal {
   async read(botId: string): Promise<JournalEntry[]> {
     const id = parseInput(botIdSchema, botId, 'botId');
     return this.serialize(id, async () => {
-      const outcome = await this.scan(id, Number.POSITIVE_INFINITY);
+      const outcome = await this.scan(id, { start: 0, end: Number.POSITIVE_INFINITY });
       if (outcome.firstCorrupt) {
         throw new JournalError(
           'corrupt_log',
@@ -167,25 +174,36 @@ export class BotJournal {
   }
 
   /**
-   * 有界查看该 Bot 的日志：流式扫描原文件，只保留最新 `limit` 条有效记录，
+   * 有界查看该 Bot 的日志：流式扫描原文件，跳过最新 `offset` 条有效记录后只保留其后的最新 `limit` 条，
    * 损坏行显式计数并给出前若干行号，不修改原文件，也不静默丢弃警告。
    */
   async inspect(botId: string, options?: InspectOptions): Promise<JournalInspection> {
     const id = parseInput(botIdSchema, botId, 'botId');
-    const { limit } = parseInput(inspectOptionsSchema, options ?? {}, 'options');
+    const parsed = parseInput(inspectOptionsSchema, options ?? {}, 'options');
+    const limit = parsed.limit ?? DEFAULT_INSPECT_LIMIT;
+    const offset = parsed.offset ?? 0;
     return this.serialize(id, async () => {
-      const outcome = await this.scan(id, limit ?? DEFAULT_INSPECT_LIMIT);
+      // 先只统计，再按绝对位置读取本页。两次扫描都在实例锁内，offset 再大也不积存历史。
+      const outcome = await this.scan(id, { start: 0, end: 0 });
+      const end = Math.max(0, outcome.total - offset);
+      const start = Math.max(0, end - limit);
+      if (end > start) outcome.entries = (await this.scan(id, { start, end })).entries;
       return {
         entries: outcome.entries,
         total: outcome.total,
         corruptCount: outcome.corruptCount,
         corruptLines: outcome.corruptLines,
+        offset,
+        nextOffset: start > 0 ? offset + outcome.entries.length : null,
       };
     });
   }
 
-  /** 流式逐行解析；内存只保留最新 `limit` 条有效记录，`Infinity` 表示保留全部。 */
-  private scan(botId: string, limit: number): Promise<ScanOutcome> {
+  /**
+   * 流式逐行解析并计数，只收集 [start, end) 内的有效记录。
+   * 空区间用于统计；[0, Infinity) 用于严格读取全部。
+   */
+  private scan(botId: string, range: { start: number; end: number }): Promise<ScanOutcome> {
     const file = this.fileFor(botId);
     const outcome: ScanOutcome = { entries: [], total: 0, corruptCount: 0, corruptLines: [], firstCorrupt: null };
     return new Promise<ScanOutcome>((resolve, reject) => {
@@ -223,8 +241,7 @@ export class BotJournal {
           return;
         }
         outcome.total += 1;
-        outcome.entries.push(result.data);
-        if (outcome.entries.length > limit) outcome.entries.shift();
+        if (outcome.total > range.start && outcome.total <= range.end) outcome.entries.push(result.data);
       });
       lines.on('close', () => {
         if (settled) return;
