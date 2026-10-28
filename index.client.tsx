@@ -6,6 +6,7 @@ import { ScrollView } from '@getpaseo/plugin/client/react-native';
 import { SettingsRow, SettingsAction, SettingsInput, SettingsSection, SidebarRow } from '@getpaseo/plugin/client/ui';
 import * as rpc from './shared/contracts.js';
 import { Office } from './client/office.js';
+import { Tasks } from './client/tasks.js';
 
 function Bots({ navigation }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
@@ -37,6 +38,8 @@ function Bots({ navigation }: PluginScreenProps) {
   const [pending, setPending] = useState<{ requestId: string; agentId: string; status: 'pending' | 'created' }[]>([]);
   const [cwd, setCwd] = useState('');
   const [provider, setProvider] = useState('');
+  const [paseoCommand, setPaseoCommand] = useState('');
+  const [paseoHome, setPaseoHome] = useState('');
   const [error, setError] = useState('');
   const [tools, setTools] = useState<RpcOutput<typeof rpc.toolStatus>>();
   const [busy, setBusy] = useState(false);
@@ -82,10 +85,12 @@ function Bots({ navigation }: PluginScreenProps) {
     <SettingsSection title="宿主配置">
       <SettingsInput label="宿主绝对工作目录" onChangeText={setCwd} />
       <SettingsInput label="已配置的 provider/model" onChangeText={setProvider} />
+      <SettingsInput label="当前宿主 Paseo CLI 路径（原生跟进需要）" onChangeText={setPaseoCommand} />
+      <SettingsInput label="当前 daemon 的绝对 home 目录（原生跟进需要）" onChangeText={setPaseoHome} />
       <SettingsAction label={settings.status === 'ready' ? `当前：${settings.values.provider} · ${settings.values.cwd}` : `配置：${settings.status}`} actionLabel="保存配置" disabled={busy || settings.status === 'loading' || settings.status === 'error'} onPress={() => void run(async () => {
         if (settings.status === 'ready' || settings.status === 'invalid') {
           const previous = settings.status === 'ready' ? settings.values : undefined;
-          if (!await settings.save({ ...previous, cwd: cwd || previous?.cwd || '', provider: provider || previous?.provider || '' }, settings.revision)) throw new Error('保存失败，请查看设置错误并重试');
+          if (!await settings.save({ ...previous, cwd: cwd || previous?.cwd || '', provider: provider || previous?.provider || '', ...(paseoCommand ? { paseoCommand } : {}), ...(paseoHome ? { paseoHome } : {}) }, settings.revision)) throw new Error('保存失败，请查看设置错误并重试');
         }
       })} />
     </SettingsSection>
@@ -132,6 +137,7 @@ function Bots({ navigation }: PluginScreenProps) {
       {observations.map((item, index) => <SettingsRow key={`${item.observedAt}-${index}`} label={`${item.observedAt} · ${item.agentId}`} hint={`${item.kind === 'turn_started' ? '原生轮次开始' : '原生轮次结束'}${item.outcome ? `（${item.outcome}）` : ''}${item.error ? `：${item.error}` : ''}`} />)}
     </SettingsSection>
     {bots.some(bot => bot.id === selected) && <Office key={selected} botId={selected} />}
+    {bots.some(bot => bot.id === selected) && <Tasks key={`tasks:${selected}`} botId={selected} openAgent={navigation ? id => navigation.openAgent({ agentId: id }) : undefined} />}
   </ScrollView>;
 }
 

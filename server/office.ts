@@ -8,8 +8,8 @@ import type { BotStore } from './store.js';
 /** 只把已配置的办公读取和邮件动作接到 Bot；账户登录与执行仍由成熟连接器负责。 */
 export class BotOfficeAccess {
   readonly mail: MailOutbox;
-  constructor(private readonly options: { baseDir: string; store: BotStore; readConfig: (botId: string) => Promise<BotOffice> }) {
-    this.mail = new MailOutbox({ baseDir: options.baseDir, store: options.store, getClient: async botId => Object.assign(await this.gmail(botId), { buildMail, matchesDraft }) });
+  constructor(private readonly options: { baseDir: string; store: BotStore; readConfig: (botId: string) => Promise<BotOffice>; requireActive?: (botId: string, agentId: string) => Promise<unknown> }) {
+    this.mail = new MailOutbox({ baseDir: options.baseDir, store: options.store, requireActive: options.requireActive, getClient: async botId => Object.assign(await this.gmail(botId), { buildMail, matchesDraft }) });
   }
 
   async scope(botId: string, agentId?: string) {
@@ -23,16 +23,19 @@ export class BotOfficeAccess {
 
   async listMessages(botId: string, agentId: string, pageToken?: string) {
     await this.authorize(botId, agentId);
+    await this.options.requireActive?.(botId, agentId);
     return (await this.gmail(botId)).listMessages(pageToken);
   }
 
   async readMessage(botId: string, agentId: string, id: string) {
     await this.authorize(botId, agentId);
+    await this.options.requireActive?.(botId, agentId);
     return (await this.gmail(botId)).getMessage(id);
   }
 
   async readDocument(botId: string, agentId: string, input: { documentId?: string; wikiToken?: string }) {
     await this.authorize(botId, agentId);
+    await this.options.requireActive?.(botId, agentId);
     const config = (await this.options.readConfig(botId)).feishu;
     if (!config) throw new Error('本 Bot 未配置飞书读取范围');
     return new FeishuReader(config).read(input);

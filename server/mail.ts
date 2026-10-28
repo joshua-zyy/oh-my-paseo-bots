@@ -125,6 +125,7 @@ export interface MailOutboxOptions {
   baseDir: string;
   store: BotStore;
   getClient: (botId: string) => Promise<GmailClient>;
+  requireActive?: (botId: string, agentId: string) => Promise<unknown>;
 }
 
 export type MailErrorCode =
@@ -318,6 +319,7 @@ export class MailOutbox {
   private readonly baseDir: string;
   private readonly store: BotStore;
   private readonly getClient: (botId: string) => Promise<GmailClient>;
+  private readonly requireActive?: MailOutboxOptions['requireActive'];
   private readonly locks = new Map<string, Promise<void>>();
 
   constructor(options: MailOutboxOptions) {
@@ -328,6 +330,7 @@ export class MailOutbox {
     this.baseDir = nodePath.resolve(baseDir);
     this.store = options.store;
     this.getClient = options.getClient;
+    this.requireActive = options.requireActive;
   }
 
   /**
@@ -335,6 +338,7 @@ export class MailOutbox {
    * 同 requestId 同指纹幂等；同指纹的未决提案复用；同 requestId 异输入报 `request_conflict`。
    */
   async propose(botId: string, agentId: string, input: MailProposalInput): Promise<MailAction> {
+    await this.requireActive?.(botId, agentId);
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(id200, agentId, 'agentId');
     const value = parseInput(proposeSchema, input, 'mail');
@@ -463,6 +467,7 @@ export class MailOutbox {
    * 回执不确定一律留在 `draft_unknown` / `send_unknown`，只回查，不重发。
    */
   async send(botId: string, agentId: string, actionId: string): Promise<MailAction> {
+    await this.requireActive?.(botId, agentId);
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(id200, agentId, 'agentId');
     const mid = parseInput(id64, actionId, 'actionId');
@@ -489,6 +494,7 @@ export class MailOutbox {
       if (start.status === 'sent') return view(start);
 
       await this.assertSourcesScoped(client, start.sourceIds);
+      await this.requireActive?.(id, aid);
 
       let action = await this.withFileLock(id, async () => {
         const document = await this.readDocument(id);
@@ -554,6 +560,7 @@ export class MailOutbox {
         });
       }
 
+      await this.requireActive?.(id, aid);
       action = await this.withFileLock(id, async () => {
         const document = await this.readDocument(id);
         const current = requireAction(document, mid, id);

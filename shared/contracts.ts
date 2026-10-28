@@ -9,6 +9,8 @@ export const settings = defineSettings({
     provider: z.string().regex(/^[^/\s]+\/.+$/, '使用宿主已有的 provider/model 标识'),
     modeId: z.string().optional(),
     thinkingOptionId: z.string().optional(),
+    paseoCommand: z.string().min(1).optional(),
+    paseoHome: z.string().min(1).optional(),
   }),
 });
 

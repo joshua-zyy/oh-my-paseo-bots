@@ -2,7 +2,7 @@ import type { PaseoApi, PaseoAgentTimelineRefetchOptions } from '@getpaseo/clien
 import type { BotStore } from './store.js';
 
 /** Fetch back to the latest native user message, without a fixed tail truncation. */
-async function latestUserMessage(paseo: PaseoApi, agentId: string): Promise<string> {
+export async function latestUserMessage(paseo: PaseoApi, agentId: string): Promise<string> {
   const timeline = paseo.agents.ref(agentId).timeline;
   let options: PaseoAgentTimelineRefetchOptions = { direction: 'tail', limit: 100, projection: 'canonical' };
   let epoch: string | undefined;

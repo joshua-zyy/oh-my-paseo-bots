@@ -17,10 +17,16 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   const handlers = new Map<string, { contract: PluginRpcContract; handler: (input: unknown, context: unknown) => unknown }>();
   const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
   let configured = false;
+  let userMessage = '请记住：后续报告使用中文。';
+  const archived: string[] = [];
   const created: PaseoAgentCreateOptions[] = [];
   const paseo = { agents: {
     create: async (options: PaseoAgentCreateOptions) => { created.push(options); return { id: options.agentId!, workspaceId: 'ws-configured' }; },
-    ref: () => ({ timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, epoch: 'test-epoch', hasOlder: false, entries: [{ item: { type: 'user_message', text: '请记住：后续报告使用中文。' } }] }) } }),
+    ref: (id: string) => ({
+      archive: async () => { archived.push(id); return { archivedAt: new Date().toISOString() }; },
+      refresh: async () => ({ agent: { id, title: '原生事项', workspaceId: 'ws-configured', labels: id === 'grandchild' ? { 'paseo.parent-agent-id': 'child' } : id === 'child' ? { 'paseo.parent-agent-id': created[0].agentId } : { 'paseo-guys.bot': 'chief' } } }),
+      timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, epoch: 'test-epoch', hasOlder: false, entries: [{ item: { type: 'user_message', text: userMessage } }] }) },
+    }),
   } } as unknown as PaseoApi;
   const server = {
     registerSettings: (definition: { id: string }) => ({ read: async () => definition.id === 'office' ? { status: 'ready', revision: 'o1', values: { bots: {} } } : configured ? { status: 'ready', revision: 'r2', values: { cwd: directory, provider: 'configured/model' } } : { status: 'invalid', revision: 'r1', error: '未配置' } }),
@@ -53,6 +59,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     assert.equal(snapshot.total, 2);
     assert.deepEqual(journal.map(item => [item.kind, item.outcome, item.turnId]), [['turn_started', undefined, null], ['turn_ended', 'completed', null]]);
     assert.equal(JSON.stringify(journal).includes('task_completed'), false);
+    assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { status: string }[])[0].status, 'active', '原生 completed 仅表示轮次结束');
     const older = await invoke('bots.journal', { botId: 'chief', limit: 1, offset: 1 }) as { entries: { kind: string }[]; offset: number; nextOffset: number | null };
     assert.deepEqual(older.entries.map(item => item.kind), ['turn_started']);
     assert.deepEqual([older.offset, older.nextOffset], [1, null]);
@@ -80,9 +87,39 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.equal(result.isError, undefined);
       const saved = await invoke('bots.memories', { botId: 'chief' }) as { kind: string; content: string }[];
       assert.ok(saved.some(item => item.kind === 'confirmed' && item.content === '后续报告使用中文'));
+      // 专家只靠原生父链关联到事项，不获得根 Bot 的会话绑定或工具凭证。
+      const specialist = { id: 'grandchild', parentAgentId: 'child', title: '专家核对', workspaceId: 'ws-expert' };
+      await hooks.get('agent.created')!({ agent: specialist }, { paseo });
+      await hooks.get('agent.turn_ended')!({ agent: specialist, turnId: 'expert-turn', outcome: { kind: 'canceled', reason: 'Interrupted' } }, { paseo });
+      const tasks = await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string; specialists: string[] }[];
+      assert.deepEqual(tasks.find(task => task.agentId === started.agentId)?.specialists, ['grandchild']);
+      assert.equal(tasks.find(task => task.agentId === started.agentId)?.status, 'active', '自由 canceled.reason 不取消整个事项');
+      assert.equal((await invoke('bots.sessions', { botId: 'chief' }) as { sessionId: string }[]).some(item => item.sessionId === 'grandchild'), false);
+      assert.equal((await client.callTool({ name: 'cancel_task', arguments: { userQuote: '伪造取消' } })).isError, true);
+      assert.equal(archived.length, 0);
+      userMessage = '取消这个事项，不再继续跟进。';
+      const canceled = await client.callTool({ name: 'cancel_task', arguments: { userQuote: userMessage } });
+      assert.equal(canceled.isError, undefined);
+      assert.deepEqual(archived, [started.agentId]);
+      assert.equal((await client.callTool({ name: 'propose_mail', arguments: { requestId: 'after-stop', to: ['test@example.com'], subject: '测试', text: '停止后不得提案' } })).isError, true);
+      assert.equal((await client.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续推进', cron: '0 9 * * *', timezone: 'Asia/Shanghai' } })).isError, true);
     } finally { await client.close(); }
     await invoke('bots.creation.acknowledge', { botId: 'chief', requestId: started.requestId });
     assert.deepEqual(await invoke('bots.creations.pending', { botId: 'chief' }), []);
+    const next = await invoke('bots.start', { botId: 'chief', title: '独立事项', prompt: '交付 report.md 并核对' }) as { agentId: string };
+    const nextTools = created[1].config.mcpServers!['paseo-guys'];
+    if (nextTools.type !== 'http') throw new Error('expected HTTP tools');
+    const finisher = new Client({ name: 'finish-contract-test', version: '0' });
+    try {
+      await finisher.connect(new StreamableHTTPClientTransport(new URL(nextTools.url), { requestInit: { headers: nextTools.headers } }));
+      assert.equal((await finisher.callTool({ name: 'complete_task', arguments: { summary: '仅轮次结束', evidence: [] } })).isError, true);
+      assert.equal(archived.length, 1);
+      assert.equal((await finisher.callTool({ name: 'complete_task', arguments: { summary: '已核对交付物', evidence: ['report.md'] } })).isError, undefined);
+      assert.deepEqual(archived, [started.agentId, next.agentId]);
+      const finished = (await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string; evidence: string[] }[]).find(task => task.agentId === next.agentId)!;
+      assert.equal(finished.status, 'completed');
+      assert.deepEqual(finished.evidence, ['report.md']);
+    } finally { await finisher.close(); }
   } finally {
     await cleanup();
     assert.equal(hooks.size, 0);

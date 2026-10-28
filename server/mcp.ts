@@ -10,6 +10,8 @@ import type { BotJournal } from './journal.js';
 import type { BotStore } from './store.js';
 import type { BotOfficeAccess } from './office.js';
 import { registerOfficeTools } from './office-tools.js';
+import type { TaskTracker } from './tasks.js';
+import { registerTaskTools } from './task-tools.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -66,6 +68,8 @@ export interface BotMcpOptions {
   /** 存在时才注册 `remember_explicit`；缺失时该工具不出现，Agent 只能提交候选。 */
   rememberExplicit?: RememberExplicit;
   office?: BotOfficeAccess;
+  tasks?: TaskTracker;
+  cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
 }
 
 export interface BotMcpToolScope {
@@ -75,6 +79,8 @@ export interface BotMcpToolScope {
   journal: BotJournal;
   rememberExplicit?: RememberExplicit;
   office?: BotOfficeAccess;
+  tasks?: TaskTracker;
+  cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
 }
 
 function isBotId(value: string): boolean {
@@ -249,6 +255,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
   );
 
   if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
+  if (scope.tasks) registerTaskTools(server, scope.tasks, botId, agentId, scope.cancelExplicit);
   return server;
 }
 
@@ -264,6 +271,8 @@ export class BotMcp {
   private readonly journal: BotJournal;
   private readonly rememberExplicit?: RememberExplicit;
   private readonly office?: BotOfficeAccess;
+  private readonly tasks?: TaskTracker;
+  private readonly cancelExplicit?: BotMcpOptions['cancelExplicit'];
   private readonly stateFile: string;
   private server: Server | null = null;
   private port: number | null = null;
@@ -280,6 +289,8 @@ export class BotMcp {
     this.journal = options.journal;
     this.rememberExplicit = options.rememberExplicit;
     this.office = options.office;
+    this.tasks = options.tasks;
+    this.cancelExplicit = options.cancelExplicit;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
 
@@ -440,6 +451,8 @@ export class BotMcp {
       journal: this.journal,
       rememberExplicit: this.rememberExplicit,
       office: this.office,
+      tasks: this.tasks,
+      cancelExplicit: this.cancelExplicit,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

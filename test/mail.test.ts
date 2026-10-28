@@ -6,6 +6,8 @@ import { after, describe, it } from 'node:test';
 
 import { MailError, MailOutbox, type GmailClient, type MailErrorCode } from '../server/mail.js';
 import { BotStore } from '../server/store.js';
+import { TaskTracker } from '../server/tasks.js';
+import type { PaseoApi } from '@getpaseo/client';
 
 /**
  * 离线测试：只用临时目录和 fake Gmail。
@@ -206,6 +208,31 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('Gmail 专用外发登记', () => {
+  it('事项在草稿核对期间取消后不准入发送，仍可回查未知结果且不阻塞其他事项', async () => {
+    const { dir, store, gmail } = await setup();
+    const tasks = new TaskTracker({ baseDir: dir, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });
+    const outbox = new MailOutbox({ baseDir: dir, store, getClient: async () => gmail, requireActive: (bot, agent) => tasks.requireActive(bot, agent) });
+    const action = await outbox.propose('chief', 'agent-chief', proposal('stopped-during-draft'));
+    await outbox.approve('chief', action.id);
+    gmail.behavior.getDraft = async (id, fake) => {
+      await tasks.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '用户取消' });
+      return { id, message: { raw: fake.draftStore.get(id)!.raw } };
+    };
+    await assert.rejects(() => outbox.send('chief', 'agent-chief', action.id), /不再|active|推进|状态/);
+    assert.equal(gmail.calls.sendDraft, 0);
+    assert.equal((await outbox.list('chief'))[0].status, 'draft');
+    await assert.rejects(() => outbox.propose('chief', 'agent-chief', proposal('after-stop')), /不再|active|推进|状态/);
+    gmail.behavior.getDraft = undefined;
+    gmail.behavior.sendDraft = async () => { throw new Error('response lost'); };
+    const other = await outbox.propose('chief', 'agent-second', proposal('independent'));
+    await outbox.approve('chief', other.id);
+    assert.equal((await outbox.send('chief', 'agent-second', other.id)).status, 'send_unknown');
+    await tasks.stop('chief', 'agent-second', { outcome: 'canceled', summary: '用户取消' });
+    const calls = gmail.calls.sendDraft;
+    assert.equal((await outbox.reconcile('chief', 'agent-second', other.id)).status, 'send_unknown');
+    assert.equal(gmail.calls.sendDraft, calls, '停止后仍可只读回查，不能重发');
+  });
+
   it('propose 只登记，不产生任何 Gmail 写调用；未批准时 send 拒绝', async () => {
     const { outbox, gmail } = await setup();
 
