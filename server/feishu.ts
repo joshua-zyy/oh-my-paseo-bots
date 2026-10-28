@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import nodePath from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -16,7 +18,7 @@ export class FeishuReader {
     if (Boolean(documentId) === Boolean(wikiToken)) throw new Error('请指定一个飞书文档标识或知识库节点');
     if (documentId && !this.config.documentIds.includes(documentId)) throw new Error('飞书文档不在用户指定范围内');
     if (wikiToken && !this.config.wikiTokens.includes(wikiToken)) throw new Error('飞书知识库节点不在用户指定范围内');
-    const secret = process.env[this.config.secretEnv];
+    const secret = await this.resolveSecret();
     if (!this.transport && !secret) throw new Error(`飞书缺少宿主环境变量 ${this.config.secretEnv}，请完成现有连接器配置`);
     const client = new Client({ name: 'paseo-guys-feishu', version: '0.1.0' });
     const transport = this.transport?.() ?? new StdioClientTransport({
@@ -38,6 +40,29 @@ export class FeishuReader {
       const result = z.object({ content: z.string() }).parse(await call(client, 'docx_v1_document_rawContent', { path: { document_id: id! }, useUAT: true }));
       return { documentId: id!, content: result.content };
     } finally { await client.close(); await transport.close(); }
+  }
+
+  /**
+   * 每次读取都重新解析密钥。配置 secretFile 后只认该文件（宿主绝对路径、UTF-8 含 BOM、
+   * 首尾空白 trim、单行），失败即报错且不回退环境变量；未配置时保持原来的 secretEnv 路径。
+   * 错误里不含文件正文、密钥或底层异常文本。
+   */
+  private async resolveSecret(): Promise<string | undefined> {
+    const secretFile = this.config.secretFile;
+    if (!secretFile) return process.env[this.config.secretEnv];
+    if (!nodePath.isAbsolute(secretFile)) {
+      throw new Error(`飞书 secretFile 必须是宿主绝对路径：${secretFile}`);
+    }
+    let raw: string;
+    try {
+      raw = await readFile(secretFile, 'utf8');
+    } catch {
+      throw new Error(`无法读取飞书密钥文件 ${secretFile}，请检查路径与读取权限`);
+    }
+    const secret = raw.trim();
+    if (secret === '') throw new Error(`飞书密钥文件 ${secretFile} 内容为空，请写入当前有效密钥`);
+    if (/[\r\n]/.test(secret)) throw new Error(`飞书密钥文件 ${secretFile} 必须只包含单行密钥（检测到换行）`);
+    return secret;
   }
 }
 

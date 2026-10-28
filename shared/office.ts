@@ -13,6 +13,7 @@ export const feishuConfig = z.object({
   args: z.array(z.string()).default([]),
   appId: token,
   secretEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).default('APP_SECRET'),
+  secretFile: z.string().trim().min(1).optional(),
   documentIds: z.array(token).default([]),
   wikiTokens: z.array(token).default([]),
 });

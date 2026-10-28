@@ -68,21 +68,21 @@ function Configuration({ initial, disabled, save }: { initial: rpc.BotOffice; di
   const [feishu, setFeishu] = useState(Boolean(initial.feishu));
   const [values, setValues] = useState({
     gmailCommand: initial.gmail?.command ?? 'gws', configDir: initial.gmail?.configDir ?? '', account: initial.gmail?.account ?? '', query: initial.gmail?.query ?? '',
-    feishuCommand: initial.feishu?.command ?? 'lark-mcp', appId: initial.feishu?.appId ?? '', secretEnv: initial.feishu?.secretEnv ?? 'APP_SECRET',
+    feishuCommand: initial.feishu?.command ?? 'lark-mcp', appId: initial.feishu?.appId ?? '', secretEnv: initial.feishu?.secretEnv ?? 'APP_SECRET', secretFile: initial.feishu?.secretFile ?? '',
     documents: initial.feishu?.documentIds.join(',') ?? '', wiki: initial.feishu?.wikiTokens.join(',') ?? '',
   });
   const fields = [
     ['gmailCommand', 'gws 命令或宿主路径'], ['configDir', 'gws 现有登录目录（宿主绝对路径）'], ['account', '预期 Gmail 邮箱'], ['query', '允许读取的固定 Gmail 查询'],
-    ['feishuCommand', '飞书 lark-mcp 命令或宿主路径'], ['appId', '飞书应用标识'], ['secretEnv', '宿主中保存应用密钥的环境变量名'], ['documents', '允许读取的 docx 文档标识（逗号分隔）'], ['wiki', '允许读取的知识库节点（逗号分隔）'],
+    ['feishuCommand', '飞书 lark-mcp 命令或宿主路径'], ['appId', '飞书应用标识'], ['secretEnv', '未指定密钥文件时使用的宿主环境变量名'], ['secretFile', '可选：宿主 App Secret 文件绝对路径（优先使用，失败不回退）'], ['documents', '允许读取的 docx 文档标识（逗号分隔）'], ['wiki', '允许读取的知识库节点（逗号分隔）'],
   ] as const;
   const ids = (value: string) => value.split(/[\s,，]+/).filter(Boolean);
   return <>
     <SettingsSwitch label="为本 Bot 配置 Gmail 范围" value={gmail} disabled={disabled} onValueChange={setGmail} />
     <SettingsSwitch label="为本 Bot 配置飞书范围" value={feishu} disabled={disabled} onValueChange={setFeishu} />
     {fields.filter((_, index) => index < 4 ? gmail : feishu).map(([key, label]) => <SettingsInput key={key} label={label} initialValue={values[key]} disabled={disabled} onChangeText={text => setValues(current => ({ ...current, [key]: text }))} />)}
-    <SettingsAction label="只保存本 Bot 的账户与允许范围；应用密钥留在宿主环境，插件不执行登录" actionLabel="保存办公配置" disabled={disabled} onPress={() => void save({
+    <SettingsAction label="只保存账户、允许范围和密钥来源；密钥内容留在宿主环境或本机文件，插件不执行登录" actionLabel="保存办公配置" disabled={disabled} onPress={() => void save({
       ...(gmail ? { gmail: { command: values.gmailCommand, configDir: values.configDir, account: values.account, query: values.query } } : {}),
-      ...(feishu ? { feishu: { command: values.feishuCommand, args: initial.feishu?.args ?? [], appId: values.appId, secretEnv: values.secretEnv, documentIds: ids(values.documents), wikiTokens: ids(values.wiki) } } : {}),
+      ...(feishu ? { feishu: { command: values.feishuCommand, args: initial.feishu?.args ?? [], appId: values.appId, secretEnv: values.secretEnv, ...(values.secretFile.trim() ? { secretFile: values.secretFile.trim() } : {}), documentIds: ids(values.documents), wikiTokens: ids(values.wiki) } } : {}),
     })} />
   </>;
 }

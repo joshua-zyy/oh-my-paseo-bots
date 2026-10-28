@@ -11,6 +11,17 @@ import { MailOutbox } from '../server/mail.js';
 import { buildMail, matchesDraft } from '../server/gmail.js';
 import { createBotMcpServer } from '../server/mcp.js';
 import type { BotOfficeAccess } from '../server/office.js';
+import { feishuConfig } from '../shared/office.js';
+
+test('飞书办公配置保留可选密钥文件路径，兼容既有环境变量配置', () => {
+  const legacy = feishuConfig.parse({ appId: 'app', secretEnv: 'APP_SECRET' });
+  assert.equal(legacy.secretEnv, 'APP_SECRET');
+  assert.equal(legacy.secretFile, undefined);
+  const file = feishuConfig.parse({ appId: 'app', secretFile: ' C:/local/secret.txt ' });
+  assert.equal(file.secretFile, 'C:/local/secret.txt');
+  assert.equal(file.secretEnv, 'APP_SECRET');
+  assert.equal(feishuConfig.safeParse({ appId: 'app', secretFile: '   ' }).success, false);
+});
 
 test('办公 MCP 按 Bot/事项绑定，伪造批准无效，只有用户批准后才准入外发', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'paseo-guys-office-'));
