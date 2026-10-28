@@ -143,6 +143,6 @@ function Bots({ navigation }: PluginScreenProps) {
 
 export default function contribute(client: PluginClientContext) {
   const screen = client.addScreen({ id: 'bots', title: '固定同事', Component: Bots });
-  const sidebar = client.addSidebarHeaderItem({ id: 'bots', title: '固定同事', Component: ({ openScreen }) => <SidebarRow icon="users" label="固定同事" onPress={() => openScreen({ screenId: 'bots' })} /> });
+  const sidebar = client.addSidebarHeaderItem({ id: 'bots', title: '固定同事', Component: ({ openScreen }) => <SidebarRow icon="Users" label="固定同事" onPress={() => openScreen({ screenId: 'bots' })} /> });
   return () => { sidebar(); screen(); };
 }
