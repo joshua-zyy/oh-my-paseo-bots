@@ -1,0 +1,630 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { after, describe, it } from 'node:test';
+
+import { MailError, MailOutbox, type GmailClient, type MailErrorCode } from '../server/mail.js';
+import { BotStore } from '../server/store.js';
+
+/**
+ * 离线测试：只用临时目录和 fake Gmail。
+ * 不连接真实 Gmail、不调用模型、不涉及宿主 E2E。
+ */
+
+const createdDirs: string[] = [];
+
+after(async () => {
+  await Promise.all(createdDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+interface FakeBehavior {
+  createDraft?(raw: string, fake: FakeGmail): Promise<{ id: string }>;
+  getDraft?(id: string, fake: FakeGmail): Promise<{ id: string; message: { id?: string; raw: string } }>;
+  sendDraft?(id: string, fake: FakeGmail): Promise<{ id: string; labelIds: string[] }>;
+  findDrafts?(messageId: string, fake: FakeGmail): Promise<Array<{ id: string }>>;
+  findSent?(messageId: string, fake: FakeGmail): Promise<Array<{ id: string; labelIds: string[] }>>;
+  getMessage?(id: string, fake: FakeGmail): Promise<{ id: string }>;
+}
+
+/** 以不透明的 base64url JSON 替代 MIME；真实 MIME 的生成与核对另由 gmail/office 测试覆盖。 */
+class FakeGmail implements GmailClient {
+  readonly config = {
+    command: 'gmail-fake',
+    configDir: '/tmp/gmail-fake',
+    account: 'owner@example.com',
+    query: 'from:lark.example OR subject:跟进',
+  };
+  readonly draftStore = new Map<string, { raw: string; messageId: string }>();
+  readonly sentStore = new Map<string, string[]>();
+  readonly scoped = new Set<string>();
+  readonly calls = {
+    buildMail: 0,
+    createDraft: 0,
+    getDraft: 0,
+    sendDraft: 0,
+    findDrafts: 0,
+    findSent: 0,
+    getMessage: 0,
+  };
+  behavior: FakeBehavior = {};
+  private seq = 0;
+
+  encode(value: unknown): string {
+    return Buffer.from(JSON.stringify(value)).toString('base64url');
+  }
+
+  decode(raw: string): Record<string, unknown> {
+    return JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Record<string, unknown>;
+  }
+
+  putDraft(raw: string): string {
+    const id = `draft_${++this.seq}`;
+    this.draftStore.set(id, { raw, messageId: String(this.decode(raw).messageId) });
+    return id;
+  }
+
+  markSent(raw: string): string {
+    const id = `sent_${++this.seq}`;
+    const messageId = String(this.decode(raw).messageId);
+    this.sentStore.set(messageId, [...(this.sentStore.get(messageId) ?? []), id]);
+    return id;
+  }
+
+  buildMail(input: { from: string; to: string[]; subject: string; text: string; messageId: string; date: string }): string {
+    this.calls.buildMail += 1;
+    return this.encode(input);
+  }
+
+  matchesDraft(
+    raw: string,
+    expected: { from: string; to: string[]; subject: string; text: string; messageId: string },
+  ): boolean {
+    try {
+      const parsed = this.decode(raw);
+      return (
+        parsed.from === expected.from &&
+        parsed.messageId === expected.messageId &&
+        parsed.subject === expected.subject &&
+        parsed.text === expected.text &&
+        JSON.stringify(parsed.to) === JSON.stringify(expected.to)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async createDraft(raw: string): Promise<{ id: string }> {
+    this.calls.createDraft += 1;
+    if (this.behavior.createDraft) return this.behavior.createDraft(raw, this);
+    return { id: this.putDraft(raw) };
+  }
+
+  async getDraft(id: string): Promise<{ id: string; message: { id?: string; raw: string } }> {
+    this.calls.getDraft += 1;
+    if (this.behavior.getDraft) return this.behavior.getDraft(id, this);
+    const record = this.draftStore.get(id);
+    if (!record) throw Object.assign(new Error('draft not found'), { status: 404 });
+    return { id, message: { id, raw: record.raw } };
+  }
+
+  async sendDraft(id: string): Promise<{ id: string; labelIds: string[] }> {
+    this.calls.sendDraft += 1;
+    if (this.behavior.sendDraft) return this.behavior.sendDraft(id, this);
+    const record = this.draftStore.get(id);
+    if (!record) throw Object.assign(new Error('draft not found'), { status: 404 });
+    return { id: this.markSent(record.raw), labelIds: ['SENT'] };
+  }
+
+  async findDrafts(messageId: string): Promise<Array<{ id: string }>> {
+    this.calls.findDrafts += 1;
+    if (this.behavior.findDrafts) return this.behavior.findDrafts(messageId, this);
+    return [...this.draftStore].filter(([, record]) => record.messageId === messageId).map(([id]) => ({ id }));
+  }
+
+  async findSent(messageId: string): Promise<Array<{ id: string; labelIds: string[] }>> {
+    this.calls.findSent += 1;
+    if (this.behavior.findSent) return this.behavior.findSent(messageId, this);
+    return (this.sentStore.get(messageId) ?? []).map((id) => ({ id, labelIds: ['SENT'] }));
+  }
+
+  async getMessage(id: string): Promise<{ id: string }> {
+    this.calls.getMessage += 1;
+    if (this.behavior.getMessage) return this.behavior.getMessage(id, this);
+    if (!this.scoped.has(id)) throw Object.assign(new Error('message not in approved query scope'), { status: 404 });
+    return { id };
+  }
+}
+
+interface Harness {
+  dir: string;
+  mailFile: string;
+  store: BotStore;
+  gmail: FakeGmail;
+  outbox: MailOutbox;
+  restart(): MailOutbox;
+}
+
+async function setup(gmail: FakeGmail = new FakeGmail()): Promise<Harness> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'paseo-guys-mail-'));
+  createdDirs.push(dir);
+  const store = new BotStore({ baseDir: path.join(dir, 'store') });
+  await store.createBot({ id: 'chief', name: '主 Bot', role: '跟进与核对' });
+  await store.linkSession('chief', { sessionId: 'agent-chief' });
+  await store.linkSession('chief', { sessionId: 'agent-second' });
+  await store.createBot({ id: 'other', name: '另一个 Bot', role: '其他事项' });
+  await store.linkSession('other', { sessionId: 'agent-other' });
+  const getClient = async (botId: string): Promise<GmailClient> => {
+    if (botId !== 'chief') throw new Error('未配置 Gmail 账户');
+    return gmail;
+  };
+  return {
+    dir,
+    mailFile: path.join(dir, 'mail', 'chief.json'),
+    store,
+    gmail,
+    outbox: new MailOutbox({ baseDir: dir, store, getClient }),
+    restart: () => new MailOutbox({ baseDir: dir, store, getClient }),
+  };
+}
+
+function proposal(requestId: string, overrides: Partial<Parameters<MailOutbox['propose']>[2]> = {}) {
+  return {
+    requestId,
+    to: ['lin@example.com'],
+    subject: '关于跨应用跟进的时间确认',
+    text: '你好，想确认一下本周的跟进时间。',
+    sourceIds: [] as string[],
+    ...overrides,
+  };
+}
+
+async function expectMailError(task: () => Promise<unknown>, code: MailErrorCode): Promise<void> {
+  await assert.rejects(task, (error: unknown) => {
+    assert.ok(error instanceof MailError, `期望 MailError，实际 ${String(error)}`);
+    assert.equal(error.code, code);
+    return true;
+  });
+}
+
+function noSideEffects(gmail: FakeGmail): void {
+  assert.equal(gmail.calls.createDraft, 0, '未批准时不得创建草稿');
+  assert.equal(gmail.calls.sendDraft, 0, '未批准时不得发送');
+}
+
+async function breakWrites(target: string): Promise<void> {
+  await rm(target, { force: true });
+  await mkdir(path.join(target, 'blocker'), { recursive: true });
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('Gmail 专用外发登记', () => {
+  it('propose 只登记，不产生任何 Gmail 写调用；未批准时 send 拒绝', async () => {
+    const { outbox, gmail } = await setup();
+
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    assert.equal(action.status, 'pending_confirmation');
+    assert.equal(action.account, 'owner@example.com');
+    assert.equal(action.query, 'from:lark.example OR subject:跟进');
+    assert.match(action.messageId, /@paseo-guys\.local$/);
+    assert.equal(action.agentId, 'agent-chief');
+    noSideEffects(gmail);
+    assert.equal(gmail.calls.getMessage, 0, 'propose 不校验来源，留到发送前');
+
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+    noSideEffects(gmail);
+    const [still] = await outbox.list('chief');
+    assert.equal(still?.status, 'pending_confirmation');
+
+    const revoked = await outbox.revoke('chief', action.id);
+    assert.equal(revoked.status, 'revoked');
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+    noSideEffects(gmail);
+  });
+
+  it('跨 Bot、未关联 Agent 与错误 Agent 的发送都被拒绝', async () => {
+    const { outbox, gmail } = await setup();
+    await expectMailError(() => outbox.propose('missing', 'agent-chief', proposal('req-x')), 'bot_not_found');
+    await expectMailError(() => outbox.propose('chief', 'agent-other', proposal('req-y')), 'agent_not_linked');
+
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+    await expectMailError(() => outbox.send('chief', 'agent-second', action.id), 'wrong_agent');
+    await expectMailError(() => outbox.send('chief', 'agent-other', action.id), 'agent_not_linked');
+    noSideEffects(gmail);
+  });
+
+  it('伪造来源在创建草稿前被拒，事项保持已批准', async () => {
+    const { outbox, gmail } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1', { sourceIds: ['msg-forged'] }));
+    await outbox.approve('chief', action.id);
+
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'source_not_scoped');
+    noSideEffects(gmail);
+    assert.equal(gmail.calls.getMessage, 1);
+    const [after] = await outbox.list('chief');
+    assert.equal(after?.status, 'approved');
+
+    gmail.scoped.add('msg-in-scope');
+    const scoped = await outbox.propose('chief', 'agent-chief', proposal('req-2', { sourceIds: ['msg-in-scope'] }));
+    await outbox.approve('chief', scoped.id);
+    const sent = await outbox.send('chief', 'agent-chief', scoped.id);
+    assert.equal(sent.status, 'sent');
+  });
+
+  it('createDraft 超时后保留 draft_unknown，下次不再创建草稿', async () => {
+    const { outbox, gmail, restart } = await setup();
+    gmail.behavior.createDraft = async () => {
+      throw new Error('read ETIMEDOUT');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    const failed = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(failed.status, 'draft_unknown');
+    assert.match(failed.detail ?? '', /reconcile/);
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0);
+
+    await expectMailError(() => restart().send('chief', 'agent-chief', action.id), 'in_flight');
+    assert.equal(gmail.calls.createDraft, 1, '未知状态绝不重写 create');
+
+    const reconciled = await restart().reconcile('chief', 'agent-chief', action.id);
+    assert.equal(reconciled.status, 'draft_unknown');
+    assert.match(reconciled.detail ?? '', /未找到该 Message-ID 的草稿/);
+    assert.equal(gmail.calls.createDraft, 1);
+  });
+
+  it('草稿回执落盘失败时按未知处理，磁盘停在 creating_draft 也只回查', async () => {
+    const harness = await setup();
+    const { outbox, gmail, mailFile } = harness;
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    let snapshot = '';
+    gmail.behavior.createDraft = async (raw, fake) => {
+      snapshot = await readFile(mailFile, 'utf8');
+      const id = fake.putDraft(raw);
+      await breakWrites(mailFile);
+      return { id };
+    };
+
+    const result = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(result.status, 'draft_unknown');
+    assert.match(result.detail ?? '', /落盘失败/);
+    assert.equal(gmail.calls.createDraft, 1);
+
+    await rm(mailFile, { recursive: true, force: true });
+    await writeFile(mailFile, snapshot, 'utf8');
+    assert.equal((await harness.restart().list('chief'))[0]?.status, 'creating_draft');
+
+    await expectMailError(() => harness.restart().send('chief', 'agent-chief', action.id), 'in_flight');
+    assert.equal(gmail.calls.createDraft, 1);
+
+    const recovered = await harness.restart().reconcile('chief', 'agent-chief', action.id);
+    assert.equal(recovered.status, 'draft');
+    assert.ok(recovered.draftId);
+    assert.equal(gmail.calls.sendDraft, 0, 'reconcile 只回查，不发送');
+  });
+
+  it('草稿被改动后拒绝发送，且草稿保持可见', async () => {
+    const { outbox, gmail } = await setup();
+    gmail.behavior.createDraft = async (raw, fake) => {
+      const id = fake.putDraft(raw);
+      const tampered = fake.decode(raw);
+      fake.draftStore.set(id, { raw: fake.encode({ ...tampered, text: '被替换的正文' }), messageId: String(tampered.messageId) });
+      return { id };
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    const result = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(result.status, 'draft');
+    assert.match(result.detail ?? '', /不一致，已拒发/);
+    assert.ok(result.draftId);
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0);
+  });
+
+  it('只有 SENT 回执与 findSent 正面证据才置为已发送', async () => {
+    const { outbox, gmail } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+    const sent = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(sent.status, 'sent');
+    assert.ok(sent.sentId);
+    assert.equal(gmail.calls.sendDraft, 1);
+    assert.deepEqual(await outbox.reconcile('chief', 'agent-chief', action.id), sent);
+
+    gmail.behavior.sendDraft = async (id, fake) => {
+      const record = fake.draftStore.get(id)!;
+      fake.markSent(record.raw);
+      return { id: '', labelIds: ['DRAFT'] };
+    };
+    const second = await outbox.propose('chief', 'agent-chief', proposal('req-2'));
+    await outbox.approve('chief', second.id);
+    const unknown = await outbox.send('chief', 'agent-chief', second.id);
+    assert.equal(unknown.status, 'send_unknown');
+    assert.match(unknown.detail ?? '', /未证明 SENT/);
+
+    const unresolved = await outbox.reconcile('chief', 'agent-chief', second.id);
+    assert.equal(unresolved.status, 'sent');
+    assert.ok(unresolved.sentId);
+  });
+
+  it('sendDraft 超时/回执丢失后不重发，reconcile 找到 SENT 才确认', async () => {
+    const { outbox, gmail } = await setup();
+    gmail.behavior.sendDraft = async () => {
+      throw new Error('read ECONNRESET');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    const unknown = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(unknown.status, 'send_unknown');
+    assert.equal(gmail.calls.sendDraft, 1);
+    assert.equal(gmail.calls.createDraft, 1);
+
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'in_flight');
+    assert.equal(gmail.calls.sendDraft, 1, '未知状态绝不重发');
+
+    const notEvidence = await outbox.reconcile('chief', 'agent-chief', action.id);
+    assert.equal(notEvidence.status, 'send_unknown');
+    assert.match(notEvidence.detail ?? '', /草稿存在也不等于已发送/);
+    assert.equal(gmail.calls.sendDraft, 1);
+
+    gmail.behavior.findSent = async () => [{ id: 'sent-evidence', labelIds: ['SENT'] }];
+    const confirmed = await outbox.reconcile('chief', 'agent-chief', action.id);
+    assert.equal(confirmed.status, 'sent');
+    assert.equal(confirmed.sentId, 'sent-evidence');
+  });
+
+  it('未知事项不阻塞其他独立事项', async () => {
+    const { outbox, gmail } = await setup();
+    const gate = deferred();
+    gmail.behavior.createDraft = async (raw, fake) => {
+      await gate.promise;
+      return { id: fake.putDraft(raw) };
+    };
+    const blocked = await outbox.propose('chief', 'agent-chief', proposal('req-blocked'));
+    await outbox.approve('chief', blocked.id);
+    const pendingSend = outbox.send('chief', 'agent-chief', blocked.id);
+    await new Promise((done) => setTimeout(done, 20));
+
+    gmail.behavior.createDraft = undefined;
+    const independent = await outbox.propose('chief', 'agent-second', proposal('req-independent'));
+    await outbox.approve('chief', independent.id);
+    const sent = await outbox.send('chief', 'agent-second', independent.id);
+    assert.equal(sent.status, 'sent');
+
+    gate.resolve();
+    const late = await pendingSend;
+    assert.equal(late.status, 'sent');
+    assert.notEqual(late.sentId, sent.sentId);
+  });
+
+  it('固定预授权只覆盖完全相同的内容，撤销后立即失效', async () => {
+    const { outbox, gmail } = await setup();
+    const first = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    const grant = await outbox.allowFixed('chief', first.id);
+    assert.equal(grant.account, 'owner@example.com');
+    assert.equal(grant.revokedAt, undefined);
+    assert.equal((await outbox.list('chief'))[0]?.status, 'approved');
+    assert.equal((await outbox.send('chief', 'agent-chief', first.id)).status, 'sent');
+
+    const repeated = await outbox.propose('chief', 'agent-chief', proposal('req-2'));
+    assert.notEqual(repeated.id, first.id, '已发送后同内容的新请求是独立事项');
+    assert.equal(repeated.status, 'approved');
+    assert.equal(repeated.grantId, grant.id);
+
+    const widened = await outbox.propose(
+      'chief',
+      'agent-chief',
+      proposal('req-3', { to: ['lin@example.com', 'cc@example.com'] }),
+    );
+    assert.equal(widened.status, 'pending_confirmation', '收件人变化不得被预授权泛化');
+
+    const revoked = await outbox.revokeGrant('chief', grant.id);
+    assert.ok(revoked.revokedAt);
+    const actions = await outbox.list('chief');
+    assert.equal(actions.find((item) => item.id === first.id)?.status, 'sent', '已发送不受撤销影响');
+    assert.equal(actions.find((item) => item.id === repeated.id)?.status, 'revoked');
+    assert.equal(actions.find((item) => item.id === widened.id)?.status, 'pending_confirmation');
+    const before = gmail.calls.createDraft;
+    await expectMailError(() => outbox.send('chief', 'agent-chief', repeated.id), 'not_approved');
+    assert.equal(gmail.calls.createDraft, before);
+  });
+
+  it('单次撤销不隐式撤销固定预授权，UI 可分开处理', async () => {
+    const { outbox } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    const grant = await outbox.allowFixed('chief', action.id);
+
+    const revoked = await outbox.revoke('chief', action.id);
+    assert.equal(revoked.status, 'revoked');
+    assert.match(revoked.detail ?? '', /固定预授权仍然有效/);
+    assert.equal((await outbox.listGrants('chief')).find((item) => item.id === grant.id)?.revokedAt, undefined);
+
+    const repeated = await outbox.propose('chief', 'agent-chief', proposal('req-2'));
+    assert.equal(repeated.status, 'approved');
+    assert.equal(repeated.grantId, grant.id);
+  });
+
+  it('撤销结果未知的草稿时提示可能已创建', async () => {
+    const { outbox, gmail } = await setup();
+    gmail.behavior.createDraft = async () => {
+      throw new Error('read ETIMEDOUT');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+
+    const revoked = await outbox.revoke('chief', action.id);
+    assert.equal(revoked.status, 'revoked');
+    assert.match(revoked.detail ?? '', /草稿可能已创建，请先人工核对/);
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+  });
+
+  it('发送准入前撤销预授权会拦下 sendDraft', async () => {
+    const { outbox, gmail } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    const grant = await outbox.allowFixed('chief', action.id);
+
+    gmail.behavior.getDraft = async (id, fake) => {
+      await outbox.revokeGrant('chief', grant.id);
+      const record = fake.draftStore.get(id)!;
+      return { id, message: { id, raw: record.raw } };
+    };
+
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0, '准入前再查撤销状态');
+    const [visible] = await outbox.list('chief');
+    assert.equal(visible?.status, 'revoked');
+    assert.match(visible?.detail ?? '', /预授权已撤销/);
+  });
+
+  it('重启后读回真实状态，在途状态标明可回查', async () => {
+    const harness = await setup();
+    const { outbox, gmail, mailFile } = harness;
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    let snapshot = '';
+    gmail.behavior.createDraft = async (raw, fake) => {
+      snapshot = await readFile(mailFile, 'utf8');
+      const id = fake.putDraft(raw);
+      await breakWrites(mailFile);
+      return { id };
+    };
+    const stuck = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(stuck.status, 'draft_unknown');
+
+    await rm(mailFile, { recursive: true, force: true });
+    await writeFile(mailFile, snapshot, 'utf8');
+
+    const restarted = harness.restart();
+    const [listed] = await restarted.list('chief');
+    assert.equal(listed?.status, 'creating_draft');
+    assert.match(listed?.detail ?? '', /reconcile/);
+    await expectMailError(() => restarted.send('chief', 'agent-chief', action.id), 'in_flight');
+    assert.equal(gmail.calls.createDraft, 1);
+  });
+
+  it('发送成功后重启仍可读回已发送状态', async () => {
+    const harness = await setup();
+    const action = await harness.outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await harness.outbox.approve('chief', action.id);
+    const sent = await harness.outbox.send('chief', 'agent-chief', action.id);
+
+    const [listed] = await harness.restart().list('chief');
+    assert.equal(listed?.status, 'sent');
+    assert.equal(listed?.sentId, sent.sentId);
+    assert.equal((await harness.restart().listGrants('chief')).length, 0);
+  });
+
+  it('同 requestId 幂等、异输入冲突、未决同输入复用、已发送后独立新增', async () => {
+    const { outbox } = await setup();
+    const first = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    assert.equal((await outbox.propose('chief', 'agent-chief', proposal('req-1'))).id, first.id);
+    await expectMailError(
+      () => outbox.propose('chief', 'agent-chief', proposal('req-1', { text: '换了一段正文' })),
+      'request_conflict',
+    );
+
+    const reused = await outbox.propose('chief', 'agent-chief', proposal('req-other'));
+    assert.equal(reused.id, first.id, '同输入未决复用同一条，不吞独立输入');
+
+    await outbox.approve('chief', first.id);
+    await outbox.send('chief', 'agent-chief', first.id);
+    const independent = await outbox.propose('chief', 'agent-chief', proposal('req-3'));
+    assert.notEqual(independent.id, first.id);
+  });
+
+  it('并发发送同一事项只发生一次 createDraft 与一次 sendDraft', async () => {
+    const { outbox, gmail } = await setup();
+    const gate = deferred();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((done) => {
+      entered = done;
+    });
+    gmail.behavior.createDraft = async (raw, fake) => {
+      entered();
+      await gate.promise;
+      return { id: fake.putDraft(raw) };
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    const first = outbox.send('chief', 'agent-chief', action.id);
+    await firstEntered;
+    const second = outbox.send('chief', 'agent-chief', action.id);
+    gate.resolve();
+    const [a, b] = await Promise.all([first, second]);
+
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 1);
+    assert.equal(a.status, 'sent');
+    assert.equal(b.status, 'sent');
+    assert.equal(a.sentId, b.sentId);
+  });
+
+  it('账户或查询范围被换掉后 send 不产生任何副作用', async () => {
+    const { outbox, gmail } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+
+    gmail.config.account = 'someone-else@example.com';
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'account_mismatch');
+    noSideEffects(gmail);
+    assert.equal(gmail.calls.getMessage, 0);
+    assert.equal((await outbox.list('chief'))[0]?.status, 'approved');
+
+    gmail.config.account = 'owner@example.com';
+    gmail.config.query = 'subject:另一个范围';
+    await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'account_mismatch');
+    noSideEffects(gmail);
+
+    gmail.config.query = 'from:lark.example OR subject:跟进';
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'sent');
+  });
+
+  it('未知状态只在记录中的原账户/原范围回查', async () => {
+    const { outbox, gmail } = await setup();
+    gmail.behavior.createDraft = async () => {
+      throw new Error('read ETIMEDOUT');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+
+    gmail.behavior.createDraft = undefined;
+    gmail.config.account = 'someone-else@example.com';
+    const before = gmail.calls.findDrafts;
+    await expectMailError(() => outbox.reconcile('chief', 'agent-chief', action.id), 'account_mismatch');
+    assert.equal(gmail.calls.findDrafts, before, '不在新账户上回查');
+
+    gmail.config.account = 'owner@example.com';
+    assert.equal((await outbox.reconcile('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+  });
+
+  it('对外结构不返回 raw，raw 只留在存档内', async () => {
+    const { outbox, mailFile } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('req-1'));
+    const [listed] = await outbox.list('chief');
+    assert.ok(listed);
+    assert.equal('raw' in listed, false);
+    assert.equal(JSON.stringify(listed).includes(action.messageId), true, 'Message-ID 可见，便于人工回查');
+    assert.equal(JSON.stringify(listed).includes('raw'), false);
+
+    const stored = await readFile(mailFile, 'utf8');
+    assert.match(stored, /"raw": "/);
+  });
+});
