@@ -1,0 +1,52 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { z } from 'zod';
+import { feishuConfig, type FeishuConfig } from '../shared/office.js';
+
+/** 标准 SDK 连接官方 lark-mcp，只调用文档读取白名单，不向 Agent 透传原始工具。 */
+export class FeishuReader {
+  readonly config: FeishuConfig;
+  constructor(config: FeishuConfig, private readonly transport?: () => Transport) {
+    this.config = feishuConfig.parse(config);
+  }
+
+  async read(input: { documentId?: string; wikiToken?: string }): Promise<{ documentId: string; content: string }> {
+    const { documentId, wikiToken } = input;
+    if (Boolean(documentId) === Boolean(wikiToken)) throw new Error('请指定一个飞书文档标识或知识库节点');
+    if (documentId && !this.config.documentIds.includes(documentId)) throw new Error('飞书文档不在用户指定范围内');
+    if (wikiToken && !this.config.wikiTokens.includes(wikiToken)) throw new Error('飞书知识库节点不在用户指定范围内');
+    const secret = process.env[this.config.secretEnv];
+    if (!this.transport && !secret) throw new Error(`飞书缺少宿主环境变量 ${this.config.secretEnv}，请完成现有连接器配置`);
+    const client = new Client({ name: 'paseo-guys-feishu', version: '0.1.0' });
+    const transport = this.transport?.() ?? new StdioClientTransport({
+      command: this.config.command,
+      args: [...this.config.args, 'mcp', '--mode', 'stdio', '-c', 'snake', '--token-mode', 'user_access_token', '-t', 'docx.v1.document.rawContent,wiki.v2.space.getNode'],
+      env: { APP_ID: this.config.appId, APP_SECRET: secret! },
+      stderr: 'ignore',
+    });
+    try {
+      await client.connect(transport);
+      let id = documentId;
+      if (wikiToken) {
+        const node = z.object({ node: z.object({ obj_token: z.string(), obj_type: z.string() }) }).parse(
+          await call(client, 'wiki_v2_space_getNode', { params: { token: wikiToken }, useUAT: true }),
+        ).node;
+        if (node.obj_type !== 'docx') throw new Error('该知识库节点不是已支持的 docx 文档');
+        id = node.obj_token;
+      }
+      const result = z.object({ content: z.string() }).parse(await call(client, 'docx_v1_document_rawContent', { path: { document_id: id! }, useUAT: true }));
+      return { documentId: id!, content: result.content };
+    } finally { await client.close(); await transport.close(); }
+  }
+}
+
+async function call(client: Client, name: string, args: Record<string, unknown>): Promise<unknown> {
+  const result = await client.callTool({ name, arguments: args });
+  if (result.isError) throw new Error('飞书读取未完成，请检查现有连接器登录、权限和续期状态');
+  const blocks = result.content;
+  if (!Array.isArray(blocks)) throw new Error('飞书连接器返回格式不符');
+  const text = blocks.filter(block => block.type === 'text').map(block => block.text).join('');
+  try { return JSON.parse(text); }
+  catch { throw new Error('飞书连接器返回格式不符'); }
+}
