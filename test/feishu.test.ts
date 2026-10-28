@@ -30,7 +30,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 const dump = process.argv[3];
-appendFileSync(dump, JSON.stringify({ secret: process.env.APP_SECRET ?? null, appId: process.env.APP_ID ?? null }) + '\\n');
+appendFileSync(dump, JSON.stringify({ secret: process.env.APP_SECRET ?? null, appId: process.env.APP_ID ?? null, args: process.argv.slice(4) }) + '\\n');
 const server = new McpServer({ name: 'offline-lark-stdio', version: '0' });
 server.registerTool('docx_v1_document_rawContent', { inputSchema: { path: z.object({ document_id: z.string() }), useUAT: z.boolean() } }, async () => ({
   content: [{ type: 'text', text: JSON.stringify({ content: 'synthetic 正文' }) }],
@@ -67,13 +67,24 @@ function spawnConfig(runner: Runner): FeishuConfig {
   };
 }
 
-async function dumpLines(dump: string): Promise<Array<{ secret: string | null; appId: string | null }>> {
+async function dumpLines(dump: string): Promise<Array<{ secret: string | null; appId: string | null; args: string[] }>> {
   const text = await readFile(dump, 'utf8').catch(() => '');
   return text
     .split('\n')
     .filter((line) => line.trim() !== '')
-    .map((line) => JSON.parse(line) as { secret: string | null; appId: string | null });
+    .map((line) => JSON.parse(line) as { secret: string | null; appId: string | null; args: string[] });
 }
+
+test('stdio 连接使用与只读登录一致的 scope，避免连接器续期切换到旧 OIDC', async () => {
+  const runner = await makeRunner();
+  await withEnv('synthetic-scope-secret', async () => {
+    await new FeishuReader(spawnConfig(runner)).read({ documentId: 'allowed-doc' });
+    const [received] = await dumpLines(runner.dump);
+    const index = received.args.indexOf('--scope');
+    assert.ok(index >= 0, 'lark-mcp 0.5.1 未指定 scope 会选择旧 OIDC provider');
+    assert.deepEqual(received.args[index + 1].split(' ').sort(), ['docx:document:readonly', 'offline_access']);
+  });
+});
 
 async function withEnv(value: string | undefined, task: () => Promise<void>): Promise<void> {
   const previous = process.env[ENV_NAME];

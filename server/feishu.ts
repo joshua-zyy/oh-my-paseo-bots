@@ -23,7 +23,8 @@ export class FeishuReader {
     const client = new Client({ name: 'paseo-guys-feishu', version: '0.1.0' });
     const transport = this.transport?.() ?? new StdioClientTransport({
       command: this.config.command,
-      args: [...this.config.args, 'mcp', '--mode', 'stdio', '-c', 'snake', '--token-mode', 'user_access_token', '-t', 'docx.v1.document.rawContent,wiki.v2.space.getNode'],
+      // 与只读登录一致；lark-mcp 0.5.1 未指定 scope 时会选择旧 OIDC 续期端点。
+      args: [...this.config.args, 'mcp', '--mode', 'stdio', '-c', 'snake', '--token-mode', 'user_access_token', '--scope', 'offline_access docx:document:readonly', '-t', 'docx.v1.document.rawContent,wiki.v2.space.getNode'],
       env: { APP_ID: this.config.appId, APP_SECRET: secret! },
       stderr: 'ignore',
     });
