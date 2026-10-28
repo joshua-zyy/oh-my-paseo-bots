@@ -8,11 +8,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { BotJournal } from './journal.js';
 import type { BotStore } from './store.js';
+import type { BotOfficeAccess } from './office.js';
+import { registerOfficeTools } from './office-tools.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
  *
- * 只开放 Bot 自己的记忆、候选与工作日志，不提供任意 shell、Provider 调用、原生审批放行或办公动作实现。
+ * 只开放 Bot 自己的记忆、候选、工作日志及配置的受控办公动作，不提供任意 shell、Provider 调用或原生审批放行。
  * 协议收发、JSON-RPC 校验与无状态 Streamable HTTP 均由 @modelcontextprotocol/sdk 处理，
  * 本文件只负责接入：回环地址、稳定端口与密钥、Bot/Agent 绑定凭证、跨源校验和工具绑定。
  *
@@ -63,6 +65,7 @@ export interface BotMcpOptions {
   journal: BotJournal;
   /** 存在时才注册 `remember_explicit`；缺失时该工具不出现，Agent 只能提交候选。 */
   rememberExplicit?: RememberExplicit;
+  office?: BotOfficeAccess;
 }
 
 export interface BotMcpToolScope {
@@ -71,6 +74,7 @@ export interface BotMcpToolScope {
   store: BotStore;
   journal: BotJournal;
   rememberExplicit?: RememberExplicit;
+  office?: BotOfficeAccess;
 }
 
 function isBotId(value: string): boolean {
@@ -244,6 +248,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     },
   );
 
+  if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
   return server;
 }
 
@@ -258,6 +263,7 @@ export class BotMcp {
   private readonly store: BotStore;
   private readonly journal: BotJournal;
   private readonly rememberExplicit?: RememberExplicit;
+  private readonly office?: BotOfficeAccess;
   private readonly stateFile: string;
   private server: Server | null = null;
   private port: number | null = null;
@@ -273,6 +279,7 @@ export class BotMcp {
     this.store = options.store;
     this.journal = options.journal;
     this.rememberExplicit = options.rememberExplicit;
+    this.office = options.office;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
 
@@ -432,6 +439,7 @@ export class BotMcp {
       store: this.store,
       journal: this.journal,
       rememberExplicit: this.rememberExplicit,
+      office: this.office,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

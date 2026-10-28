@@ -5,6 +5,7 @@ import { useRpc, useSettings } from '@getpaseo/plugin/client';
 import { ScrollView } from '@getpaseo/plugin/client/react-native';
 import { SettingsRow, SettingsAction, SettingsInput, SettingsSection, SidebarRow } from '@getpaseo/plugin/client/ui';
 import * as rpc from './shared/contracts.js';
+import { Office } from './client/office.js';
 
 function Bots({ navigation }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
@@ -130,6 +131,7 @@ function Bots({ navigation }: PluginScreenProps) {
       <SettingsAction label="查看更早日志" actionLabel="更早一页" disabled={busy || nextJournalOffset === null} onPress={() => void run(async () => showJournal(await readJournal({ botId: selected, offset: nextJournalOffset ?? 0 })))} />
       {observations.map((item, index) => <SettingsRow key={`${item.observedAt}-${index}`} label={`${item.observedAt} · ${item.agentId}`} hint={`${item.kind === 'turn_started' ? '原生轮次开始' : '原生轮次结束'}${item.outcome ? `（${item.outcome}）` : ''}${item.error ? `：${item.error}` : ''}`} />)}
     </SettingsSection>
+    {bots.some(bot => bot.id === selected) && <Office key={selected} botId={selected} />}
   </ScrollView>;
 }
 

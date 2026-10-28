@@ -23,7 +23,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     ref: () => ({ timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, epoch: 'test-epoch', hasOlder: false, entries: [{ item: { type: 'user_message', text: '请记住：后续报告使用中文。' } }] }) } }),
   } } as unknown as PaseoApi;
   const server = {
-    registerSettings: () => ({ read: async () => configured ? { status: 'ready', revision: 'r2', values: { cwd: directory, provider: 'configured/model' } } : { status: 'invalid', revision: 'r1', error: '未配置' } }),
+    registerSettings: (definition: { id: string }) => ({ read: async () => definition.id === 'office' ? { status: 'ready', revision: 'o1', values: { bots: {} } } : configured ? { status: 'ready', revision: 'r2', values: { cwd: directory, provider: 'configured/model' } } : { status: 'invalid', revision: 'r1', error: '未配置' } }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
     on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
     before: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
@@ -70,6 +70,12 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     const client = new Client({ name: 'plugin-contract-test', version: '0.1.0' });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
+      const catalog = await client.listTools();
+      assert.ok(catalog.tools.some(tool => tool.name === 'propose_mail'));
+      assert.equal(catalog.tools.some(tool => /approve|allow_fixed/.test(tool.name)), false);
+      const office = await client.callTool({ name: 'office_scope', arguments: {} });
+      assert.equal(office.isError, undefined);
+      assert.deepEqual(JSON.parse((office.content as { text: string }[])[0].text), { gmail: { configured: false }, feishu: { configured: false, documentIds: [], wikiTokens: [] } });
       const result = await client.callTool({ name: 'remember_explicit', arguments: { content: '后续报告使用中文', userQuote: '请记住：后续报告使用中文。' } });
       assert.equal(result.isError, undefined);
       const saved = await invoke('bots.memories', { botId: 'chief' }) as { kind: string; content: string }[];

@@ -9,19 +9,44 @@ import { BotMcp } from './server/mcp.js';
 import { rememberExplicit } from './server/memory.js';
 import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
+import * as officeRpc from './shared/office.js';
+import { BotOfficeAccess } from './server/office.js';
 
 export default function contribute(server: PluginServerContext) {
   const baseDir = process.env.PASEO_GUYS_DATA_DIR ?? join(homedir(), '.paseo-guys');
   const store = new BotStore({ baseDir });
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
+  const officeSettings = server.registerSettings(officeRpc.officeSettings);
+  const office = new BotOfficeAccess({ baseDir, store, readConfig: async botId => {
+    const state = await officeSettings.read();
+    if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
+    return state.values.bots[botId] ?? {};
+  } });
   let currentPaseo: PaseoApi | undefined;
-  const mcp = new BotMcp({ baseDir, store, journal, rememberExplicit: async (botId, agentId, input) => {
+  const mcp = new BotMcp({ baseDir, store, journal, office, rememberExplicit: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未保存明确记忆');
     return rememberExplicit(store, currentPaseo, botId, agentId, input);
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
   const settings = server.registerSettings(rpc.settings);
+  server.handle(officeRpc.officeStatus, input => office.scope(input.botId));
+  server.handle(officeRpc.listMail, input => office.mail.list(input.botId));
+  server.handle(officeRpc.listMailGrants, input => office.mail.listGrants(input.botId));
+  server.handle(officeRpc.sendMail, async input => {
+    let action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
+    if (!action) throw new Error('未找到邮件登记');
+    if (action.status === 'pending_confirmation' || action.status === 'revoked') action = await office.mail.approve(input.botId, action.id);
+    return office.mail.send(input.botId, action.agentId, action.id);
+  });
+  server.handle(officeRpc.reconcileMail, async input => {
+    const action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
+    if (!action) throw new Error('未找到邮件登记');
+    return office.mail.reconcile(input.botId, action.agentId, action.id);
+  });
+  server.handle(officeRpc.revokeMail, input => office.mail.revoke(input.botId, input.actionId));
+  server.handle(officeRpc.allowFixedMail, input => office.mail.allowFixed(input.botId, input.actionId));
+  server.handle(officeRpc.revokeMailGrant, async input => { await office.mail.revokeGrant(input.botId, input.grantId); return {}; });
   server.handle(rpc.toolStatus, () => mcp.status());
   server.handle(rpc.listBots, async () => {
     const corrupt: string[] = [];
