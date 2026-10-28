@@ -67,6 +67,8 @@ export interface GmailMessageDetail {
 export interface GmailDraftDetail {
   id: string;
   message: { id?: string; raw: string };
+  /** The single valid RFC header in raw, distinct from Gmail's resource message.id. */
+  rfcMessageId?: string;
 }
 
 const MESSAGES_MAX_RESULTS = 20;
@@ -153,6 +155,12 @@ function messageIdHeader(value: string | undefined): string | undefined {
   const trimmed = value.trim();
   const inner = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
   return MESSAGE_ID_PATTERN.test(inner) ? inner : undefined;
+}
+
+function parsedMessageId(mail: ParsedMail): string | undefined {
+  if (mail.headerLines.filter(header => header.key === 'message-id').length !== 1) return undefined;
+  const id = messageIdHeader(mail.messageId);
+  return id && id.length <= 400 ? id : undefined;
 }
 
 function headerValue(message: GmailMessageJson, name: string): string | undefined {
@@ -280,6 +288,12 @@ export class GmailClient {
     const detail: GmailDraftDetail = { id: draftId, message: { raw: decodeRaw(raw) } };
     const messageId = payload.message.id;
     if (typeof messageId === 'string' && messageId !== '') detail.message.id = messageId;
+    try {
+      const rfcMessageId = parsedMessageId(await simpleParser(detail.message.raw));
+      if (rfcMessageId) detail.rfcMessageId = rfcMessageId;
+    } catch {
+      // No correlation claim for malformed MIME; matchesDraft still rejects it before sending.
+    }
     return detail;
   }
 
@@ -594,6 +608,6 @@ export async function matchesDraft(raw: string, expected: ExpectedMail): Promise
   if (parsed.attachments.length !== 0) return false;
   if ((parsed.subject ?? '') !== expected.subject) return false;
   if (normalizeText(parsed.text ?? '') !== normalizeText(expected.text)) return false;
-  if (messageIdHeader(parsed.messageId) !== messageIdValue(expected.messageId, 'messageId')) return false;
+  if (parsedMessageId(parsed) !== messageIdValue(expected.messageId, 'messageId')) return false;
   return true;
 }

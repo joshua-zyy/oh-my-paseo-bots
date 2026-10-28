@@ -22,7 +22,7 @@ after(async () => {
 
 interface FakeBehavior {
   createDraft?(raw: string, fake: FakeGmail): Promise<{ id: string }>;
-  getDraft?(id: string, fake: FakeGmail): Promise<{ id: string; message: { id?: string; raw: string } }>;
+  getDraft?(id: string, fake: FakeGmail): Promise<{ id: string; message: { id?: string; raw: string }; rfcMessageId?: string }>;
   sendDraft?(id: string, fake: FakeGmail): Promise<{ id: string; labelIds: string[] }>;
   findDrafts?(messageId: string, fake: FakeGmail): Promise<Array<{ id: string }>>;
   findSent?(messageId: string, fake: FakeGmail): Promise<Array<{ id: string; labelIds: string[] }>>;
@@ -102,12 +102,12 @@ class FakeGmail implements GmailClient {
     return { id: this.putDraft(raw) };
   }
 
-  async getDraft(id: string): Promise<{ id: string; message: { id?: string; raw: string } }> {
+  async getDraft(id: string): Promise<{ id: string; message: { id?: string; raw: string }; rfcMessageId?: string }> {
     this.calls.getDraft += 1;
     if (this.behavior.getDraft) return this.behavior.getDraft(id, this);
     const record = this.draftStore.get(id);
     if (!record) throw Object.assign(new Error('draft not found'), { status: 404 });
-    return { id, message: { id, raw: record.raw } };
+    return { id, message: { id, raw: record.raw }, rfcMessageId: record.messageId };
   }
 
   async sendDraft(id: string): Promise<{ id: string; labelIds: string[] }> {
@@ -208,6 +208,110 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('Gmail 专用外发登记', () => {
+  it('成功草稿回执后的实际 Message-ID 先固定落盘，发送未知重启后只用该标识回查', async () => {
+    const { outbox, gmail, mailFile, restart } = await setup();
+    const providerMessageId = 'gmail-rewritten@mail.gmail.com';
+    gmail.behavior.createDraft = async (raw, fake) => ({ id: fake.putDraft(fake.encode({ ...fake.decode(raw), messageId: providerMessageId })) });
+    const action = await outbox.propose('chief', 'agent-chief', proposal('rewritten-id'));
+    await outbox.approve('chief', action.id);
+    gmail.behavior.sendDraft = async (draftId, fake) => {
+      const document = JSON.parse(await readFile(mailFile, 'utf8'));
+      assert.equal(document.actions[0].providerMessageId, providerMessageId, '副作用前必须持久绑定实际标识');
+      assert.equal(document.actions[0].status, 'sending');
+      assert.equal(document.actions[0].messageId, action.messageId, '保留原请求 Message-ID');
+      assert.equal(document.actions[0].requestId, action.requestId);
+      assert.equal(fake.decode(document.actions[0].raw).messageId, action.messageId, '保留原始 MIME');
+      fake.markSent(fake.draftStore.get(draftId)!.raw);
+      throw new Error('receipt lost');
+    };
+    const unknown = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(unknown.status, 'send_unknown');
+    await expectMailError(() => restart().send('chief', 'agent-chief', action.id), 'in_flight');
+    let lookupId: string | undefined;
+    gmail.behavior.findSent = async (messageId, fake) => {
+      lookupId = messageId;
+      return (fake.sentStore.get(messageId) ?? []).map(id => ({ id, labelIds: ['SENT'] }));
+    };
+    const recovered = await restart().reconcile('chief', 'agent-chief', action.id);
+    assert.equal(recovered.status, 'sent');
+    assert.equal(lookupId, providerMessageId);
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 1);
+  });
+
+  it('已登记 draftId 的旧草稿可在完整核对后恢复发送，不重新创建草稿', async () => {
+    const { outbox, gmail, restart } = await setup();
+    const providerMessageId = 'existing-draft@mail.gmail.com';
+    gmail.behavior.createDraft = async (raw, fake) => ({ id: fake.putDraft(fake.encode({ ...fake.decode(raw), messageId: providerMessageId })) });
+    gmail.behavior.getDraft = async () => { throw new Error('temporary read failure'); };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('existing-draft'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft');
+    assert.equal(gmail.calls.sendDraft, 0);
+    gmail.behavior.getDraft = undefined;
+    const sent = await restart().send('chief', 'agent-chief', action.id);
+    assert.equal(sent.status, 'sent');
+    assert.equal('providerMessageId' in sent && sent.providerMessageId, providerMessageId);
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 1);
+  });
+
+  it('实际 Message-ID 不能掩盖内容篡改，已固定后也不得随草稿刷新', async () => {
+    const { outbox, gmail, mailFile, restart } = await setup();
+    const providerMessageId = 'fixed@mail.gmail.com';
+    gmail.behavior.createDraft = async (raw, fake) => ({ id: fake.putDraft(fake.encode({ ...fake.decode(raw), messageId: providerMessageId, text: '未经批准的正文' })) });
+    const action = await outbox.propose('chief', 'agent-chief', proposal('tampered-provider-id'));
+    await outbox.approve('chief', action.id);
+    const rejected = await outbox.send('chief', 'agent-chief', action.id);
+    assert.equal(rejected.status, 'draft');
+    assert.equal('providerMessageId' in rejected, false, '内容不匹配时不能固定标识');
+    assert.equal(gmail.calls.sendDraft, 0);
+    const document = JSON.parse(await readFile(mailFile, 'utf8'));
+    document.actions[0].providerMessageId = providerMessageId;
+    await writeFile(mailFile, JSON.stringify(document), 'utf8');
+    const changedId = 'changed-later@mail.gmail.com';
+    gmail.draftStore.set(rejected.draftId!, { raw: gmail.encode({ ...gmail.decode(document.actions[0].raw), messageId: changedId }), messageId: changedId });
+    const later = await restart().send('chief', 'agent-chief', action.id);
+    assert.equal(later.status, 'draft');
+    assert.equal('providerMessageId' in later && later.providerMessageId, providerMessageId, '固定值不得被后续草稿替换');
+    assert.equal(gmail.calls.sendDraft, 0);
+  });
+
+  it('没有成功草稿 id 的未知创建不采用改写标识，也不重新创建', async () => {
+    const { outbox, gmail, restart } = await setup();
+    gmail.behavior.createDraft = async (raw, fake) => {
+      fake.putDraft(fake.encode({ ...fake.decode(raw), messageId: 'unknown-draft@mail.gmail.com' }));
+      throw new Error('create receipt lost');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('unknown-rewritten'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+    let lookupId: string | undefined;
+    gmail.behavior.findDrafts = async messageId => { lookupId = messageId; return []; };
+    const unresolved = await restart().reconcile('chief', 'agent-chief', action.id);
+    assert.equal(unresolved.status, 'draft_unknown');
+    assert.equal(lookupId, action.messageId);
+    assert.equal('providerMessageId' in unresolved, false);
+    assert.equal(unresolved.draftId, undefined);
+    await expectMailError(() => restart().send('chief', 'agent-chief', action.id), 'in_flight');
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0);
+  });
+
+  it('实际 Message-ID 无法与发送准入一同落盘时不调用发送', async () => {
+    const { outbox, gmail, mailFile } = await setup();
+    gmail.behavior.getDraft = async (id, fake) => {
+      const raw = fake.encode({ ...fake.decode(fake.draftStore.get(id)!.raw), messageId: 'persist-first@mail.gmail.com' });
+      await breakWrites(mailFile);
+      return { id, message: { raw }, rfcMessageId: 'persist-first@mail.gmail.com' };
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('binding-write-fails'));
+    await outbox.approve('chief', action.id);
+    await assert.rejects(() => outbox.send('chief', 'agent-chief', action.id));
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0, '绑定及 sending 未持久化，禁止发送');
+  });
+
   it('事项在草稿核对期间取消后不准入发送，仍可回查未知结果且不阻塞其他事项', async () => {
     const { dir, store, gmail } = await setup();
     const tasks = new TaskTracker({ baseDir: dir, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });

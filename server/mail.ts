@@ -27,7 +27,7 @@ export interface GmailClient {
   /** 当前草稿 raw 是否与批准内容完全一致。 */
   matchesDraft(raw: string, expected: MailContent): boolean | Promise<boolean>;
   createDraft(raw: string): Promise<{ id: string }>;
-  getDraft(id: string): Promise<{ id: string; message: { id?: string; raw: string } }>;
+  getDraft(id: string): Promise<{ id: string; message: { id?: string; raw: string }; rfcMessageId?: string }>;
   sendDraft(id: string): Promise<{ id: string; labelIds: string[] }>;
   findDrafts(rfcMessageId: string): Promise<Array<{ id: string }>>;
   /** 只在已证明 SENT 且实际 Message-ID 匹配时返回。 */
@@ -74,6 +74,8 @@ export interface MailAction {
   sourceIds: string[];
   /** RFC Message-ID（固定 UUID@paseo-guys.local），同时是回查凭据。 */
   messageId: string;
+  /** 核对已知草稿全部批准内容后固定的实际 RFC Message-ID；原 messageId 保留审计。 */
+  providerMessageId?: string;
   date: string;
   status: MailStatus;
   /** 账户 + 查询 + 收件人 + 主题 + 正文 + 来源 的指纹；固定预授权按它精确匹配。 */
@@ -205,6 +207,7 @@ const storedActionSchema = z.object({
   agentId: id(200),
   ...contentShape,
   messageId: id(400),
+  providerMessageId: z.string().min(1).max(400).regex(/^[^\s<>@]+@[^\s<>@]+$/).optional(),
   date: id(100),
   status: z.enum(MAIL_STATUSES),
   draftId: id(400).optional(),
@@ -542,17 +545,20 @@ export class MailOutbox {
       }
 
       let draftRaw: string;
+      let draftMessageId: string;
       try {
         const draft = await client.getDraft(action.draftId!);
+        if (draft.id !== action.draftId) throw new Error('getDraft 返回了其他草稿');
         if (typeof draft?.message?.raw !== 'string' || draft.message.raw === '') throw new Error('getDraft 未返回 raw');
         draftRaw = draft.message.raw;
+        draftMessageId = action.providerMessageId ?? draft.rfcMessageId ?? action.messageId;
       } catch (error) {
         return this.settle(id, mid, action, {
           status: 'draft',
           detail: `无法读取草稿内容，未发送（${reason(error)}）`,
         });
       }
-      const expected = { from: action.account, to: action.to, subject: action.subject, text: action.text, messageId: action.messageId };
+      const expected = { from: action.account, to: action.to, subject: action.subject, text: action.text, messageId: draftMessageId };
       if (!(await client.matchesDraft(draftRaw, expected))) {
         return this.settle(id, mid, action, {
           status: 'draft',
@@ -566,6 +572,8 @@ export class MailOutbox {
         const current = requireAction(document, mid, id);
         if (current.status === 'revoked') throw new MailError('not_approved', `事项 ${mid} 已撤销`);
         assertAuthorized(document, current);
+        // 仅固定已知 draftId 的完整内容核对结果；之后不随草稿刷新相关标识。
+        current.providerMessageId ??= draftMessageId;
         current.status = 'sending';
         current.detail = '发送在途；重启后用 reconcile 回查，绝不自动重发';
         await this.writeDocument(id, document);
@@ -653,7 +661,7 @@ export class MailOutbox {
         });
       }
 
-      const sent = await client.findSent(action.messageId);
+      const sent = await client.findSent(action.providerMessageId ?? action.messageId);
       if (sent.length === 0) {
         return this.settle(id, mid, action, {
           status: 'send_unknown',

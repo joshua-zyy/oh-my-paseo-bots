@@ -332,7 +332,7 @@ test('createDraft 用 gws media upload 传 RFC 原文，getDraft/sendDraft 后�
     await assert.rejects(() => readdir(dirname(uploads[0]!.file)), /ENOENT/);
 
     const draft = await client.getDraft('d1');
-    assert.deepEqual(draft, { id: 'd1', message: { id: 'm1', raw } });
+    assert.deepEqual(draft, { id: 'd1', message: { id: 'm1', raw }, rfcMessageId: 'weekly-1@example.com' });
     const getCall = fake.calls.find(call => methodOf(call.args) === 'gmail.users.drafts.get')!;
     assert.deepEqual(paramOf(getCall.args), { userId: 'me', id: 'd1', format: 'raw' });
     assert.equal(await matchesDraft(draft.message.raw, EXPECTED), true);
@@ -608,4 +608,29 @@ test('matchesDraft 用真实 MIME 比对批准内容，任何未批准改动都�
   }
   assert.equal(await matchesDraft('', EXPECTED), false);
   assert.equal(await matchesDraft('definitely not mail', EXPECTED), false);
+});
+
+test('getDraft 仅提取实际 raw 中单一合法的 RFC Message-ID，重复头拒绝核对', async () => {
+  const raw = await approvedRaw();
+  const rewritten = raw.replace('<weekly-1@example.com>', '<rewritten@mail.gmail.com>');
+  let actual = rewritten;
+  const fake = createFake({
+    'gmail.users.getProfile': () => PROFILE,
+    'gmail.users.drafts.get': () => ({ id: 'd1', message: { id: 'gmail-resource-id', raw: Buffer.from(actual).toString('base64url') } }),
+  });
+  const client = new GmailClient(CONFIG, fake.execute);
+  const draft = await client.getDraft('d1');
+  assert.equal('rfcMessageId' in draft && draft.rfcMessageId, 'rewritten@mail.gmail.com');
+  assert.equal(draft.message.id, 'gmail-resource-id', '原生资源 id 不冒充 RFC Message-ID');
+  assert.equal(await matchesDraft(draft.message.raw, { ...EXPECTED, messageId: 'rewritten@mail.gmail.com' }), true);
+
+  actual = withHeader(raw, 'Message-ID: <weekly-1@example.com>');
+  const duplicate = await client.getDraft('d1');
+  assert.equal('rfcMessageId' in duplicate, false);
+  assert.equal(await matchesDraft(duplicate.message.raw, EXPECTED), false, '相同的重复 Message-ID 也不能被静默接受');
+
+  actual = raw.replace('<weekly-1@example.com>', 'invalid-message-id');
+  assert.equal('rfcMessageId' in await client.getDraft('d1'), false);
+  actual = raw.replace('<weekly-1@example.com>', `<${'x'.repeat(401)}@example.com>`);
+  assert.equal('rfcMessageId' in await client.getDraft('d1'), false, '不能提取超出持久字段长度的标识');
 });

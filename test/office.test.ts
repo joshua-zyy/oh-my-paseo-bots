@@ -64,6 +64,7 @@ test('办公 MCP 按 Bot/事项绑定，伪造批准无效，只有用户批准�
     await mail.approve('chief', proposed.id);
     const receipt = payload(await client.callTool({ name: 'send_mail_action', arguments: { actionId: proposed.id } }));
     assert.equal(receipt.status, 'sent'); assert.equal(receipt.sentId, 'sent-1');
+    assert.equal(receipt.providerMessageId, proposed.messageId, '工具输出保留已固定的回查标识');
     assert.deepEqual([created, sent], [1, 1]);
     assert.equal('raw' in receipt, false);
   } finally { await client.close(); await server.close(); await rm(dir, { recursive: true, force: true }); }

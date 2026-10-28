@@ -36,7 +36,7 @@ export const officeStatus = defineRpc({
 export const mailAction = z.object({
   id: z.string(), requestId: z.string(), agentId: z.string(), account: z.string(), query: z.string(),
   to: z.array(z.string()), subject: z.string(), text: z.string(), sourceIds: z.array(z.string()),
-  messageId: z.string(), status: z.string(), detail: z.string().optional(),
+  messageId: z.string(), providerMessageId: z.string().optional(), status: z.string(), detail: z.string().optional(),
   draftId: z.string().optional(), sentId: z.string().optional(),
   approvedAt: z.string().optional(), grantId: z.string().optional(),
 });
