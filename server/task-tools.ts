@@ -12,6 +12,28 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     description: '查看当前事项、原生专家标识、跟进登记和停止状态。跟进 active 仅为创建回执，不证明已运行；用 Paseo 原生会话和日志核对实际结果。',
     annotations: { readOnlyHint: true },
   }, () => run(async () => (await tasks.get(botId, agentId)) ?? tasks.requireActive(botId, agentId)));
+  server.registerTool('list_bot_tasks', {
+    description: '查看本 Bot 跨会话的事项目录，默认只列 active 和 stopping；includeFinished 可包含已完成和已取消事项。仅查询，不恢复或重新派发旧事项。',
+    annotations: { readOnlyHint: true },
+    inputSchema: { includeFinished: z.boolean().default(false) },
+  }, ({ includeFinished }) => run(async () => (await tasks.list(botId))
+    .filter(task => includeFinished || task.status === 'active' || task.status === 'stopping')
+    .map(task => ({
+      agentId: task.agentId,
+      title: task.title,
+      status: task.status,
+      ...(task.goal !== undefined ? { goal: task.goal } : {}),
+      ...(task.summary !== undefined ? { summary: task.summary } : {}),
+    }))));
+  server.registerTool('read_bot_task', {
+    description: '按原生 agentId 读取本 Bot 已登记事项的完整记录，包括目标、专家、跟进和交付证据。仅查询，不改变状态、不恢复或重新派发事项。',
+    annotations: { readOnlyHint: true },
+    inputSchema: { agentId: z.string().min(1) },
+  }, ({ agentId: targetAgentId }) => run(async () => {
+    const task = (await tasks.list(botId)).find(item => item.agentId === targetAgentId);
+    if (!task) throw new Error(`未找到本 Bot 登记的事项：${targetAgentId}`);
+    return task;
+  }));
   server.registerTool('create_followup', {
     description: '为用户交办事项配置原生 heartbeat。仅在明确交办的范围内使用，不授予外发权限，不创建新目标。稳定 name 复用；未知结果保留可见，不新建其他名字规避。',
     inputSchema: { name: z.string().min(1), prompt: z.string().min(1), cron: z.string().min(1), timezone: z.string().min(1) },
