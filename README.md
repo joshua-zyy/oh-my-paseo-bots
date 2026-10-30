@@ -1,111 +1,97 @@
 # paseo-guys
 
-在 Paseo 上运行的一支固定 Bot 团队，面向单用户本地／自托管使用。你把事情交给主 Bot（Chief），由它澄清目标、委派同事、核对产物并汇报；Bot 的身份与记忆不随一次会话结束而消失。
+供维护 Agent 使用的工程上下文。实施规则和权限以本地 `AGENTS.md` 为准，本文不授予运行权限。
 
-执行、模型配置、会话、权限和多 Agent 通信复用 Paseo，插件不另建 Agent 运行时或聊天工作台。
+## 目标与概念
 
-## 能做什么
+单用户本地／自托管的 Paseo 固定 Bot 团队插件。Bot 跨原生会话保留身份和明确记忆；主 Bot（Chief）负责澄清、分工、跟进、产物核对和最终交付。
 
-| 能力 | 当前行为 |
+Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调度底座。插件只补充 Bot 身份、记忆、事项关联和受控办公能力，不另建运行时或聊天工作台。
+
+| 概念 | 含义 |
 | --- | --- |
-| 固定同事 | 创建有名称和职责的 Bot，直接交办任务，关联并打开它的原生会话 |
-| 长期记忆 | 保存明确记忆，查看和纠正内容；推断先作候选，确认后才用于新会话 |
-| 协作交付 | Chief 发现并委派固定同事，接收方使用自己的身份、记忆和工具配置；结果由 Chief 核对 |
-| 跨会话跟进 | 新会话查询本 Bot 的既有事项，按需读取目标与证据；定时跟进关联原生 heartbeat |
-| 实际操作 | 使用原生文件、终端及可用浏览器能力；接入指定范围的 Gmail 和飞书资料，邮件按确认执行 |
+| Bot | 固定身份与职责，关联多个原生会话；不等于某一次 Agent 执行 |
+| 原生 Agent | Paseo 管理的执行会话；创建、通信、历史与归档复用宿主 |
+| 事项 | 插件关联的目标、状态、专家、跟进和交付证据；轮次结束不等于事项完成 |
+| 记忆 | 明确记忆与推断候选分开保存，仅确认内容用于新会话 |
+| 跟进 | 绑定事项 Agent 的原生 heartbeat；创建回执不证明已经执行 |
 
-已有上述能力的限定场景验证，尚不等于完整产品体验成熟。当前优先完善功能闭环，UI 的布局与操作流程仍待优化。
+完整范围与 A01–A08 在本地 `docs/internal/PRODUCT.md`，不随 Git 分发；缺失时不能据本文推定或缩减验收范围。
 
-## 安装与开始使用
+## 代码导航
 
-### 准备
+| 入口 | 职责 |
+| --- | --- |
+| [index.client.tsx](index.client.tsx)、[client/](client/) | “固定同事”界面、宿主配置、记忆、办公与事项控件 |
+| [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
+| [server/sessions.ts](server/sessions.ts)、[server/store.ts](server/store.ts) | 原生创建意图、幂等键、Bot 身份与会话关联持久化 |
+| [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、明确记忆来源核对、原生轮次观察日志 |
+| [server/mcp.ts](server/mcp.ts) | 插件内回环 HTTP MCP、稳定端点、Bot／Agent 凭证绑定与工具挂载 |
+| [server/tasks.ts](server/tasks.ts)、[server/task-tools.ts](server/task-tools.ts)、[server/colleague-tools.ts](server/colleague-tools.ts) | 事项状态、跨会话查询、原生跟进与固定同事委派 |
+| [server/office.ts](server/office.ts)、[server/office-tools.ts](server/office-tools.ts) | 按 Bot／事项绑定办公范围；Gmail、飞书及外发登记接入 |
+| [server/mail.ts](server/mail.ts)、[server/gmail.ts](server/gmail.ts)、[server/feishu.ts](server/feishu.ts) | 邮件状态与批准／撤销、gws 适配、lark-mcp 只读适配 |
+| [test/](test/)、[scripts/build.mjs](scripts/build.mjs) | 本地单元与离线契约测试、类型编译与双端 bundle 构建 |
 
-插件声明支持 Paseo **0.12.x / 0.13.x**，已有 **0.12.0 / 0.13.2** 实测；开发依赖保留 0.12.0 SDK 基线，另做过 0.13.2 契约核对，未验证其他版本和所有部署环境。
+## 主流程与关键约束
 
-在目标 daemon 所在机器准备 Node.js、npm、Paseo CLI，以及 Paseo 中已配置的模型。工作目录和连接器路径都指向 daemon 机器，不是远程客户端机器。
+1. **开始事项**：宿主 `bots` 配置提供工作目录和模型；`startBotSession` 读取 Bot 身份与确认记忆，先保存创建意图，再挂载 Bot MCP 并调用 Paseo 原生创建，最后关联会话。同请求重试保留原始键，未知结果先回查。
+2. **固定同事委派**：`list_colleagues` 查询职责，`delegate_to_colleague` 复用同一创建流程并传入原生 `parent`。接收方使用自己的身份、确认记忆和工具绑定，不自动继承 Chief 的历史或无关记忆；实际结果经原生通信取得并核对。
+3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`read_bot_task` 按需取完整记录。查询不重新派发工作、不恢复终态，也不新增权限；原生历史和实际产物仍须核对。
+4. **完成与停止**：显式完成须附摘要和交付证据；停止先持久化，再归档关联原生会话与专家、清理已知跟进。原生归档观察同步收尾，但不覆盖已有完成结论。Paseo 单轮停止不等于取消插件事项；自身归档可能中断收尾回复。
+5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
 
-Paseo 插件是可信、无沙箱代码，可访问宿主文件、进程、凭据与网络。由使用者确认是否在目标宿主的 `Settings → Plugins` 开启插件；不要把安装当作安全隔离。
+`remember_explicit` 由服务端回查原生用户消息依据；推断只作候选，确认前不注入新会话。纠正记忆不擦除原生历史或备份。工作日志记录实际轮次观察，不自动判定事项完成。
 
-### 本地源码安装
+Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完整内容核对后固定实际标识。发送回执丢失且标识再次变化时，自动回查可能无法定位，仍保留未知并升级人工核对。来源／草稿核对期间撤销不能被迟到结果覆盖，未知创建在撤销后仍不可重建。
 
-在本仓库目录执行：
+## 配置与持久化
+
+配置字段以 [shared/contracts.ts](shared/contracts.ts) 和 [shared/office.ts](shared/office.ts) 为准；路径、进程环境与外部连接器均属于 daemon 机器，不属于远程客户端。
+
+| 配置面 | 关键字段与条件 |
+| --- | --- |
+| 宿主 `bots` | `cwd` 为绝对目录；`provider` 为宿主已有的 `provider/model`；跟进需 `paseoCommand` 和当前 daemon 的绝对 `paseoHome`（后者可由 `PASEO_HOME` 提供） |
+| Bot Gmail | `command`、现有登录目录 `configDir`、预期 `account`、固定允许 `query`；适配基线 `gws 0.22.5` |
+| Bot 飞书 | `command`／`args`、`appId`、`secretEnv` 或 `secretFile`、`documentIds`／`wikiTokens`；适配基线 `lark-mcp 0.5.1` |
+| 业务数据 | 默认 `~/.paseo-guys`，可由 `PASEO_GUYS_DATA_DIR` 指定；单 daemon、单插件实例写入，不复制原生聊天历史 |
+| MCP 端点 | 数据目录下 `mcp/endpoint.json` 保存稳定端口与密钥；冲突／损坏先排查或从备份恢复，重建会使旧会话工具配置失效 |
+
+连接器由外部安装与登录，插件不创建 OAuth 服务。飞书使用与既有只读登录一致的 `offline_access docx:document:readonly` scope 选择续期路径，不开放默认写工具；`secretFile` 为单行密钥文件绝对路径，每次现读，指定后失败不回退环境变量。平台 keyring 行为不保证一致。
+
+Gmail MIME 使用 Nodemailer 生成、MailParser 核对，经 gws 媒体上传而非 SMTP。临时 `.eml` 在 gws 配置目录生成并尝试清理，进程强杀可能残留。配置保存不等于连接、OAuth 权限或续期验证成功。
+
+## 开发与验证入口
+
+使用 npm 与 [package-lock.json](package-lock.json)，脚本定义见 [package.json](package.json)。
 
 ~~~bash
 npm ci
 npm run typecheck
 npm test
-paseo plugin install /absolute/path/to/paseo-guys
-paseo plugin ls
 ~~~
 
-将示例路径替换为 daemon 机器上的仓库绝对路径，确认 CLI 连接的是目标 daemon，列表中的 paseo-guys 状态应为 `running`。也可在 `Settings → Plugins` 中安装该本地目录；详情见 [Paseo 插件说明](https://paseo.sh/docs/plugins)。
+`npm run typecheck` 检查当前依赖契约；`npm run build` 清理 `dist/` 后运行 TypeScript 编译与双端 esbuild；`npm test` 先构建，再用 Node test runner 执行 `dist/test/*.test.js`。这些命令不安装插件、不调用真实模型或办公账户，`dist/` 不提交。
 
-源码修改后，用 `paseo plugin reload paseo-guys` 重载插件，不必为了加载改动重启 daemon。`npm test` 的编译与检查不代替宿主加载成功。
+验证先选受影响的现有测试；共享契约变更和收尾再跑适用的完整层级。本地 bundle 构建不是 Paseo 宿主加载验收。真实验证按 `AGENTS.md` 已确认的权限和数据范围执行，不因有运行命令就自动扩大授权。
 
-### 交办一件事
+插件清单 [paseo-plugin.json](paseo-plugin.json) 声明 `>=0.12.0 <0.14.0`；开发依赖为 0.12.0 SDK，另做过官方 0.13.2 契约核对与加载实测。修改接缝前核对目标 daemon、app 和发布 SDK，不把最新文档当作已安装版本事实。
 
-1. 打开 Paseo 侧栏“固定同事”，在“宿主配置”保存绝对工作目录与已有 `provider/model` 标识；需要定时跟进时，再填当前宿主的 Paseo CLI 路径和 daemon home 绝对路径。
-2. 创建主 Bot，例如 `chief`，并按需要创建有明确职责的固定同事。一次设置可用于后续事项，无须每个任务手工配置执行 Agent。
-3. 选择主 Bot，输入任务目标、允许的数据与动作范围、期望产物及完成条件，点击“开始”。执行与原生审批在打开的 Paseo 会话中进行。
-4. 从“固定同事”回到原生会话，或查看记忆、工作日志与事项证据。新会话可找回既有事项，但查询不会自动恢复已停止工作，也不新增授权。
+宿主检查入口为 `paseo plugin ls`／`paseo plugin logs paseo-guys`；本地目录安装为 `paseo plugin install /absolute/path/to/paseo-guys`，源码更新使用 `paseo plugin reload paseo-guys`。先核目标 daemon 与全局插件开关，不为加载源码重启 daemon。公共契约参见 [Paseo 插件文档](https://paseo.sh/docs/plugins)。
 
-只使用本地文件不必配置办公账户。保存办公配置只声明范围，不代表连接、登录或续期已通过验证。
+## 证据边界与已知限制
 
-## 可选：Gmail 与飞书
+既有运行证据包含：固定同事合成委派与产物核对、记忆纠正后新会话使用、指定 Gmail／飞书读取与续期、受控单次邮件发送、桌面在线的单页浏览器、heartbeat 触发与停止及同一 daemon 重启关联。历史验证不替代修改后的回归，也不证明所有任务均能自主正确完成；模型曾出现工具错误和人工纠正。
 
-连接器需在 daemon 机器另行安装并登录；插件不自动安装连接器、登录账户或创建 OAuth 服务。
-
-| 接入 | 适配基线 | 在 Bot 的“办公动作”中配置 |
-| --- | --- | --- |
-| Gmail | `gws 0.22.5` | 命令或路径、现有登录目录绝对路径、预期邮箱、允许读取的固定查询 |
-| 飞书 | `lark-mcp 0.5.1` | 命令或路径、应用标识、密钥来源、允许读取的 docx 标识或 wiki 节点 |
-
-Gmail 读取及草稿／发送需要相应 OAuth 权限；账户权限不替代每次外发确认。飞书按既有只读登录的 `offline_access docx:document:readonly` scope 接入并由连接器续期，只提供限定读取，不开放其默认写工具；wiki 读取有实现，尚未实测。keyring 行为依赖宿主平台，登录恢复不适用于所有环境。
-
-飞书密钥可来自宿主 `secretEnv`，或单行密钥文件的绝对路径 `secretFile`。指定文件时优先且只使用该文件，每次现读，失败不回退环境变量；设置只保存路径，不保存密钥正文。文件访问控制由宿主负责。
-
-邮件先展示账户、收件人、主题、正文和来源，再由用户确认，或使用仅针对当前事项且内容完全一致的固定动作预授权；预授权可撤销，创建例程本身不授权外发。
-
-## 运行边界与故障处理
-
-### 后台与停止
-
-原生 heartbeat 在同一 daemon 和必要依赖在线时运行。Windows 桌面默认退出会停止其托管 daemon；需要后台运行时，由使用者配置退出后保持 daemon 运行，插件不会静默修改。已有关闭客户端、同一 daemon 重启后继续跟进的验证，不保证重放被中断的轮次，也不覆盖休眠或断电。
-
-原生浏览器依赖连接中的桌面 app 和已启用的浏览器工具；无桌面网页能力未验证，不应据此承诺后台网页任务。
-
-“取消事项”停止后续推进，归档相关原生会话与专家并清理已知跟进；Paseo 的单轮停止只停止当前轮次。停止未确认时查看事项提示，不当作已经完全停止。完成必须有交付摘要与证据，轮次结束或启动回执不等于完成；自身归档可能中断收尾回复，结果仍可在事项中查看。
-
-### 不确定写入
-
-超时不代表没有执行。草稿或发送结果未知时先回查，无法确认就保留“结果不确定”并请求用户决定，不重复写入；其他独立事项可继续。
-
-核对来源或草稿期间撤销会阻止后续发送，未知草稿创建即使撤销或更换请求编号也不会重建。撤销不能收回已准入或已发出的邮件。Gmail 可能改写 Message-ID，发送回执丢失时自动回查可能无法定位，需要人工核对。
-
-MIME 上传的临时 `.eml` 在 gws 登录目录中生成并尝试清理；进程强杀可能留下文件，应按该目录权限管理。
-
-### 数据与工具连接
-
-Bot 身份、记忆、事项及原生会话关联默认在 daemon 机器的 `~/.paseo-guys`，也可用进程环境变量 `PASEO_GUYS_DATA_DIR` 指定。仅支持单 daemon、单插件实例写入同一目录，不复制原生聊天历史；纠正记忆不会擦除历史和备份，委派也不提供强安全隔离。
-
-“Bot 工具”状态展示回环 MCP 连接情况。端口占用或端点文件损坏时先排查占用或从备份恢复数据目录下的 `mcp/endpoint.json`；不要为重试随意删除它。重建会更换地址或凭证，旧会话配置将失效，需要新会话。
-
-## 开发与验证
-
-| 命令 | 用途 |
+| 边界 | 不可推定的能力 |
 | --- | --- |
-| `npm run typecheck` | TypeScript 类型与当前开发依赖契约检查 |
-| `npm run build` | 类型编译、客户端／服务端 esbuild bundle 检查 |
-| `npm test` | 构建后运行本地单元与离线契约测试，不调用真实模型或办公账户 |
+| 后台跟进 | 需同一 daemon 与依赖在线；Windows 桌面默认退出可能停止托管 daemon；不保证重放被中断轮次或覆盖休眠、断电 |
+| 原生浏览器 | 依赖连接中的桌面 app 和已启用工具；无桌面网页与任意网站未验证 |
+| 办公范围 | wiki 读取有实现未实测；不覆盖完整 Google Workspace／飞书接口或全部平台 keyring 行为 |
+| 故障与资源 | 写后超时、回执丢失由离线契约测试覆盖；未做真实账户故障注入或原生计费告警实测 |
+| 安全隔离 | Paseo 插件可信且无沙箱；Bot 工具绑定、最少上下文、目录和工作树不等于强安全隔离 |
 
-代码入口为 `index.client.tsx` / `index.server.ts`；`client/` 放界面，`server/` 放服务端能力，`shared/` 放共享契约，`test/` 放现有测试。生成产物在 `dist/`，不提交。
+## 资料来源
 
-已有运行证据覆盖固定同事合成委派与产物核对、记忆纠正后新会话使用、指定 Gmail／飞书读取与续期、受控单次邮件发送、桌面在线的单页浏览器、原生 heartbeat 触发与停止及同一 daemon 重启关联。模型曾有工具错误和人工纠正，不能称为全程零错误或所有任务都能自主正确完成。
+`AGENTS.md` 保存本项目实施规则；`docs/internal/` 保存产品约定、迁移依据、运行证据与历史交接，均按现有规则本地忽略。README 只保留工程上下文，不记录临时任务进度、账户正文、凭据或逐次验收流水账。
 
-写后超时、回执丢失使用离线契约测试；尚未验证任意网站、无桌面网页、wiki、真实计费告警或真实账户故障注入。本地检查通过不等于这些条目已验收。开发 Agent 应按用户明确授权的范围执行真实验证与宿主操作；本文的安装和使用说明本身不授予执行权限。
-
-README 说明使用方式和当前边界；详细产品约定、历史验收与交接记录保留在本地 `docs/internal/`，不随 Git 分发，也不包含在公开安装指引中。
-
-## 参考项目
-
-[DS-Bot](https://github.com/Fei2411/DS-Bot) 与 [OpenMausBot](https://github.com/milind-soni/OpenMausBot) 参考产品设计和功能，[paseo-bots](https://github.com/oliexe/paseo-bots) 参考 Paseo 插件接入。当前没有复制这些项目的实现源码；后续复用须保留适用版权与许可证告知，SDK 按其发布包许可证使用。
+[DS-Bot](https://github.com/Fei2411/DS-Bot)、[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 提供产品设计与功能参考；[paseo-bots](https://github.com/oliexe/paseo-bots) 提供插件接入参考，不默认整仓继承。目前未复制这些项目的实现源码，后续复用保留适用版权与许可证告知；SDK 按其发布包许可证使用。
