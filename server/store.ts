@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import nodePath from 'node:path';
 import { z } from 'zod';
+import { botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
 
 /**
  * Bot 业务元数据存储。
  *
  * 只持久化 Paseo 原生能力之外的少量业务元数据：
- * - 固定 Bot 身份（id / name / role）
+ * - 固定 Bot 身份、长期说明与可选执行配置（宿主默认之上的覆盖）
  * - Bot 关联的原生 agent 会话 id 及最小标注
  * - 记忆条目，区分「明确记忆」与「推断候选」
  *
@@ -27,10 +28,8 @@ export type MemoryKind = 'confirmed' | 'candidate';
 export type MemorySource = 'user' | 'inferred' | 'agent';
 
 /** 固定 Bot 身份，独立于任何一次执行会话。 */
-export interface BotIdentity {
+export interface BotIdentity extends BotDetails {
   id: string;
-  name: string;
-  role: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -99,10 +98,8 @@ export type CreationProposal =
   | { action: 'retry_pending'; intent: CreationIntent }
   | { action: 'known'; intent: CreationIntent };
 
-export interface CreateBotInput {
+export interface CreateBotInput extends BotDetailsInput {
   id: string;
-  name: string;
-  role: string;
 }
 
 export interface LinkSessionInput {
@@ -176,10 +173,8 @@ const timestampSchema = z.string().min(1).max(64);
 const fingerprintSchema = z.string().min(16).max(128).regex(/^[a-f0-9]+$/);
 const requestIdSchema = z.string().min(1).max(200);
 
-const botIdentitySchema = z.object({
+const botIdentitySchema = botDetailsSchema.extend({
   id: botIdSchema,
-  name: labelSchema,
-  role: labelSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });
@@ -217,11 +212,7 @@ const botRecordSchema = z.object({
   creationIntents: z.array(creationIntentSchema).default([]),
 });
 
-const createBotSchema = z.object({
-  id: botIdSchema,
-  name: z.string().min(1).max(200),
-  role: z.string().min(1).max(200),
-});
+const createBotSchema = botDetailsSchema.extend({ id: botIdSchema });
 
 const linkSessionSchema = z.object({
   sessionId: sessionIdSchema,
@@ -318,13 +309,28 @@ export class BotStore {
       const now = new Date().toISOString();
       const document: BotRecord = {
         schemaVersion: SCHEMA_VERSION,
-        bot: { id: value.id, name: value.name, role: value.role, createdAt: now, updatedAt: now },
+        bot: { ...value, createdAt: now, updatedAt: now },
         sessions: [],
         memories: [],
         creationIntents: [],
       };
       await this.writeDocument(value.id, document);
       return document;
+    });
+  }
+
+  /** 仅更新 Bot 产品配置，已有原生会话和记忆不变；execution 出现时整体替换覆盖。 */
+  async updateBot(botId: string, input: BotPatch): Promise<BotIdentity> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    const patch = parseInput(botPatchSchema, input, 'bot');
+    return this.withLock(id, async () => {
+      const document = await this.requireDocument(id);
+      for (const key of Object.keys(patch) as (keyof BotPatch)[]) {
+        if (patch[key] === undefined) delete patch[key];
+      }
+      document.bot = { ...document.bot, ...patch, updatedAt: new Date().toISOString() };
+      await this.writeDocument(id, document);
+      return document.bot;
     });
   }
 

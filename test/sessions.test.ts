@@ -51,12 +51,14 @@ test('同输入并发启动复用一个意图、Agent 和原生幂等键', { tim
 /** 记录原生调用；`existing` 中的 agentId 视为回查可见，用于验证不重复创建。 */
 function fakePaseo(existing: string[] = []) {
   const created: PaseoAgentCreateOptions[] = [];
+  const create = async (options: PaseoAgentCreateOptions) => {
+    created.push(options);
+    return { id: options.agentId ?? `agent-native-${created.length}`, workspaceId: 'ws-1' };
+  };
   const api = {
+    workspaces: { open: async (cwd: string) => ({ agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...options, cwd }) } }) },
     agents: {
-      create: async (options: PaseoAgentCreateOptions) => {
-        created.push(options);
-        return { id: options.agentId ?? `agent-native-${created.length}`, workspaceId: 'ws-1' };
-      },
+      create,
       ref: (agentId: string) => ({
         refresh: async () => (existing.includes(agentId) ? { agent: { id: agentId, workspaceId: 'ws-1' } } : null),
       }),
@@ -105,6 +107,45 @@ test('Bot 新会话传递确认记忆，使用原生幂等键并持久化会话�
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('显式原生默认清除宿主模式，配置变化仍受原请求幂等约束', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-config-session-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对', instructions: '长期说明', execution: { modeId: null, thinkingOptionId: null } });
+    const { api, created } = fakePaseo();
+    const defaults = { cwd: directory, config: { provider: 'configured/model', modeId: 'host-mode', thinkingOptionId: 'host-thinking' } };
+    const input = { botId: 'chief', requestId: 'config-request', title: '任务', prompt: '核对' };
+    await startBotSession(store, api, input, defaults, tools);
+    assert.equal(created[0].config.provider, 'configured/model');
+    assert.equal(created[0].config.modeId, undefined);
+    assert.equal(created[0].config.thinkingOptionId, undefined);
+    assert.match(created[0].config.systemPrompt!, /长期说明/);
+    await store.updateBot('chief', { instructions: '更新后的长期说明', execution: { cwd: join(directory, 'new') } });
+    await assert.rejects(() => startBotSession(store, api, input, defaults, tools), (error: unknown) => error instanceof StoreError && error.code === 'request_conflict');
+    assert.equal(created.length, 1);
+    await startBotSession(store, api, { ...input, requestId: 'new-config-request' }, defaults, tools);
+    assert.equal(created[1].cwd, join(directory, 'new'));
+    assert.equal(created[1].config.modeId, 'host-mode');
+    assert.match(created[1].config.systemPrompt!, /更新后的长期说明/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('有效工作目录按 Bot 覆盖后校验，相对路径不创建原生会话', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-config-cwd-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对', execution: { cwd: directory } });
+    const { api, created } = fakePaseo();
+    const input = { botId: 'chief', requestId: 'cwd-request', title: '任务', prompt: '核对' };
+    await startBotSession(store, api, input, placement('unused-relative-default'), tools);
+    assert.equal(created[0].cwd, directory);
+    await store.updateBot('chief', { execution: { cwd: 'relative-folder' } });
+    await assert.rejects(() => startBotSession(store, api, { ...input, requestId: 'bad-cwd' }, placement(directory), tools), /宿主绝对路径/);
+    assert.equal(created.length, 1);
+    assert.equal((await store.listPendingCreations('chief')).length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('身份提示词改变后原requestId不能静默复用旧身份', async () => {

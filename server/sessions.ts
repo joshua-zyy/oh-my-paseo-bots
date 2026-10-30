@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import type { PaseoApi, PaseoAgentConfig } from '@getpaseo/client';
 import type { BotStore } from './store.js';
 import { botPrompt } from './prompt.js';
@@ -39,6 +40,17 @@ export async function startBotSession(
   if (!data) throw new Error(`Bot 不存在：${input.botId}`);
   const memories = await store.getContextMemories(input.botId);
   const systemPrompt = botPrompt({ ...data.bot, confirmedMemories: memories.map((memory) => memory.content) });
+  const execution = data.bot.execution;
+  const cwd = execution.cwd ?? placement.cwd;
+  if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
+  // 模式与思考选项属于具体模型；改选模型时不沿用另一模型的宿主选项。
+  const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;
+  const config: PaseoAgentConfig = {
+    ...placement.config,
+    provider: execution.provider ?? placement.config.provider,
+    modeId: execution.modeId === null ? undefined : execution.modeId ?? (inheritOptions ? placement.config.modeId : undefined),
+    thinkingOptionId: execution.thinkingOptionId === null ? undefined : execution.thinkingOptionId ?? (inheritOptions ? placement.config.thinkingOptionId : undefined),
+  };
   const fingerprint = createHash('sha256')
     .update(
       stable({
@@ -46,8 +58,8 @@ export async function startBotSession(
         title: input.title,
         prompt: input.prompt,
         parentAgentId: input.parentAgentId,
-        cwd: placement.cwd,
-        config: placement.config,
+        cwd,
+        config,
         systemPrompt,
       }),
     )
@@ -61,16 +73,19 @@ export async function startBotSession(
   let agent: NativeSession | null = null;
   if (proposal.action === 'retry_pending') agent = await refreshNativeAgent(paseo, proposal.intent.agentId);
   if (!agent) {
-    agent = await paseo.agents.create({
+    const options = {
       agentId: proposal.intent.agentId,
       idempotencyKey: `paseo-guys:${input.botId}:${proposal.intent.requestId}`,
-      cwd: placement.cwd,
       ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
-      config: { ...placement.config, systemPrompt, mcpServers: { ...placement.config.mcpServers, 'paseo-guys': botTools } },
+      config: { ...config, systemPrompt, mcpServers: { ...config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,
       labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId },
-    });
+    };
+    // parent 默认继承父工作区；显式放置才能让固定同事使用自己的目录。
+    agent = input.parentAgentId
+      ? await (await paseo.workspaces.open(cwd)).agents.create(options)
+      : await paseo.agents.create({ ...options, cwd });
   }
 
   await store.completeCreation(input.botId, proposal.intent.requestId, {

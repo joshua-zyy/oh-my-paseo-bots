@@ -34,8 +34,8 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 ## 主流程与关键约束
 
-1. **开始事项**：宿主 `bots` 配置提供工作目录和模型；`startBotSession` 读取 Bot 身份与确认记忆，先保存创建意图，再挂载 Bot MCP 并调用 Paseo 原生创建，最后关联会话。同请求重试保留原始键，未知结果先回查。
-2. **固定同事委派**：`list_colleagues` 查询职责，`delegate_to_colleague` 复用同一创建流程并传入原生 `parent`。接收方使用自己的身份、确认记忆和工具绑定，不自动继承 Chief 的历史或无关记忆；实际结果经原生通信取得并核对。
+1. **开始事项**：宿主 `bots` 配置提供默认工作目录和模型，Bot 的 `execution` 可覆盖；`startBotSession` 读取该 Bot 的身份、长期说明和确认记忆，先保存创建意图，再挂载 Bot MCP 并调用 Paseo 原生创建，最后关联会话。同请求重试保留原始键，未知结果先回查。
+2. **固定同事委派**：`list_colleagues` 查询职责，`delegate_to_colleague` 复用同一创建流程，显式打开接收方目录的原生工作区，再带 `parent` 创建子 Agent。仅传 `cwd` 时宿主可能仍沿用父工作区，不能据创建参数推定目录已生效。接收方使用自己的配置、身份、确认记忆和工具绑定，不自动继承 Chief 的历史或无关记忆；实际结果经原生通信取得并核对。
 3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`read_bot_task` 按需取完整记录。查询不重新派发工作、不恢复终态，也不新增权限；原生历史和实际产物仍须核对。
 4. **完成与停止**：显式完成须附摘要和交付证据；停止先持久化，再归档关联原生会话与专家、清理已知跟进。原生归档观察同步收尾，但不覆盖已有完成结论。Paseo 单轮停止不等于取消插件事项；自身归档可能中断收尾回复。
 5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
@@ -46,15 +46,18 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 
 ## 配置与持久化
 
-配置字段以 [shared/contracts.ts](shared/contracts.ts) 和 [shared/office.ts](shared/office.ts) 为准；路径、进程环境与外部连接器均属于 daemon 机器，不属于远程客户端。
+配置字段以 [shared/bot.ts](shared/bot.ts)、[shared/contracts.ts](shared/contracts.ts) 和 [shared/office.ts](shared/office.ts) 为准；路径、进程环境与外部连接器均属于 daemon 机器，不属于远程客户端。
 
 | 配置面 | 关键字段与条件 |
 | --- | --- |
-| 宿主 `bots` | `cwd` 为绝对目录；`provider` 为宿主已有的 `provider/model`；跟进需 `paseoCommand` 和当前 daemon 的绝对 `paseoHome`（后者可由 `PASEO_HOME` 提供） |
+| 宿主 `bots` | 默认 `cwd`／`provider`／模式与思考选项；跟进需 `paseoCommand` 和当前 daemon 的绝对 `paseoHome`（后者可由 `PASEO_HOME` 提供） |
+| Bot 身份与执行 | `instructions` 为长期说明；`execution` 可覆盖 `provider`、绝对 `cwd`、`modeId`、`thinkingOptionId`。旧存档默认空说明与空覆盖；普通开始与固定同事委派使用同一映射 |
 | Bot Gmail | `command`、现有登录目录 `configDir`、预期 `account`、固定允许 `query`；适配基线 `gws 0.22.5` |
 | Bot 飞书 | `command`／`args`、`appId`、`secretEnv` 或 `secretFile`、`documentIds`／`wikiTokens`；适配基线 `lark-mcp 0.5.1` |
 | 业务数据 | 默认 `~/.paseo-guys`，可由 `PASEO_GUYS_DATA_DIR` 指定；单 daemon、单插件实例写入，不复制原生聊天历史 |
 | MCP 端点 | 数据目录下 `mcp/endpoint.json` 保存稳定端口与密钥；冲突／损坏先排查或从备份恢复，重建会使旧会话工具配置失效 |
+
+`bots.update` 按字段修改身份和说明，提供 `execution` 时整体替换执行覆盖，空对象恢复宿主默认。修改只影响新会话，不重配已有原生执行；有效配置参与创建请求指纹。同一模型未指定的模式／思考选项继承宿主默认，改选不同模型时使用其原生默认；显式 `null` 清除对应宿主选项。
 
 连接器由外部安装与登录，插件不创建 OAuth 服务。飞书使用与既有只读登录一致的 `offline_access docx:document:readonly` scope 选择续期路径，不开放默认写工具；`secretFile` 为单行密钥文件绝对路径，每次现读，指定后失败不回退环境变量。平台 keyring 行为不保证一致。
 

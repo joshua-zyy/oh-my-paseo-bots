@@ -84,6 +84,48 @@ describe('固定 Bot 身份', () => {
   });
 });
 
+describe('Bot 独立配置兼容', () => {
+  it('配置可持久化和整体清除覆盖，只改名称不会清空说明、记忆或会话', async () => {
+    const { baseDir, store } = await makeStore();
+    const execution = { provider: 'pi/model', cwd: baseDir, modeId: 'configured-mode', thinkingOptionId: 'high' };
+    await store.createBot({ id: 'researcher', name: '资料同事', role: '核对', instructions: '每项结论附来源', execution });
+    await store.linkSession('researcher', { sessionId: 'research-native' });
+    await store.addMemory('researcher', { kind: 'confirmed', content: '中文交付' });
+    const restarted = new BotStore({ baseDir });
+    await restarted.updateBot('researcher', { name: '研究同事' });
+    const saved = (await restarted.getBot('researcher'))!;
+    assert.equal(saved.bot.instructions, '每项结论附来源');
+    assert.deepEqual(saved.bot.execution, execution);
+    assert.equal(saved.bot.name, '研究同事');
+    assert.equal(saved.memories[0].content, '中文交付');
+    assert.equal(saved.sessions[0].sessionId, 'research-native');
+    const reset = await restarted.updateBot('researcher', { execution: {}, instructions: '' });
+    assert.deepEqual(reset.execution, {});
+    assert.equal(reset.instructions, '');
+    const before = await readFile(path.join(baseDir, 'researcher.json'), 'utf8');
+    await assert.rejects(() => restarted.updateBot('researcher', {}), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
+    await assert.rejects(() => restarted.updateBot('researcher', { execution: { provider: 'invalid' } }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
+    assert.equal(await readFile(path.join(baseDir, 'researcher.json'), 'utf8'), before);
+  });
+
+  it('旧存档补空说明和执行覆盖，不改写原文件，记忆和会话保留', async () => {
+    const { baseDir, store } = await makeStore();
+    await store.createBot({ id: 'legacy', name: '旧同事', role: '整理资料' });
+    await store.linkSession('legacy', { sessionId: 'legacy-native' });
+    await store.addMemory('legacy', { kind: 'confirmed', content: '保留旧记忆' });
+    const legacy = JSON.parse(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'));
+    delete legacy.bot.instructions;
+    delete legacy.bot.execution;
+    const before = JSON.stringify(legacy);
+    await writeFile(path.join(baseDir, 'legacy.json'), before);
+    const reloaded = await new BotStore({ baseDir }).getBot('legacy');
+    assert.deepEqual(reloaded?.bot, { ...legacy.bot, instructions: '', execution: {} });
+    assert.equal(reloaded?.sessions[0].sessionId, 'legacy-native');
+    assert.equal(reloaded?.memories[0].content, '保留旧记忆');
+    assert.equal(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'), before);
+  });
+});
+
 describe('原生会话关联', () => {
   it('原生空标题和长标题不阻断会话关联', async () => {
     const { store } = await makeStore();
@@ -382,7 +424,7 @@ describe('持久化形态', () => {
 
     const parsed = JSON.parse(await readFile(path.join(baseDir, 'chief.json'), 'utf8'));
     assert.deepEqual(Object.keys(parsed).sort(), ['bot', 'creationIntents', 'memories', 'schemaVersion', 'sessions']);
-    assert.deepEqual(Object.keys(parsed.bot).sort(), ['createdAt', 'id', 'name', 'role', 'updatedAt']);
+    assert.deepEqual(Object.keys(parsed.bot).sort(), ['createdAt', 'execution', 'id', 'instructions', 'name', 'role', 'updatedAt']);
     assert.deepEqual(Object.keys(parsed.sessions[0]).sort(), ['linkedAt', 'sessionId', 'title', 'workspaceId']);
     assert.deepEqual(Object.keys(parsed.memories[0]).sort(), [
       'confirmedAt',

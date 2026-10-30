@@ -176,15 +176,25 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const handlers = new Map<string, { contract: PluginRpcContract; handler: (input: unknown, context: unknown) => unknown }>();
   const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
   const created: PaseoAgentCreateOptions[] = [];
-  const paseo = { agents: {
-    create: async (options: PaseoAgentCreateOptions) => { created.push(options); return { id: options.agentId!, workspaceId: 'ws-team' }; },
+  const opened: string[] = [];
+  const createNative = async (options: PaseoAgentCreateOptions, workspaceCwd?: string) => {
+    // 实机已证实：未显式放置的子 Agent 会继承父 workspace，cwd 参数不改变归属。
+    const parent = created.find(item => item.agentId === options.parent);
+    created.push({ ...options, cwd: workspaceCwd ?? parent?.cwd ?? options.cwd });
+    return { id: options.agentId!, workspaceId: 'ws-team' };
+  };
+  const paseo = { workspaces: { open: async (cwd: string) => {
+    opened.push(cwd);
+    return { agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => createNative({ ...options, cwd }, cwd) } };
+  } }, agents: {
+    create: createNative,
     ref: (id: string) => ({ refresh: async () => {
       const options = created.find(item => item.agentId === id);
       return options ? { agent: { id, title: options.title, workspaceId: 'ws-team', labels: { ...options.labels, ...(options.parent ? { 'paseo.parent-agent-id': options.parent } : {}) } } } : null;
     } }),
   } } as unknown as PaseoApi;
   const server = {
-    registerSettings: () => ({ read: async () => ({ status: 'ready', revision: 'r1', values: { cwd: directory, provider: 'configured/model' } }) }),
+    registerSettings: () => ({ read: async () => ({ status: 'ready', revision: 'r1', values: { cwd: directory, provider: 'configured/model', modeId: 'host-mode', thinkingOptionId: 'host-thinking' } }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
     on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
     before: () => () => {},
@@ -198,11 +208,16 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const childClient = new Client({ name: 'fixed-colleague', version: '0' });
   const cleanup = contribute(server);
   try {
-    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '协调交付' });
-    await invoke('bots.create', { id: 'researcher', name: '资料同事', role: '核对资料' });
+    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '协调交付', instructions: 'Chief 专用说明', execution: { provider: 'chief-provider/model', cwd: join(directory, 'chief'), modeId: 'chief-mode', thinkingOptionId: 'chief-thinking' } });
+    await invoke('bots.create', { id: 'researcher', name: '资料同事', role: '核对资料', instructions: '资料同事专用说明', execution: { provider: 'research-provider/model', cwd: join(directory, 'researcher') } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '主 Bot 的无关记忆' });
     await invoke('bots.memory.save', { botId: 'researcher', kind: 'confirmed', content: '结论必须附资料来源' });
     const root = await invoke('bots.start', { botId: 'chief', title: '整理合成资料', prompt: '请分工核对指定资料并形成报告' }) as { agentId: string };
+    assert.equal(created[0].cwd, join(directory, 'chief'));
+    assert.equal(created[0].config.provider, 'chief-provider/model');
+    assert.equal(created[0].config.modeId, 'chief-mode');
+    assert.equal(created[0].config.thinkingOptionId, 'chief-thinking');
+    assert.match(created[0].config.systemPrompt!, /Chief 专用说明/);
     const tools = created[0].config.mcpServers!['paseo-guys'];
     if (tools.type !== 'http') throw new Error('expected HTTP tools');
     await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
@@ -216,6 +231,13 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.deepEqual(payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'same-work-another-key' } })), child, '同一未结工作复用时返回有效的原始请求键');
     assert.equal(created.length, 2, '相同委派不新建第三个原生会话');
     assert.equal(created[1].parent, root.agentId);
+    assert.equal(created[1].cwd, join(directory, 'researcher'));
+    assert.deepEqual(opened, [join(directory, 'researcher')], '显式选择接收方工作区，但保留原生 parent');
+    assert.equal(created[1].config.provider, 'research-provider/model');
+    assert.equal(created[1].config.modeId, undefined, '模型改选后不套用另一模型的宿主模式');
+    assert.equal(created[1].config.thinkingOptionId, undefined);
+    assert.match(created[1].config.systemPrompt!, /资料同事专用说明/);
+    assert.doesNotMatch(created[1].config.systemPrompt!, /Chief 专用说明/);
     assert.equal(created[1].labels?.['paseo-guys.bot'], 'researcher');
     assert.match(created[1].config.systemPrompt!, /资料同事|结论必须附资料来源/);
     assert.doesNotMatch(created[1].config.systemPrompt!, /主 Bot 的无关记忆/);
@@ -239,9 +261,19 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'canceled', '同事被原生归档后不能继续显示进行中');
     assert.equal((await childClient.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续', cron: '* * * * *', timezone: 'Asia/Shanghai' } })).isError, true);
     assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '单独归档同事不自动完成 Chief 的事项');
+    const updated = await invoke('bots.update', { botId: 'researcher', patch: { instructions: '更新后的资料同事说明', execution: {} } }) as { updatedAt: string };
+    assert.match(updated.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const listed = await invoke('bots.list', {}) as { bots: { id: string; instructions: string; execution: object }[] };
+    assert.deepEqual(listed.bots.find(bot => bot.id === 'researcher')?.execution, {});
     const next = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'new-work-after-finish' } }));
     assert.notEqual(next.agentId, child.agentId, '同事已结束后，明确的新请求可再次交办同样的工作');
     assert.equal(created.length, 3);
+    assert.equal(created[2].cwd, directory);
+    assert.equal(created[2].config.provider, 'configured/model');
+    assert.equal(created[2].config.modeId, 'host-mode');
+    assert.equal(created[2].config.thinkingOptionId, 'host-thinking');
+    assert.match(created[2].config.systemPrompt!, /更新后的资料同事说明/);
+    assert.equal(created[1].config.provider, 'research-provider/model', '编辑只作用于新会话');
   } finally {
     await client.close(); await childClient.close(); await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;

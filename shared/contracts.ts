@@ -1,7 +1,10 @@
 import { defineRpc, defineSettings } from '@getpaseo/plugin';
 import { z } from 'zod';
+import { botDetailsSchema, botPatchSchema } from './bot.js';
 
 const id = z.string().min(1).max(64);
+const botView = botDetailsSchema.extend({ id });
+const savedBotView = botView.extend({ updatedAt: z.string() });
 export const settings = defineSettings({
   id: 'bots', scope: 'host', version: 1,
   schema: z.object({
@@ -14,9 +17,10 @@ export const settings = defineSettings({
   }),
 });
 
-export const listBots = defineRpc({ name: 'bots.list', input: z.object({}), output: z.object({ bots: z.array(z.object({ id, name: z.string(), role: z.string() })), corrupt: z.array(z.string()) }) });
+export const listBots = defineRpc({ name: 'bots.list', input: z.object({}), output: z.object({ bots: z.array(savedBotView), corrupt: z.array(z.string()) }) });
 export const toolStatus = defineRpc({ name: 'bots.tools.status', input: z.object({}), output: z.object({ state: z.enum(['idle', 'ready', 'unavailable']), detail: z.string().optional() }) });
-export const createBot = defineRpc({ name: 'bots.create', input: z.object({ id, name: z.string().min(1).max(200), role: z.string().min(1).max(200) }), output: z.object({ id }) });
+export const createBot = defineRpc({ name: 'bots.create', input: botView, output: z.object({ id }) });
+export const updateBot = defineRpc({ name: 'bots.update', input: z.object({ botId: id, patch: botPatchSchema }), output: savedBotView });
 export const startSession = defineRpc({ name: 'bots.start', input: z.object({ botId: id, requestId: z.string().uuid().optional(), title: z.string().min(1).max(200), prompt: z.string().min(1) }), output: z.object({ agentId: z.string(), requestId: z.string() }) });
 export const acknowledgeCreation = defineRpc({ name: 'bots.creation.acknowledge', input: z.object({ botId: id, requestId: z.string() }), output: z.object({}) });
 export const pendingCreations = defineRpc({ name: 'bots.creations.pending', input: z.object({ botId: id }), output: z.array(z.object({ requestId: z.string(), agentId: z.string(), status: z.enum(['pending', 'created']) })) });

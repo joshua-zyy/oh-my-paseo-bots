@@ -80,6 +80,7 @@ export default function contribute(server: PluginServerContext) {
     return { bots, corrupt };
   });
   server.handle(rpc.createBot, async input => ({ id: (await store.createBot(input)).bot.id }));
+  server.handle(rpc.updateBot, input => store.updateBot(input.botId, input.patch));
   server.handle(rpc.listMemories, input => store.listMemories(input.botId));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
@@ -109,7 +110,6 @@ export default function contribute(server: PluginServerContext) {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error(`Bot 设置无效：${state.error}`);
     const { cwd, provider, modeId, thinkingOptionId } = state.values;
-    if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
     return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title });

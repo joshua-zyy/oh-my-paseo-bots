@@ -7,11 +7,13 @@ import { SettingsRow, SettingsAction, SettingsInput, SettingsSection, SidebarRow
 import * as rpc from './shared/contracts.js';
 import { Office } from './client/office.js';
 import { Tasks } from './client/tasks.js';
+import { BotConfiguration } from './client/bot-config.js';
 
 function Bots({ navigation }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
   const toolStatus = useRpc(rpc.toolStatus);
   const create = useRpc(rpc.createBot);
+  const updateBot = useRpc(rpc.updateBot);
   const start = useRpc(rpc.startSession);
   const sessions = useRpc(rpc.listSessions);
   const pendingCreations = useRpc(rpc.pendingCreations);
@@ -22,7 +24,7 @@ function Bots({ navigation }: PluginScreenProps) {
   const correct = useRpc(rpc.correctMemory);
   const readJournal = useRpc(rpc.readJournal);
   const settings = useSettings(rpc.settings);
-  const [bots, setBots] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [bots, setBots] = useState<RpcOutput<typeof rpc.listBots>['bots']>([]);
   const [selected, select] = useState('chief');
   const [newBotId, setNewBotId] = useState('chief');
   const [name, setName] = useState('主 Bot');
@@ -79,6 +81,7 @@ function Bots({ navigation }: PluginScreenProps) {
     }
     return () => { active = false; };
   }, [memories, sessions, readJournal, pendingCreations, selected, bots]);
+  const currentBot = bots.find(bot => bot.id === selected);
   return <ScrollView>
     <SettingsRow label={error ? `操作未完成：${error}` : '把新事情交给固定 Bot，执行与审批继续使用 Paseo 原生会话。'} />
     <SettingsAction label={`Bot 工具：${tools?.state === 'ready' ? '可连接' : tools?.state === 'idle' ? '首次开始任务时创建' : tools?.state === 'unavailable' ? '不可用' : '读取中'}`} hint={tools?.detail} actionLabel="重新检查" disabled={busy} onPress={() => void run(refreshTools)} />
@@ -122,6 +125,7 @@ function Bots({ navigation }: PluginScreenProps) {
       })} />)}
       {links.map(link => <SettingsAction key={link.sessionId} label={link.title || link.sessionId} actionLabel="回到会话" disabled={busy || !navigation} onPress={() => navigation?.openAgent({ agentId: link.sessionId })} />)}
     </SettingsSection>
+    {currentBot && <BotConfiguration key={`${currentBot.id}:${currentBot.updatedAt}`} bot={currentBot} disabled={busy} save={patch => run(async () => { await updateBot({ botId: selected, patch }); await refreshBots(); })} />}
     <SettingsSection title={`记忆：${selected}`}>
       <SettingsRow label="纠正只修改当前记忆，不表示已擦除原生历史和备份。候选未经确认不注入新会话。" />
       {entries.map(entry => <SettingsAction key={entry.id} label={`${entry.kind === 'confirmed' ? '明确' : '候选'}：${entry.content}`} hint="填写下方内容后可纠正；候选可直接确认" actionLabel={entry.kind === 'candidate' && !memory ? '确认' : '纠正'} disabled={busy || (entry.kind === 'confirmed' && !memory)} onPress={() => void run(async () => { await correct({ botId: selected, memoryId: entry.id, kind: 'confirmed', content: memory || entry.content }); setEntries(await memories({ botId: selected })); })} />)}
