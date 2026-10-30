@@ -168,3 +168,79 @@ test('恢复会话时原生回查、Bot 存档或 MCP 预热失败只报告错�
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('固定同事贯穿接线：目录、接收方身份记忆、原生父项和重复委派结果保持关联', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-colleagues-'));
+  const previous = process.env.PASEO_GUYS_DATA_DIR;
+  process.env.PASEO_GUYS_DATA_DIR = directory;
+  const handlers = new Map<string, { contract: PluginRpcContract; handler: (input: unknown, context: unknown) => unknown }>();
+  const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
+  const created: PaseoAgentCreateOptions[] = [];
+  const paseo = { agents: {
+    create: async (options: PaseoAgentCreateOptions) => { created.push(options); return { id: options.agentId!, workspaceId: 'ws-team' }; },
+    ref: (id: string) => ({ refresh: async () => {
+      const options = created.find(item => item.agentId === id);
+      return options ? { agent: { id, title: options.title, workspaceId: 'ws-team', labels: { ...options.labels, ...(options.parent ? { 'paseo.parent-agent-id': options.parent } : {}) } } } : null;
+    } }),
+  } } as unknown as PaseoApi;
+  const server = {
+    registerSettings: () => ({ read: async () => ({ status: 'ready', revision: 'r1', values: { cwd: directory, provider: 'configured/model' } }) }),
+    handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
+    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
+    before: () => () => {},
+  } as unknown as PluginServerContext;
+  async function invoke(name: string, input: unknown) {
+    const entry = handlers.get(name)!;
+    return entry.contract.output.parse(await entry.handler(entry.contract.input.parse(input), { paseo }));
+  }
+  const payload = (result: unknown) => JSON.parse((result as { content: { text: string }[] }).content[0].text);
+  const client = new Client({ name: 'fixed-chief', version: '0' });
+  const childClient = new Client({ name: 'fixed-colleague', version: '0' });
+  const cleanup = contribute(server);
+  try {
+    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '协调交付' });
+    await invoke('bots.create', { id: 'researcher', name: '资料同事', role: '核对资料' });
+    await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '主 Bot 的无关记忆' });
+    await invoke('bots.memory.save', { botId: 'researcher', kind: 'confirmed', content: '结论必须附资料来源' });
+    const root = await invoke('bots.start', { botId: 'chief', title: '整理合成资料', prompt: '请分工核对指定资料并形成报告' }) as { agentId: string };
+    const tools = created[0].config.mcpServers!['paseo-guys'];
+    if (tools.type !== 'http') throw new Error('expected HTTP tools');
+    await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
+    const directoryResult = await client.callTool({ name: 'list_colleagues', arguments: {} });
+    assert.deepEqual(payload(directoryResult), [{ id: 'researcher', name: '资料同事', role: '核对资料' }]);
+    const request = { colleagueId: 'researcher', requestId: 'source-check', title: '核对资料来源', prompt: '只核对指定合成资料，交付 findings.md 并注明来源' };
+    const delegated = await client.callTool({ name: 'delegate_to_colleague', arguments: request });
+    assert.equal(delegated.isError, undefined);
+    const child = payload(delegated) as { agentId: string; requestId: string };
+    assert.deepEqual(payload(await client.callTool({ name: 'delegate_to_colleague', arguments: request })), child);
+    assert.equal(created.length, 2, '相同委派不新建第三个原生会话');
+    assert.equal(created[1].parent, root.agentId);
+    assert.equal(created[1].labels?.['paseo-guys.bot'], 'researcher');
+    assert.match(created[1].config.systemPrompt!, /资料同事|结论必须附资料来源/);
+    assert.doesNotMatch(created[1].config.systemPrompt!, /主 Bot 的无关记忆/);
+    const childTools = created[1].config.mcpServers!['paseo-guys'];
+    if (childTools.type !== 'http') throw new Error('expected HTTP tools');
+    assert.notEqual(childTools.url, tools.url);
+    await childClient.connect(new StreamableHTTPClientTransport(new URL(childTools.url), { requestInit: { headers: childTools.headers } }));
+    const ownMemories = payload(await childClient.callTool({ name: 'read_memories', arguments: {} }));
+    assert.deepEqual(ownMemories.memories.map((item: { content: string }) => item.content), ['结论必须附资料来源']);
+    await hooks.get('agent.created')!({ agent: { id: child.agentId, parentAgentId: root.agentId, title: request.title, workspaceId: 'ws-team' } }, { paseo });
+    const rootTask = payload(await client.callTool({ name: 'read_task', arguments: {} }));
+    assert.deepEqual(rootTask.specialists, [child.agentId]);
+    assert.equal(rootTask.status, 'active', '委派启动不等于主事项完成');
+    assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'active');
+    const rootSessions = await invoke('bots.sessions', { botId: 'chief' }) as { sessionId: string }[];
+    assert.deepEqual(rootSessions.map(item => item.sessionId), [root.agentId]);
+    const childSessions = await invoke('bots.sessions', { botId: 'researcher' }) as { sessionId: string }[];
+    assert.deepEqual(childSessions.map(item => item.sessionId), [child.agentId]);
+    assert.equal(typeof hooks.get('agent.archived'), 'function');
+    await hooks.get('agent.archived')!({ agent: { id: child.agentId }, archivedAt: new Date().toISOString() }, { paseo });
+    assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'canceled', '同事被原生归档后不能继续显示进行中');
+    assert.equal((await childClient.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续', cron: '* * * * *', timezone: 'Asia/Shanghai' } })).isError, true);
+    assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '单独归档同事不自动完成 Chief 的事项');
+  } finally {
+    await client.close(); await childClient.close(); await cleanup();
+    if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

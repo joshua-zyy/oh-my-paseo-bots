@@ -9,6 +9,7 @@ export interface SessionInput {
   requestId: string;
   title: string;
   prompt: string;
+  parentAgentId?: string;
 }
 
 /** 原生侧只需 id 与 workspaceId 即可关联；不复制会话状态。 */
@@ -44,6 +45,7 @@ export async function startBotSession(
         bot: input.botId,
         title: input.title,
         prompt: input.prompt,
+        parentAgentId: input.parentAgentId,
         cwd: placement.cwd,
         config: placement.config,
         systemPrompt,
@@ -63,6 +65,7 @@ export async function startBotSession(
       agentId: proposal.intent.agentId,
       idempotencyKey: `paseo-guys:${input.botId}:${proposal.intent.requestId}`,
       cwd: placement.cwd,
+      ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
       config: { ...placement.config, systemPrompt, mcpServers: { ...placement.config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,

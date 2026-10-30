@@ -12,6 +12,7 @@ import type { BotOfficeAccess } from './office.js';
 import { registerOfficeTools } from './office-tools.js';
 import type { TaskTracker } from './tasks.js';
 import { registerTaskTools } from './task-tools.js';
+import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -69,6 +70,7 @@ export interface BotMcpOptions {
   rememberExplicit?: RememberExplicit;
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
+  startColleague?: ColleagueToolScope['start'];
   cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
 }
 
@@ -80,6 +82,7 @@ export interface BotMcpToolScope {
   rememberExplicit?: RememberExplicit;
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
+  startColleague?: ColleagueToolScope['start'];
   cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
 }
 
@@ -256,6 +259,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
 
   if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
   if (scope.tasks) registerTaskTools(server, scope.tasks, botId, agentId, scope.cancelExplicit);
+  if (scope.tasks && scope.startColleague) registerColleagueTools(server, { store, tasks: scope.tasks, botId, agentId, start: scope.startColleague });
   return server;
 }
 
@@ -272,6 +276,7 @@ export class BotMcp {
   private readonly rememberExplicit?: RememberExplicit;
   private readonly office?: BotOfficeAccess;
   private readonly tasks?: TaskTracker;
+  private readonly startColleague?: ColleagueToolScope['start'];
   private readonly cancelExplicit?: BotMcpOptions['cancelExplicit'];
   private readonly stateFile: string;
   private server: Server | null = null;
@@ -290,6 +295,7 @@ export class BotMcp {
     this.rememberExplicit = options.rememberExplicit;
     this.office = options.office;
     this.tasks = options.tasks;
+    this.startColleague = options.startColleague;
     this.cancelExplicit = options.cancelExplicit;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
@@ -452,6 +458,7 @@ export class BotMcp {
       rememberExplicit: this.rememberExplicit,
       office: this.office,
       tasks: this.tasks,
+      startColleague: this.startColleague,
       cancelExplicit: this.cancelExplicit,
     });
     const transport = new StreamableHTTPServerTransport({

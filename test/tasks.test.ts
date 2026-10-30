@@ -215,6 +215,38 @@ describe('原生跟进关联', () => {
     assert.equal(cli.calls.length, 0, '没有已知例程就不碰 CLI');
   });
 
+  it('原生归档观察收尾未结事项和跟进，不重复归档或伪报删除', async () => {
+    const { tracker, paseo, cli, restart } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '固定同事子任务' });
+    await tracker.follow('chief', 'agent-chief', followup);
+    const calls = cli.calls.length;
+    const stopped = await tracker.observeArchived('chief', 'agent-chief');
+    assert.equal(stopped?.status, 'canceled');
+    assert.equal(stopped?.followups[0].status, 'inactive');
+    assert.match(stopped?.followups[0].detail ?? '', /删除未确认/);
+    assert.equal(cli.calls.length, calls);
+    assert.deepEqual(paseo.archived, []);
+    assert.deepEqual(await tracker.observeArchived('chief', 'agent-chief'), stopped);
+    assert.equal((await restart().get('chief', 'agent-chief'))?.status, 'canceled');
+    await expectTaskError(() => tracker.requireActive('chief', 'agent-chief'), 'task_not_active');
+  });
+
+  it('完成期间的原生归档观察不覆盖 stopping 或已完成的交付结论', async () => {
+    const { tracker, paseo } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '核对后交付' });
+    paseo.behavior.archive = async () => {
+      assert.equal((await tracker.observeArchived('chief', 'agent-chief'))?.status, 'stopping');
+      return { archivedAt: new Date().toISOString() };
+    };
+    const completed = await tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '已核对报告', evidence: ['report.md'] });
+    assert.equal(completed.status, 'completed');
+    const observed = await tracker.observeArchived('chief', 'agent-chief');
+    assert.equal(observed?.status, 'completed');
+    assert.equal(observed?.summary, completed.summary);
+    assert.deepEqual(observed?.evidence, completed.evidence);
+    assert.deepEqual(completed.evidence, ['report.md']);
+  });
+
   it('follow 先落盘意图再调用原生 CLI，回执后置 active', async () => {
     const { tracker, restart, cli, trackFile } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '跨应用跟进' });

@@ -123,6 +123,34 @@ test('身份提示词改变后原requestId不能静默复用旧身份', async ()
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('固定同事委派使用接收方身份和记忆，绑定原生父事项且不跨父项复用请求', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-colleague-session-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '协调交付' });
+    await store.createBot({ id: 'researcher', name: '资料同事', role: '读取资料并给出可核对结论' });
+    await store.addMemory('chief', { kind: 'confirmed', content: 'Chief 的无关私人记忆' });
+    await store.addMemory('researcher', { kind: 'confirmed', content: '资料结论须附来源' });
+    await store.addMemory('researcher', { kind: 'candidate', content: '尚未确认的候选偏好' });
+    const { api, created } = fakePaseo();
+    const input = { botId: 'researcher', requestId: 'delegation-one', parentAgentId: 'chief-native', title: '核对资料', prompt: '只核对指定合成资料并写 findings.md' };
+    const result = await startBotSession(store, api, input, placement(directory), tools);
+    assert.equal(created[0].parent, 'chief-native');
+    assert.match(created[0].config.systemPrompt!, /资料同事/);
+    assert.match(created[0].config.systemPrompt!, /资料结论须附来源/);
+    assert.doesNotMatch(created[0].config.systemPrompt!, /Chief 的无关私人记忆|尚未确认的候选偏好/);
+    assert.equal(created[0].labels?.['paseo-guys.bot'], 'researcher');
+    assert.deepEqual(created[0].config.mcpServers, { 'paseo-guys': await tools.mount('researcher', result.agentId) });
+    assert.deepEqual(await store.listSessions('chief'), []);
+    assert.equal((await store.listSessions('researcher'))[0].sessionId, result.agentId);
+    assert.deepEqual(await startBotSession(store, api, input, placement(directory), tools), result);
+    assert.equal(created.length, 1);
+    const anotherParent = { ...input, parentAgentId: 'another-chief' };
+    await assert.rejects(() => startBotSession(store, api, anotherParent, placement(directory), tools),
+      (error: unknown) => error instanceof StoreError && error.code === 'request_conflict');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('原生创建成功后落盘失败：UI 丢 requestId 重试复用同一意图，不重复创建', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-session-retry-'));
   try {

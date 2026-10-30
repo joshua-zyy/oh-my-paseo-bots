@@ -311,6 +311,29 @@ export class TaskTracker {
     return this.withFileLock(id, async () => (await this.readDocument(id)).tasks.map(view));
   }
 
+  /** 原生归档（含 Chief 级联归档）已发生，只同步业务停止状态，不再次执行归档或删除。 */
+  async observeArchived(botId: string, agentId: string): Promise<TaskRecord | null> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    const aid = parseInput(agentIdSchema, agentId, 'agentId');
+    await this.requireAgent(id, aid);
+    return this.withFileLock(id, async () => {
+      const document = await this.readDocument(id);
+      const task = document.tasks.find(item => item.agentId === aid);
+      if (!task) return null;
+      // stop() 自己归档时已是 stopping，其最终完成/取消结论仍由原请求写入。
+      if (task.status !== 'active') return view(task);
+      task.status = 'canceled';
+      task.detail = '原生会话已归档，本事项已停止推进';
+      for (const followup of task.followups) {
+        if (followup.status === 'deleted' || followup.status === 'inactive') continue;
+        followup.status = 'inactive';
+        followup.detail = '已随原生会话归档停止；删除未确认';
+      }
+      await this.writeDocument(id, document);
+      return view(task);
+    });
+  }
+
   /** 服务端推进入口：非 active 一律拒绝（stopping 后立即生效）。
    * 升级前已存在、还没有任务记录的会话按 active 惰性补登，避免卡住已有 Bot 的办公操作。 */
   async requireActive(

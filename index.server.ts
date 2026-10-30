@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
 import { BotJournal } from './server/journal.js';
-import { startBotSession } from './server/sessions.js';
+import { startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
 import { rememberExplicit, latestUserMessage } from './server/memory.js';
 import type { PaseoApi } from '@getpaseo/client';
@@ -37,7 +37,10 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp = new BotMcp({ baseDir, store, journal, office, tasks, cancelExplicit: async (botId, agentId, quote) => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, startColleague: async input => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
+    return startBoundSession(input, currentPaseo);
+  }, cancelExplicit: async (botId, agentId, quote) => {
     if (!currentPaseo || (await latestUserMessage(currentPaseo, agentId)).trim() !== quote.trim()) throw new Error('取消依据与原生最新完整用户消息不符，未取消事项');
     await tasks.ensure(botId, agentId, { title: agentId });
     return tasks.stop(botId, agentId, { outcome: 'canceled', summary: '用户在原生会话中明确取消事项' });
@@ -99,42 +102,44 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rpc.saveMemory, input => store.addMemory(input.botId, input));
   server.handle(rpc.correctMemory, input => store.updateMemory(input.botId, input.memoryId, input));
   server.handle(rpc.startSession, async (input, { paseo }) => {
+    return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
+  });
+  async function startBoundSession(input: SessionInput, paseo: PaseoApi) {
     currentPaseo = paseo;
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error(`Bot 设置无效：${state.error}`);
     const { cwd, provider, modeId, thinkingOptionId } = state.values;
     if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
-    return startBotSession(store, paseo, { ...input, requestId: input.requestId ?? randomUUID() }, { cwd, config: { provider, modeId, thinkingOptionId } }, {
+    return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title });
         return mcp.mount(botId, agentId);
       },
     });
-  });
+  }
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(agent.id).refresh();
     const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
-    if (!botId) {
-      let parentId = agent.parentAgentId;
-      const seen = new Set<string>([agent.id]);
-      while (parentId && !seen.has(parentId)) {
-        seen.add(parentId);
-        const parent = await context.paseo.agents.ref(parentId).refresh();
-        const owner = parent?.agent.labels?.['paseo-guys.bot'];
-        if (owner && await store.getBot(owner)) {
-          try {
-            await store.linkSession(owner, { sessionId: parentId, title: parent!.agent.title, workspaceId: parent!.agent.workspaceId });
-            await tasks.ensure(owner, parentId, { title: parent!.agent.title || parentId });
-            await tasks.observeSpecialist(owner, parentId, agent.id);
-          } catch (error) { console.error(`Bot ${owner} 的原生专家关联未保存；仍记录原生观察`, error); }
-          return owner;
-        }
-        parentId = parent?.agent.labels?.['paseo.parent-agent-id'] ?? null;
+    let parentBotId: string | null = null;
+    let parentId = agent.parentAgentId;
+    const seen = new Set<string>([agent.id]);
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = await context.paseo.agents.ref(parentId).refresh();
+      const owner = parent?.agent.labels?.['paseo-guys.bot'];
+      if (owner && await store.getBot(owner)) {
+        try {
+          await store.linkSession(owner, { sessionId: parentId, title: parent!.agent.title, workspaceId: parent!.agent.workspaceId });
+          await tasks.ensure(owner, parentId, { title: parent!.agent.title || parentId });
+          await tasks.observeSpecialist(owner, parentId, agent.id);
+        } catch (error) { console.error(`Bot ${owner} 的原生专家关联未保存；仍记录原生观察`, error); }
+        parentBotId = owner;
+        break;
       }
-      return null;
+      parentId = parent?.agent.labels?.['paseo.parent-agent-id'] ?? null;
     }
-    if (!await store.getBot(botId)) return null;
+    if (!botId || !await store.getBot(botId)) return parentBotId;
     try { await store.linkSession(botId, { sessionId: agent.id, title: agent.title, workspaceId: agent.workspaceId }); }
     catch (error) { console.error(`Bot ${botId} 会话关联未保存；仍记录原生观察`, error); }
     try { await tasks.ensure(botId, agent.id, { title: agent.title || agent.id }); }
@@ -156,6 +161,12 @@ export default function contribute(server: PluginServerContext) {
     if (botId) await journal.append(botId, { agentId: event.agent.id, turnId: event.turnId, kind: 'turn_started' });
   });
   const created = server.on('agent.created', async (event, context) => { await associate(event.agent, context); });
+  const archived = server.on('agent.archived', async (event, context) => {
+    currentPaseo = context.paseo;
+    const snapshot = await context.paseo.agents.ref(event.agent.id).refresh();
+    const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
+    if (botId && await store.getBot(botId)) await tasks.observeArchived(botId, event.agent.id);
+  });
   const ended = server.on('agent.turn_ended', async (event, context) => {
     const botId = await associate(event.agent, context);
     if (botId) await journal.append(botId, {
@@ -163,5 +174,5 @@ export default function contribute(server: PluginServerContext) {
       ...(event.outcome.kind === 'failed' ? { error: event.outcome.error.message.trim().slice(0, 4000) || '原生轮次失败（无详细信息）' } : {}),
     });
   });
-  return async () => { started(); ended(); created(); opened(); await restoring.catch(() => {}); await mcp.close(); };
+  return async () => { started(); ended(); created(); archived(); opened(); await restoring.catch(() => {}); await mcp.close(); };
 }
