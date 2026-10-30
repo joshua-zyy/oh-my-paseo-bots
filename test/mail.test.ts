@@ -81,7 +81,7 @@ class FakeGmail implements GmailClient {
   matchesDraft(
     raw: string,
     expected: { from: string; to: string[]; subject: string; text: string; messageId: string },
-  ): boolean {
+  ): boolean | Promise<boolean> {
     try {
       const parsed = this.decode(raw);
       return (
@@ -208,6 +208,76 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('Gmail 专用外发登记', () => {
+  it('来源核对期间撤销单次批准，不创建草稿或发送，保留批准历史', { timeout: 5000 }, async () => {
+    const { outbox, gmail } = await setup();
+    const action = await outbox.propose('chief', 'agent-chief', proposal('revoke-during-source', { sourceIds: ['source-1'] }));
+    const approved = await outbox.approve('chief', action.id);
+    const entered = deferred();
+    const gate = deferred();
+    gmail.behavior.getMessage = async id => {
+      entered.resolve();
+      await gate.promise;
+      return { id };
+    };
+    const sending = Promise.allSettled([outbox.send('chief', 'agent-chief', action.id)]);
+    await entered.promise;
+    const revoked = await outbox.revoke('chief', action.id);
+    assert.equal(revoked.status, 'revoked');
+    gate.resolve();
+    const [result] = await sending;
+    if (result.status === 'fulfilled') assert.equal(result.value.status, 'revoked');
+    else assert.ok(result.reason instanceof MailError && result.reason.code === 'not_approved');
+    const [stored] = await outbox.list('chief');
+    assert.equal(stored.status, 'revoked');
+    assert.equal(stored.approvedAt, approved.approvedAt, '历史确认时间不能代替当前授权');
+    noSideEffects(gmail);
+  });
+
+  for (const stage of ['read', 'match'] as const) {
+    for (const valid of [true, false]) {
+      it(`已有草稿的${stage === 'read' ? '读取' : '内容核对'}期间撤销，迟到${valid ? '成功' : '失败'}不恢复发送资格`, { timeout: 5000 }, async () => {
+        const { outbox, gmail } = await setup();
+        const action = await outbox.propose('chief', 'agent-chief', proposal(`revoke-draft-${stage}-${valid}`));
+        const approved = await outbox.approve('chief', action.id);
+        gmail.behavior.getDraft = async () => { throw new Error('temporary read failure'); };
+        const draft = await outbox.send('chief', 'agent-chief', action.id);
+        assert.equal(draft.status, 'draft');
+        assert.equal(gmail.calls.createDraft, 1);
+        gmail.behavior.getDraft = undefined;
+        const entered = deferred();
+        const gate = deferred();
+        if (stage === 'read') {
+          gmail.behavior.getDraft = async (id, fake) => {
+            entered.resolve();
+            await gate.promise;
+            if (!valid) throw new Error('late read failure');
+            return { id, message: { raw: fake.draftStore.get(id)!.raw } };
+          };
+        } else {
+          gmail.matchesDraft = async () => {
+            entered.resolve();
+            await gate.promise;
+            return valid;
+          };
+        }
+        const sending = Promise.allSettled([outbox.send('chief', 'agent-chief', action.id)]);
+        await entered.promise;
+        await outbox.revoke('chief', action.id);
+        gate.resolve();
+        const [result] = await sending;
+        if (result.status === 'fulfilled') assert.equal(result.value.status, 'revoked');
+        else assert.ok(result.reason instanceof MailError && result.reason.code === 'not_approved');
+        const [stored] = await outbox.list('chief');
+        assert.equal(stored.status, 'revoked');
+        assert.equal(stored.approvedAt, approved.approvedAt);
+        assert.equal(stored.draftId, draft.draftId);
+        assert.equal(gmail.calls.createDraft, 1, '已有草稿不重新创建');
+        assert.equal(gmail.calls.sendDraft, 0, '撤销后的迟到核对不能准入发送');
+        await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+      });
+    }
+  }
+
   it('成功草稿回执后的实际 Message-ID 先固定落盘，发送未知重启后只用该标识回查', async () => {
     const { outbox, gmail, mailFile, restart } = await setup();
     const providerMessageId = 'gmail-rewritten@mail.gmail.com';
@@ -601,6 +671,151 @@ describe('Gmail 专用外发登记', () => {
     assert.equal(revoked.status, 'revoked');
     assert.match(revoked.detail ?? '', /草稿可能已创建，请先人工核对/);
     await expectMailError(() => outbox.send('chief', 'agent-chief', action.id), 'not_approved');
+  });
+
+  for (const lookup of ['none', 'multiple', 'tampered', 'unique'] as const) {
+    it(`未知草稿创建撤销并重启后不重建；${lookup} 回查只在完整确认后允许重新批准`, async () => {
+      const { outbox, gmail, restart } = await setup();
+      gmail.behavior.createDraft = async (raw, fake) => {
+        if (lookup !== 'none') {
+          const id = fake.putDraft(raw);
+          if (lookup === 'multiple') fake.putDraft(raw);
+          if (lookup === 'tampered') fake.draftStore.set(id, { raw: fake.encode({ ...fake.decode(raw), text: '云端被改动的内容' }), messageId: String(fake.decode(raw).messageId) });
+        }
+        throw new Error('create receipt lost');
+      };
+      const action = await outbox.propose('chief', 'agent-chief', proposal(`unknown-revoked-${lookup}`));
+      const grant = await outbox.allowFixed('chief', action.id);
+      assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+      await outbox.revoke('chief', action.id);
+      const recoveredOutbox = restart();
+      await expectMailError(() => recoveredOutbox.approve('chief', action.id), 'in_flight');
+      await expectMailError(() => recoveredOutbox.allowFixed('chief', action.id), 'not_approvable');
+      const repeated = await recoveredOutbox.propose('chief', 'agent-chief', proposal(`new-request-${lookup}`));
+      assert.equal(repeated.id, action.id, '未知写入的同输入即使换 requestId 也不能新建提案');
+      assert.equal(repeated.status, 'revoked');
+      assert.equal((await recoveredOutbox.listGrants('chief')).find(item => item.id === grant.id)?.revokedAt, undefined);
+      await expectMailError(() => recoveredOutbox.send('chief', 'agent-chief', action.id), 'not_approved');
+      const reconciled = await recoveredOutbox.reconcile('chief', 'agent-chief', action.id);
+      assert.equal(gmail.calls.findDrafts, 1, '已撤销的未知创建仍可只读回查');
+      assert.equal(reconciled.status, 'revoked', '回查不能自动恢复批准');
+      assert.equal(JSON.stringify(reconciled).includes('draftCreationUncertain'), false, '私有状态不进入对外视图');
+      if (lookup === 'unique') {
+        assert.ok(reconciled.draftId);
+        assert.equal((await restart().approve('chief', action.id)).status, 'approved');
+        gmail.behavior.createDraft = undefined;
+        assert.equal((await restart().send('chief', 'agent-chief', action.id)).status, 'sent');
+        assert.equal(gmail.calls.sendDraft, 1);
+      } else {
+        assert.equal(reconciled.draftId, undefined);
+        await expectMailError(() => restart().approve('chief', action.id), 'in_flight');
+        assert.equal(gmail.calls.sendDraft, 0);
+      }
+      assert.equal(gmail.calls.createDraft, 1);
+    });
+  }
+
+  for (const knownReceipt of [true, false]) {
+    it(`创建草稿在途撤销，迟到${knownReceipt ? '已知 id' : '未知结果'}不会自动重获批准`, { timeout: 5000 }, async () => {
+      const { outbox, gmail, restart } = await setup();
+      const entered = deferred();
+      const gate = deferred();
+      gmail.behavior.createDraft = async (raw, fake) => {
+        const id = fake.putDraft(raw);
+        entered.resolve();
+        await gate.promise;
+        if (!knownReceipt) throw new Error('create receipt lost');
+        return { id };
+      };
+      const action = await outbox.propose('chief', 'agent-chief', proposal(`revoke-in-flight-${knownReceipt}`));
+      await outbox.approve('chief', action.id);
+      const sending = outbox.send('chief', 'agent-chief', action.id);
+      await entered.promise;
+      assert.equal((await outbox.list('chief'))[0].status, 'creating_draft');
+      await outbox.revoke('chief', action.id);
+      gate.resolve();
+      assert.equal((await sending).status, 'revoked');
+      assert.equal(gmail.calls.sendDraft, 0);
+      if (!knownReceipt) {
+        await expectMailError(() => restart().approve('chief', action.id), 'in_flight');
+        const reconciled = await restart().reconcile('chief', 'agent-chief', action.id);
+        assert.equal(reconciled.status, 'revoked');
+        assert.ok(reconciled.draftId);
+      }
+      await restart().approve('chief', action.id);
+      assert.equal((await restart().send('chief', 'agent-chief', action.id)).status, 'sent');
+      assert.equal(gmail.calls.createDraft, 1);
+      assert.equal(gmail.calls.sendDraft, 1);
+    });
+  }
+
+  for (const grantOnly of [false, true]) {
+    it(`没有未知写入的${grantOnly ? '固定预授权' : '单次批准'}撤销仍可由用户重新批准`, async () => {
+      const { outbox, gmail, restart } = await setup();
+      const action = await outbox.propose('chief', 'agent-chief', proposal(`ordinary-reapprove-${grantOnly}`));
+      if (grantOnly) {
+        const grant = await outbox.allowFixed('chief', action.id);
+        await outbox.revokeGrant('chief', grant.id);
+      } else {
+        await outbox.approve('chief', action.id);
+        await outbox.revoke('chief', action.id);
+      }
+      await restart().approve('chief', action.id);
+      assert.equal((await restart().send('chief', 'agent-chief', action.id)).status, 'sent');
+      assert.equal(gmail.calls.createDraft, 1);
+      assert.equal(gmail.calls.sendDraft, 1);
+    });
+  }
+
+  it('旧撤销存档缺少创建结论时保守回查，不改写原文件或重新创建', async () => {
+    const { outbox, gmail, mailFile, restart } = await setup();
+    gmail.behavior.createDraft = async () => { throw new Error('old create receipt lost'); };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('legacy-revoked-unknown'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+    await outbox.revoke('chief', action.id);
+    const old = JSON.parse(await readFile(mailFile, 'utf8'));
+    delete old.actions[0].draftCreationUncertain;
+    await writeFile(mailFile, JSON.stringify(old), 'utf8');
+    const bytes = await readFile(mailFile, 'utf8');
+    const restored = restart();
+    const [visible] = await restored.list('chief');
+    assert.equal(visible.status, 'revoked');
+    await expectMailError(() => restored.approve('chief', action.id), 'in_flight');
+    assert.match(visible.detail ?? '', /旧版|历史/);
+    assert.equal(await readFile(mailFile, 'utf8'), bytes, '只读兼容不自动迁移存档');
+    const repeated = await restored.propose('chief', 'agent-chief', proposal('legacy-new-request'));
+    assert.equal(repeated.id, action.id);
+    assert.equal((await restored.reconcile('chief', 'agent-chief', action.id)).status, 'revoked');
+    assert.equal(gmail.calls.findDrafts, 1);
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0);
+  });
+
+  it('已撤销未知创建的回查结论无法落盘时，不恢复批准或重复副作用', async () => {
+    const { outbox, gmail, mailFile, restart } = await setup();
+    gmail.behavior.createDraft = async (raw, fake) => {
+      fake.putDraft(raw);
+      throw new Error('create receipt lost');
+    };
+    const action = await outbox.propose('chief', 'agent-chief', proposal('revoked-recovery-write-failure'));
+    await outbox.approve('chief', action.id);
+    assert.equal((await outbox.send('chief', 'agent-chief', action.id)).status, 'draft_unknown');
+    await outbox.revoke('chief', action.id);
+    const snapshot = await readFile(mailFile, 'utf8');
+    gmail.behavior.getDraft = async (id, fake) => {
+      await breakWrites(mailFile);
+      return { id, message: { raw: fake.draftStore.get(id)!.raw } };
+    };
+    const result = await outbox.reconcile('chief', 'agent-chief', action.id);
+    assert.equal(result.status, 'revoked');
+    assert.match(result.detail ?? '', /落盘失败/);
+    await rm(mailFile, { recursive: true, force: true });
+    await writeFile(mailFile, snapshot, 'utf8');
+    await expectMailError(() => restart().approve('chief', action.id), 'in_flight');
+    await expectMailError(() => restart().send('chief', 'agent-chief', action.id), 'not_approved');
+    assert.equal(gmail.calls.createDraft, 1);
+    assert.equal(gmail.calls.sendDraft, 0);
   });
 
   it('发送准入前撤销预授权会拦下 sendDraft', async () => {

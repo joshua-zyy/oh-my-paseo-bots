@@ -106,6 +106,8 @@ export interface MailGrant {
 
 interface StoredMailAction extends MailAction {
   raw: string;
+  /** 撤销不抹去已发起但未确认的草稿创建；只能回查或采用迟到的成功回执。 */
+  draftCreationUncertain?: boolean;
 }
 
 interface MailDocument {
@@ -215,6 +217,7 @@ const storedActionSchema = z.object({
   detail: z.string().min(1).max(2000).optional(),
   approvedAt: stamp.optional(),
   grantId: id(64).optional(),
+  draftCreationUncertain: z.boolean().optional(),
   raw: z.string().min(1).max(400000),
 });
 const grantSchema = z.object({
@@ -261,7 +264,7 @@ function reason(error: unknown): string {
 }
 
 function view(action: StoredMailAction): MailAction {
-  const { raw: _raw, ...visible } = action;
+  const { raw: _raw, draftCreationUncertain: _draftCreationUncertain, ...visible } = action;
   return visible;
 }
 
@@ -297,6 +300,8 @@ function activeGrant(document: MailDocument, action: StoredMailAction): MailGran
 
 /** 发送准入：用户显式批准，或仍未撤销的固定预授权。 */
 function assertAuthorized(document: MailDocument, action: StoredMailAction): void {
+  if (action.status === 'revoked') throw new MailError('not_approved', `事项 ${action.id} 已撤销`);
+  if (action.draftCreationUncertain && !action.draftId) throw new MailError('in_flight', `事项 ${action.id} 的草稿创建结果未知：先回查，不会重复创建`);
   if (action.approvedAt || activeGrant(document, action)) return;
   const why = action.grantId ? '固定预授权已撤销或已失效，需用户重新确认' : '未获用户批准：先 approve，或为完全相同的内容建立固定预授权';
   throw new MailError('not_approved', `事项 ${action.id} ${why}`);
@@ -362,7 +367,7 @@ export class MailOutbox {
         return view(byRequest);
       }
 
-      const unresolved = (action: StoredMailAction) => action.status !== 'sent' && action.status !== 'revoked';
+      const unresolved = (action: StoredMailAction) => action.status !== 'sent' && (action.status !== 'revoked' || Boolean(action.draftCreationUncertain && !action.draftId));
       const reusable = document.actions
         .filter((action) => action.agentId === aid && action.contentHash === contentHash && unresolved(action))
         .at(-1);
@@ -422,6 +427,9 @@ export class MailOutbox {
     return this.withFileLock(id, async () => {
       const document = await this.readDocument(id);
       const action = requireAction(document, mid, id);
+      if (action.draftCreationUncertain && !action.draftId) {
+        throw new MailError('in_flight', `事项 ${mid} 撤销前的草稿创建结果仍未知：请先回查确认，不会重复创建`);
+      }
       if (action.status === 'approved') return view(action);
       if (action.status !== 'pending_confirmation' && action.status !== 'revoked') {
         throw new MailError('not_approvable', `事项 ${mid} 当前状态为 ${action.status}，不能再批准`);
@@ -449,6 +457,7 @@ export class MailOutbox {
       }
       const draftUnknown = action.status === 'creating_draft' || action.status === 'draft_unknown';
       const standingGrant = Boolean(activeGrant(document, action));
+      action.draftCreationUncertain = Boolean(draftUnknown && !action.draftId);
       action.status = 'revoked';
       delete action.grantId;
       action.detail = [
@@ -525,6 +534,7 @@ export class MailOutbox {
         try {
           action = await this.transition(id, mid, (current) => {
             current.draftId = draftId;
+            delete current.draftCreationUncertain;
             if (current.status === 'revoked') {
               current.detail = '草稿已创建，但该事项已被撤销；不会发送，可人工删除草稿';
               return;
@@ -619,7 +629,7 @@ export class MailOutbox {
         if (current.agentId !== aid) throw new MailError('wrong_agent', `事项 ${mid} 不属于该 Agent`);
         return current;
       });
-      const draftUnknown = action.status === 'creating_draft' || action.status === 'draft_unknown';
+      const draftUnknown = action.status === 'creating_draft' || action.status === 'draft_unknown' || Boolean(action.draftCreationUncertain && !action.draftId);
       const sendUnknown = action.status === 'sending' || action.status === 'send_unknown';
       if (!draftUnknown && !sendUnknown) return view(action);
       const client = await this.clientFor(id);
@@ -739,6 +749,7 @@ export class MailOutbox {
         }
         if (action.approvedAt) continue;
         action.status = 'revoked';
+        action.draftCreationUncertain = false;
         action.detail = action.draftId
           ? '固定预授权已撤销；不会再发送，Gmail 中仍有该草稿，可人工删除'
           : '固定预授权已撤销，不会再创建草稿或发送';
@@ -835,12 +846,24 @@ export class MailOutbox {
    */
   private async settle(botId: string, actionId: string, base: StoredMailAction, patch: ActionPatch): Promise<MailAction> {
     try {
-      return view(await this.transition(botId, actionId, (action) => applyPatch(action, patch)));
+      return view(await this.transition(botId, actionId, (action) => {
+        if (action.status === 'revoked') {
+          // 迟到回查可补记已确认草稿，但不能撤销用户的撤销决定。
+          if (patch.draftId) {
+            action.draftId = patch.draftId;
+            delete action.draftCreationUncertain;
+            action.detail = '已回查确认草稿唯一且内容一致；该事项仍已撤销，需用户明确重新批准才可发送';
+          }
+          return;
+        }
+        applyPatch(action, patch);
+      }));
     } catch (error) {
       if (error instanceof MailError) throw error;
       const merged: MailAction = { ...view(base) };
       applyPatch(merged, {
         ...patch,
+        ...(base.status === 'revoked' ? { status: 'revoked' } : {}),
         detail: `${patch.detail ?? '结果未落盘'}；状态落盘失败（${reason(error)}），重启后按未知状态回查`,
       });
       return merged;
@@ -878,6 +901,12 @@ export class MailOutbox {
       throw new MailError('corrupt_store', `外发存档结构不符合预期：${file}`, {
         issues: result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),
       });
+    }
+    for (const action of result.data.actions) {
+      if (action.status === 'revoked' && !action.draftId && action.draftCreationUncertain === undefined) {
+        action.draftCreationUncertain = true;
+        action.detail = '旧版撤销记录未保存草稿创建结论；结果未知，请先回查，不会重新创建或发送';
+      }
     }
     return result.data;
   }
