@@ -38,14 +38,15 @@ export function registerColleagueTools(server: McpServer, scope: ColleagueToolSc
     await scope.tasks.requireActive(scope.botId, scope.agentId);
     // 源 Agent 最长200字符；哈希命名空间保证整体不超过存储的200字符上限。
     const source = createHash('sha256').update(scope.agentId).digest('hex');
+    const namespace = `delegation:${source}:`;
     const result = await scope.start({
       botId: input.colleagueId,
       parentAgentId: scope.agentId,
-      requestId: `delegation:${source}:${input.requestId}`,
+      requestId: `${namespace}${input.requestId}`,
       title: input.title,
       prompt: input.prompt,
     });
     await scope.tasks.observeSpecialist(scope.botId, scope.agentId, result.agentId);
-    return { agentId: result.agentId, requestId: input.requestId };
+    return { agentId: result.agentId, requestId: result.requestId.slice(namespace.length) };
   }));
 }

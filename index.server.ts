@@ -165,7 +165,13 @@ export default function contribute(server: PluginServerContext) {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(event.agent.id).refresh();
     const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
-    if (botId && await store.getBot(botId)) await tasks.observeArchived(botId, event.agent.id);
+    if (botId && await store.getBot(botId)) {
+      await tasks.observeArchived(botId, event.agent.id);
+      const requestId = snapshot?.agent.labels?.['paseo-guys.request'];
+      if (requestId && (await store.listPendingCreations(botId)).some(intent => intent.requestId === requestId && intent.status === 'created')) {
+        await store.acknowledgeCreation(botId, requestId);
+      }
+    }
   });
   const ended = server.on('agent.turn_ended', async (event, context) => {
     const botId = await associate(event.agent, context);

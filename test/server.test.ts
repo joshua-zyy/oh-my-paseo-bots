@@ -213,6 +213,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(delegated.isError, undefined);
     const child = payload(delegated) as { agentId: string; requestId: string };
     assert.deepEqual(payload(await client.callTool({ name: 'delegate_to_colleague', arguments: request })), child);
+    assert.deepEqual(payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'same-work-another-key' } })), child, '同一未结工作复用时返回有效的原始请求键');
     assert.equal(created.length, 2, '相同委派不新建第三个原生会话');
     assert.equal(created[1].parent, root.agentId);
     assert.equal(created[1].labels?.['paseo-guys.bot'], 'researcher');
@@ -238,6 +239,9 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'canceled', '同事被原生归档后不能继续显示进行中');
     assert.equal((await childClient.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续', cron: '* * * * *', timezone: 'Asia/Shanghai' } })).isError, true);
     assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '单独归档同事不自动完成 Chief 的事项');
+    const next = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'new-work-after-finish' } }));
+    assert.notEqual(next.agentId, child.agentId, '同事已结束后，明确的新请求可再次交办同样的工作');
+    assert.equal(created.length, 3);
   } finally {
     await client.close(); await childClient.close(); await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;

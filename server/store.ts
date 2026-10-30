@@ -524,7 +524,7 @@ export class BotStore {
     });
   }
 
-  /** 用户 RPC 显式确认「我看见了这次创建」；原生回执不能代替。 */
+  /** 用户确认已收到创建结果，或已创建事项已由原生归档收尾；单纯创建回执不能代替。 */
   async acknowledgeCreation(botId: string, requestId: string): Promise<void> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const rid = parseInput(requestIdSchema, requestId, 'requestId');
@@ -539,7 +539,7 @@ export class BotStore {
     });
   }
 
-  /** 供 UI 展示的待确认创建：尚未被用户 ack 的意图（含 pending 与 created）。 */
+  /** 供 UI 展示尚未确认收到结果或归档收尾的创建意图（含 pending 与 created）。 */
   async listPendingCreations(botId: string): Promise<CreationIntent[]> {
     const id = parseInput(botIdSchema, botId, 'botId');
     return this.withLock(id, async () => (await this.requireDocument(id)).creationIntents.filter((intent) => !intent.acknowledged));
