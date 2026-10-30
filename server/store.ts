@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import nodePath from 'node:path';
 import { z } from 'zod';
-import { botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
+import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
 
 /**
  * Bot 业务元数据存储。
@@ -154,7 +154,7 @@ export class StoreError extends Error {
 /** Windows 设备名即使带 `.json` 扩展名仍会被当作设备，不能作为存档文件名。 */
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
-const botIdSchema = z
+export const botIdSchema = z
   .string()
   .max(64)
   .regex(BOT_ID_PATTERN, 'must start with [a-z0-9], use only [a-z0-9_-]')
@@ -300,6 +300,19 @@ export class BotStore {
     this.baseDir = nodePath.resolve(baseDir);
   }
 
+  /** 首次打开即有固定主入口；不改写已有身份，也不启动执行 Agent。 */
+  async ensureChief(): Promise<BotIdentity> {
+    const existing = await this.getBot(CHIEF_BOT_ID);
+    if (existing) return existing.bot;
+    try {
+      return (await this.createBot({ id: CHIEF_BOT_ID, name: 'Chief', role: '澄清、分工、跟进、核对并负责最终交付' })).bot;
+    } catch (error) {
+      // 并发首次打开由现有原子 create 决定唯一创建者。
+      if (error instanceof StoreError && error.code === 'bot_exists') return (await this.getBot(CHIEF_BOT_ID))!.bot;
+      throw error;
+    }
+  }
+
   async createBot(input: CreateBotInput): Promise<BotRecord> {
     const value = parseInput(createBotSchema, input, 'bot');
     return this.withLock(value.id, async () => {
@@ -319,12 +332,13 @@ export class BotStore {
     });
   }
 
-  /** 仅更新 Bot 产品配置，已有原生会话和记忆不变；execution 出现时整体替换覆盖。 */
-  async updateBot(botId: string, input: BotPatch): Promise<BotIdentity> {
+  /** execution 出现时整体替换；函数 patch 在已有写锁内基于最新配置计算。 */
+  async updateBot(botId: string, input: BotPatch | ((current: BotIdentity) => BotPatch)): Promise<BotIdentity> {
     const id = parseInput(botIdSchema, botId, 'botId');
-    const patch = parseInput(botPatchSchema, input, 'bot');
+    const supplied = typeof input === 'function' ? input : parseInput(botPatchSchema, input, 'bot');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
+      const patch = typeof supplied === 'function' ? parseInput(botPatchSchema, supplied(document.bot), 'bot') : supplied;
       for (const key of Object.keys(patch) as (keyof BotPatch)[]) {
         if (patch[key] === undefined) delete patch[key];
       }

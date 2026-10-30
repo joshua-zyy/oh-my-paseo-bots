@@ -43,7 +43,7 @@ export async function startBotSession(
   const execution = data.bot.execution;
   const cwd = execution.cwd ?? placement.cwd;
   if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
-  // 模式与思考选项属于具体模型；改选模型时不沿用另一模型的宿主选项。
+  // 改选模型不隐式沿用宿主默认选项；Bot 显式执行模式保留，由宿主校验，不为兼容性自动放宽。
   const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;
   const config: PaseoAgentConfig = {
     ...placement.config,

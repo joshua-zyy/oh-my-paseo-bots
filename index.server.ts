@@ -9,6 +9,7 @@ import { BotMcp } from './server/mcp.js';
 import { rememberExplicit, latestUserMessage } from './server/memory.js';
 import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
+import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
 import { TaskTracker } from './server/tasks.js';
@@ -77,6 +78,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rpc.listBots, async () => {
     const corrupt: string[] = [];
     const bots = await store.listBots(id => corrupt.push(id));
+    if (!bots.some(bot => bot.id === CHIEF_BOT_ID) && !corrupt.includes(CHIEF_BOT_ID)) bots.unshift(await store.ensureChief());
     return { bots, corrupt };
   });
   server.handle(rpc.createBot, async input => ({ id: (await store.createBot(input)).bot.id }));

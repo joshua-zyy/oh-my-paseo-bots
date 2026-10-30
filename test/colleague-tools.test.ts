@@ -49,6 +49,84 @@ function text(result: Awaited<ReturnType<Client['callTool']>>): string {
 
 const input = { colleagueId: 'research', requestId: 'research-1', title: '整理指定资料', prompt: '仅核对给出的合成摘要，交付 report.md。' };
 
+test('Chief可创建和调整固定同事，仅配置选定字段，不启动原生Agent或修改授权', async () => {
+  await withColleagues(async ({ client, store, started }) => {
+    await store.updateBot('chief', { execution: { provider: 'creator/model', cwd: '/synthetic/chief', modeId: 'creator-mode', thinkingOptionId: 'high' } });
+    const created = await client.callTool({ name: 'create_colleague', arguments: { id: 'editor', name: '校对', role: '核对数字', instructions: '逐项给出原文依据', execution: { provider: 'known/model', cwd: '/synthetic/editor' } } });
+    assert.notEqual(created.isError, true, text(created));
+    const catalog = await client.listTools();
+    const idRule = (catalog.tools.find(tool => tool.name === 'create_colleague')!.inputSchema.properties!.id as { pattern: string }).pattern;
+    assert.equal(new RegExp(idRule).test('Bad ID!'), false, '公开工具schema即声明标识字符规则');
+    for (const id of ['Bad ID!', 'Chief', 'con', 'a.b']) {
+      assert.equal((await client.callTool({ name: 'create_colleague', arguments: { id, name: '非法标识', role: '核对', instructions: '' } })).isError, true);
+    }
+    assert.deepEqual((await store.getBot('editor'))!.bot.execution, { provider: 'known/model', cwd: '/synthetic/editor', modeId: 'creator-mode' }, '另选模型清除未重选的思考选项，但不绕过创建者的显式执行模式');
+    assert.equal((await client.callTool({ name: 'create_colleague', arguments: { id: 'editor', name: '重复', role: '不应覆盖', instructions: '' } })).isError, true, '同一标识重复登记明确报错，不覆盖或另建身份');
+    await store.updateBot('editor', { execution: { provider: 'known/model', cwd: '/synthetic/editor', modeId: 'user-selected-mode', thinkingOptionId: 'high' } });
+    const updated = await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'editor', patch: { role: '核对报告数字', execution: { thinkingOptionId: 'low' } } } });
+    assert.notEqual(updated.isError, true, text(updated));
+    const record = (await store.getBot('editor'))!;
+    assert.equal(record.bot.role, '核对报告数字');
+    assert.equal(record.bot.instructions, '逐项给出原文依据');
+    assert.deepEqual(record.bot.execution, { provider: 'known/model', cwd: '/synthetic/editor', modeId: 'user-selected-mode', thinkingOptionId: 'low' });
+    assert.deepEqual(record.sessions, []);
+    assert.equal(started.length, 0);
+    assert.equal((await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'editor', patch: { execution: { modeId: 'unattended' } } } })).isError, true);
+    assert.equal((await store.getBot('editor'))!.bot.execution.modeId, 'user-selected-mode');
+    await store.updateBot('chief', { name: '非默认名称' });
+    assert.equal((await client.callTool({ name: 'create_colleague', arguments: { id: 'checker', name: '复核', role: '核对', instructions: '' } })).isError, undefined, 'Chief按服务端绑定的固定标识识别，不靠可修改名称');
+  });
+});
+
+test('并发局部修改同事执行字段不会覆盖另一项已写入的配置', { timeout: 5000 }, async () => {
+  await withColleagues(async ({ client, store }) => {
+    await store.updateBot('writer', { execution: { provider: 'known/model', cwd: '/before', thinkingOptionId: 'high' } });
+    const read = store.getBot.bind(store);
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    store.getBot = async id => {
+      const value = await read(id);
+      if (id === 'writer') { if (++reads === 2) release(); await gate; }
+      return value;
+    };
+    try {
+      const results = await Promise.all([
+        client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'writer', patch: { execution: { cwd: '/after' } } } }),
+        client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'writer', patch: { execution: { thinkingOptionId: 'low' } } } }),
+      ]);
+      assert.ok(results.every(result => !result.isError));
+    } finally { store.getBot = read; }
+    assert.deepEqual((await store.getBot('writer'))!.bot.execution, { provider: 'known/model', cwd: '/after', thinkingOptionId: 'low' });
+  });
+});
+
+test('普通同事只能调整自己；取消后不可创建或调整，既有配置保持不变', async () => {
+  await withColleagues(async ({ client, store, tasks }) => {
+    await store.createBot({ id: 'checker', name: '复核', role: '核对' });
+    await store.updateBot('chief', { name: 'Chief改名仍是Chief' });
+    // 用固定同事自己的绑定注册，不接受工具参数伪造 caller。
+    const server = new McpServer({ name: 'ordinary-colleague', version: '1' });
+    const other = new Client({ name: 'ordinary-client', version: '1' });
+    await store.linkSession('checker', { sessionId: 'checker-agent' });
+    await tasks.ensure('checker', 'checker-agent', { title: '核对' });
+    registerColleagueTools(server, { store, tasks, botId: 'checker', agentId: 'checker-agent', start: async () => { throw new Error('不应启动'); } });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(b); await other.connect(a);
+      assert.equal((await other.callTool({ name: 'create_colleague', arguments: { id: 'forged', name: '伪造', role: '核对', instructions: '', botId: 'chief' } })).isError, true);
+      assert.equal(await store.getBot('forged'), null);
+      assert.equal((await other.callTool({ name: 'update_colleague', arguments: { colleagueId: 'chief', patch: { instructions: '不应写入' } } })).isError, true);
+      assert.equal((await other.callTool({ name: 'update_colleague', arguments: { patch: { instructions: '仅自己的说明' } } })).isError, undefined);
+      assert.equal((await store.getBot('checker'))!.bot.instructions, '仅自己的说明');
+      await tasks.stop('checker', 'checker-agent', { outcome: 'canceled', summary: '停止' });
+      assert.equal((await other.callTool({ name: 'update_colleague', arguments: { patch: { instructions: '停止后不应写入' } } })).isError, true);
+      await tasks.stop('chief', 'source-agent', { outcome: 'canceled', summary: '停止' });
+      assert.equal((await client.callTool({ name: 'create_colleague', arguments: { id: 'late', name: '迟到', role: '核对', instructions: '' } })).isError, true);
+    } finally { await other.close(); await server.close(); }
+  });
+});
+
 test('同事目录只返回其他注册Bot的身份，不共享记忆、会话或历史', async () => {
   await withColleagues(async ({ client, store }) => {
     await store.addMemory('chief', { kind: 'confirmed', content: 'SOURCE-PRIVATE-MEMORY' });

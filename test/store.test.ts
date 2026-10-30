@@ -25,6 +25,21 @@ after(async () => {
 });
 
 describe('固定 Bot 身份', () => {
+  it('首次并发打开只建立一个 Chief，重连不改已有名称、说明、配置或存档', async () => {
+    const { baseDir, store } = await makeStore();
+    const created = await Promise.all([store.ensureChief(), store.ensureChief(), store.ensureChief()]);
+    assert.deepEqual(created.map(bot => bot.id), ['chief', 'chief', 'chief']);
+    assert.equal((await store.listBots()).length, 1);
+    await store.updateBot('chief', { name: '我的协调同事', instructions: '保留工作方式', execution: { provider: 'known/model' } });
+    const file = path.join(baseDir, 'chief.json');
+    const before = await readFile(file, 'utf8');
+    assert.equal((await new BotStore({ baseDir }).ensureChief()).name, '我的协调同事');
+    assert.equal(await readFile(file, 'utf8'), before);
+    await writeFile(file, '{broken');
+    await assert.rejects(() => store.ensureChief(), (error: unknown) => error instanceof StoreError && error.code === 'corrupt_store');
+    assert.equal(await readFile(file, 'utf8'), '{broken', '损坏不是缺失，不覆盖重建');
+  });
+
   it('身份写入后可被新实例读回（模拟重启）', async () => {
     const { baseDir, store } = await makeStore();
     const created = await store.createBot({ id: 'chief', name: '主 Bot', role: '负责澄清与分工' });

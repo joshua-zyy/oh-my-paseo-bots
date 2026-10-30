@@ -41,7 +41,11 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   const cleanup = contribute(server);
   try {
     assert.deepEqual(await invoke('bots.tools.status', {}), { state: 'idle' });
-    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '核对' });
+    const seeded = await invoke('bots.list', {}) as { bots: { id: string; name: string }[] };
+    assert.deepEqual(seeded.bots.map(bot => bot.id), ['chief'], '首次打开即有固定 Chief，不用手工注册');
+    assert.equal(created.length, 0, '创建入口元数据不会自动调用模型');
+    assert.deepEqual(await invoke('bots.list', {}), seeded, '再次打开沿用同一 Chief');
+    await invoke('bots.update', { botId: 'chief', patch: { name: '主 Bot', role: '核对' } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '用户明确记忆' });
     const memories = await invoke('bots.memories', { botId: 'chief' }) as { id: string; content: string }[];
     assert.equal(memories[0].content, '用户明确记忆');
@@ -71,6 +75,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     assert.equal(created.length, 1);
     assert.deepEqual(await invoke('bots.tools.status', {}), { state: 'ready' });
     assert.equal(created[0].config.toolPolicy, undefined);
+    assert.match(created[0].config.systemPrompt!, /团队固定 Chief/);
     const tools = created[0].config.mcpServers!['paseo-guys'];
     assert.equal(tools.type, 'http');
     if (tools.type !== 'http') throw new Error('expected HTTP tools');
@@ -80,6 +85,11 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       const catalog = await client.listTools();
       assert.ok(catalog.tools.some(tool => tool.name === 'propose_mail'));
       assert.equal(catalog.tools.some(tool => /approve|allow_fixed/.test(tool.name)), false);
+      const colleague = await client.callTool({ name: 'create_colleague', arguments: { id: 'helper', name: '核对同事', role: '复核资料', instructions: '结论附来源' } });
+      assert.equal(colleague.isError, undefined);
+      assert.equal(JSON.parse((colleague.content as { text: string }[])[0].text).started, false);
+      assert.equal((await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'helper', patch: { role: '核对原文资料' } } })).isError, undefined);
+      assert.equal(created.length, 1, 'HTTP MCP 配置同事不会隐式启动额外原生 Agent');
       const office = await client.callTool({ name: 'office_scope', arguments: {} });
       assert.equal(office.isError, undefined);
       assert.deepEqual(JSON.parse((office.content as { text: string }[])[0].text), { gmail: { configured: false }, feishu: { configured: false, documentIds: [], wikiTokens: [] } });
@@ -237,6 +247,8 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(created[1].config.modeId, undefined, '模型改选后不套用另一模型的宿主模式');
     assert.equal(created[1].config.thinkingOptionId, undefined);
     assert.match(created[1].config.systemPrompt!, /资料同事专用说明/);
+    assert.match(created[1].config.systemPrompt!, /只修改自己/);
+    assert.doesNotMatch(created[1].config.systemPrompt!, /团队固定 Chief/);
     assert.doesNotMatch(created[1].config.systemPrompt!, /Chief 专用说明/);
     assert.equal(created[1].labels?.['paseo-guys.bot'], 'researcher');
     assert.match(created[1].config.systemPrompt!, /资料同事|结论必须附资料来源/);

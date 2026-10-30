@@ -5,6 +5,7 @@ import { useRpc, useSettings } from '@getpaseo/plugin/client';
 import { ScrollView } from '@getpaseo/plugin/client/react-native';
 import { SettingsRow, SettingsAction, SettingsInput, SettingsSection, SidebarRow } from '@getpaseo/plugin/client/ui';
 import * as rpc from './shared/contracts.js';
+import { CHIEF_BOT_ID } from './shared/bot.js';
 import { Office } from './client/office.js';
 import { Tasks } from './client/tasks.js';
 import { BotConfiguration } from './client/bot-config.js';
@@ -25,10 +26,10 @@ function Bots({ navigation }: PluginScreenProps) {
   const readJournal = useRpc(rpc.readJournal);
   const settings = useSettings(rpc.settings);
   const [bots, setBots] = useState<RpcOutput<typeof rpc.listBots>['bots']>([]);
-  const [selected, select] = useState('chief');
-  const [newBotId, setNewBotId] = useState('chief');
-  const [name, setName] = useState('主 Bot');
-  const [role, setRole] = useState('澄清、分工、核对并负责最终交付');
+  const [selected, select] = useState(CHIEF_BOT_ID);
+  const [newBotId, setNewBotId] = useState('colleague');
+  const [name, setName] = useState('新同事');
+  const [role, setRole] = useState('明确专长与交付责任');
   const [prompt, setPrompt] = useState('');
   const [memory, setMemory] = useState('');
   const [entries, setEntries] = useState<{ id: string; kind: 'confirmed' | 'candidate'; content: string }[]>([]);
@@ -98,8 +99,9 @@ function Bots({ navigation }: PluginScreenProps) {
       })} />
     </SettingsSection>
     <SettingsSection title="固定同事">
-      {bots.map(bot => <SettingsAction key={bot.id} label={bot.name} hint={bot.role} actionLabel="选择" disabled={busy} onPress={() => select(bot.id)} />)}
-      <SettingsInput label="新 Bot 标识（小写字母、数字、下划线、短横线）" initialValue="chief" onChangeText={setNewBotId} disabled={busy} />
+      <SettingsRow label="Chief 为固定主入口，可直接交办新事情；需长期专长时由 Chief 登记并协调同事，无须逐任务手工创建 Agent。" />
+      {bots.map(bot => <SettingsAction key={bot.id} label={`${bot.name}${bot.id === CHIEF_BOT_ID ? '（主入口）' : ''}`} hint={bot.role} actionLabel="选择" disabled={busy} onPress={() => select(bot.id)} />)}
+      <SettingsInput label="新 Bot 标识（小写字母、数字、下划线、短横线）" initialValue="colleague" onChangeText={setNewBotId} disabled={busy} />
       <SettingsInput label="名称" initialValue={name} onChangeText={setName} />
       <SettingsInput label="职责" initialValue={role} onChangeText={setRole} />
       <SettingsAction label="创建固定 Bot" actionLabel="创建" disabled={busy} onPress={() => void run(async () => { await create({ id: newBotId, name, role }); await refreshBots(); select(newBotId); })} />

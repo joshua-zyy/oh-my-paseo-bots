@@ -1,7 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { BotStore } from './store.js';
+import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, botExecutionSchema, type BotDetails } from '../shared/bot.js';
+import { botIdSchema, type BotStore } from './store.js';
 import type { TaskTracker } from './tasks.js';
 
 export interface ColleagueToolScope {
@@ -12,12 +13,52 @@ export interface ColleagueToolScope {
   start: (input: { botId: string; parentAgentId: string; requestId: string; title: string; prompt: string }) => Promise<{ agentId: string; requestId: string }>;
 }
 
-/** 仅目录与原生创建适配：身份由服务端绑定，不复制其他同事的记忆或历史。 */
+const editableExecution = botExecutionSchema.omit({ modeId: true }).strict();
+const editablePatch = z.strictObject({ ...botPatchSchema.shape, execution: editableExecution.optional() });
+
+/** 局部更新保留覆盖与显式执行模式；模型改变仅清除未重选的思考选项。 */
+function mergeExecution(current: BotDetails['execution'], patch: z.output<typeof editableExecution>) {
+  const next = { ...current, ...patch };
+  if (patch.provider !== undefined && patch.provider !== current.provider) {
+    if (patch.thinkingOptionId === undefined) delete next.thinkingOptionId;
+  }
+  return next;
+}
+
+/** 身份由服务端绑定；只适配业务元数据及原生创建，不复制同事历史。 */
 export function registerColleagueTools(server: McpServer, scope: ColleagueToolScope): void {
   const run = async (action: () => Promise<unknown>) => {
     try { return { content: [{ type: 'text' as const, text: JSON.stringify(await action()) }] }; }
     catch (error) { return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : '同事委派未完成' }] }; }
   };
+  server.registerTool('create_colleague', {
+    description: '仅 Chief 可登记一个确有长期职责且未重复的固定同事，不自动启动执行 Agent。id 是稳定小写标识，结果不确定时先查目录，不换标识重复创建。未指定执行配置沿用创建者；模型、思考和目录仅按用户要求或现有授权选择，不提供账户、工具权限或 modeId 授权。登记后用 delegate_to_colleague 交办实际工作。',
+    inputSchema: {
+      id: botIdSchema,
+      name: botDetailsSchema.shape.name,
+      role: botDetailsSchema.shape.role,
+      instructions: botDetailsSchema.shape.instructions,
+      execution: editableExecution.optional(),
+    },
+  }, input => run(async () => {
+    if (scope.botId !== CHIEF_BOT_ID) throw new Error('只有 Chief 可创建固定同事，请将需要告知 Chief');
+    await scope.tasks.requireActive(scope.botId, scope.agentId);
+    const creator = (await scope.store.getBot(scope.botId))!;
+    const record = await scope.store.createBot({ ...input, execution: mergeExecution(creator.bot.execution, input.execution ?? {}) });
+    return { id: record.bot.id, name: record.bot.name, role: record.bot.role, started: false };
+  }));
+  server.registerTool('update_colleague', {
+    description: '修改固定同事的名称、职责、长期说明及已有模型/目录/思考配置。普通同事只可修改自己，Chief 可修改团队同事；不接受 modeId、账户或权限字段。patch 只提交需要修改的字段，执行配置局部合并，模型改变仅清除未重选的思考选项；已有显式执行模式保留，若不兼容须由用户配置。仅影响之后的新会话，不重写已有执行会话。',
+    inputSchema: { colleagueId: botIdSchema.optional(), patch: editablePatch },
+  }, input => run(async () => {
+    const botId = input.colleagueId ?? scope.botId;
+    if (botId !== scope.botId && scope.botId !== CHIEF_BOT_ID) throw new Error('只有 Chief 可调整其他固定同事');
+    await scope.tasks.requireActive(scope.botId, scope.agentId);
+    const bot = await scope.store.updateBot(botId, current => input.patch.execution
+      ? { ...input.patch, execution: mergeExecution(current.execution, input.patch.execution) }
+      : input.patch);
+    return { id: bot.id, name: bot.name, role: bot.role };
+  }));
   server.registerTool('list_colleagues', {
     description: '查看其他已注册固定同事的标识、名称和职责；不读取其记忆、历史或账户配置。只按当前事项需要选择接收同事。',
     annotations: { readOnlyHint: true },

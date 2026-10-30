@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** 首版固定主入口；显示名称与职责可以修改，不以名称判定协调身份。 */
+export const CHIEF_BOT_ID = 'chief';
+
 /** 只映射宿主已有执行配置，不保存 Provider 登录或新增授权。 */
 export const botExecutionSchema = z.object({
   provider: z.string().trim().regex(/^[^/\s]+\/.+$/, '使用宿主已有的 provider/model 标识').optional(),
