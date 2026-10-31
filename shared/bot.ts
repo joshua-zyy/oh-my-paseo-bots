@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { botCapabilitiesSchema } from './capabilities.js';
 
 /** 首版固定主入口；显示名称与职责可以修改，不以名称判定协调身份。 */
 export const CHIEF_BOT_ID = 'chief';
@@ -17,12 +18,14 @@ const botFields = z.object({
   role: z.string().min(1).max(200),
   instructions: z.string().max(24000),
   execution: botExecutionSchema,
+  capabilities: botCapabilitiesSchema,
 });
 
 /** 旧 Bot 不含新增字段时按空覆盖读取，不改写原文件。 */
 export const botDetailsSchema = botFields.extend({
   instructions: botFields.shape.instructions.default(''),
   execution: botExecutionSchema.default({}),
+  capabilities: botCapabilitiesSchema.default({ skills: [], mcpServers: {} }),
 });
 // Patch 不应用缺省值，避免只改名称时清空已有说明或执行配置。
 export const botPatchSchema = botFields.partial().refine(value => Object.values(value).some(item => item !== undefined), {

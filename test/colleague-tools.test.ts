@@ -51,7 +51,7 @@ const input = { colleagueId: 'research', requestId: 'research-1', title: '整理
 
 test('Chief可创建和调整固定同事，仅配置选定字段，不启动原生Agent或修改授权', async () => {
   await withColleagues(async ({ client, store, started }) => {
-    await store.updateBot('chief', { execution: { provider: 'creator/model', cwd: '/synthetic/chief', modeId: 'creator-mode', thinkingOptionId: 'high' } });
+    await store.updateBot('chief', { execution: { provider: 'creator/model', cwd: '/synthetic/chief', modeId: 'creator-mode', thinkingOptionId: 'high' }, capabilities: { skills: [{ name: 'chief-only', path: '/synthetic/chief/SKILL.md' }], mcpServers: { 'chief-only': { type: 'http', url: 'https://synthetic.invalid/mcp' } } } });
     const created = await client.callTool({ name: 'create_colleague', arguments: { id: 'editor', name: '校对', role: '核对数字', instructions: '逐项给出原文依据', execution: { provider: 'known/model', cwd: '/synthetic/editor' } } });
     assert.notEqual(created.isError, true, text(created));
     const catalog = await client.listTools();
@@ -70,6 +70,8 @@ test('Chief可创建和调整固定同事，仅配置选定字段，不启动原
     assert.equal(record.bot.instructions, '逐项给出原文依据');
     assert.deepEqual(record.bot.execution, { provider: 'known/model', cwd: '/synthetic/editor', modeId: 'user-selected-mode', thinkingOptionId: 'low' });
     assert.deepEqual(record.sessions, []);
+    assert.deepEqual(record.bot.capabilities, { skills: [], mcpServers: {} }, '新同事不自动继承 Chief 的技能或 MCP 连接范围');
+    assert.equal((await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'editor', patch: { capabilities: { mcpServers: { extra: { type: 'stdio', command: 'not-authorized' } } } } } })).isError, true, '模型管理工具不能自行追加新能力绑定');
     assert.equal(started.length, 0);
     assert.equal((await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'editor', patch: { execution: { modeId: 'unattended' } } } })).isError, true);
     assert.equal((await store.getBot('editor'))!.bot.execution.modeId, 'user-selected-mode');

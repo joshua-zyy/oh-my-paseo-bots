@@ -10,6 +10,34 @@ import { startBotSession } from '../server/sessions.js';
 const placement = (cwd: string) => ({ cwd, config: { provider: 'configured-provider/model' } });
 const tools = { mount: async (botId: string, agentId: string) => ({ type: 'http' as const, url: `http://127.0.0.1:1/bots/${botId}/${agentId}` }) };
 
+test('技能文件在原生创建前校验；已有宿主MCP保留，能力修改进入幂等指纹', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-capabilities-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: 'Chief', role: '核对' });
+    const { api, created } = fakePaseo();
+    const input = { botId: 'chief', requestId: 'capabilities', title: '核对', prompt: '仅合成技能' };
+    for (const path of ['./SKILL.md', join(directory, 'missing', 'SKILL.md'), directory]) {
+      await store.updateBot('chief', { capabilities: { skills: [{ name: 'synthetic', path }] } });
+      await assert.rejects(() => startBotSession(store, api, input, placement(directory), tools), /绝对路径|ENOENT|文件/);
+    }
+    assert.equal(created.length, 0);
+    assert.deepEqual(await store.listPendingCreations('chief'), [], '无效技能不派发原生执行或创建意图');
+    const path = join(directory, 'SKILL.md');
+    await writeFile(path, '---\nname: synthetic\ndescription: 合成技能\n---\n只读取本目录合成文件');
+    const selected = { type: 'http' as const, url: 'https://synthetic.invalid/selected' };
+    await store.updateBot('chief', { capabilities: { skills: [{ name: 'synthetic', path }], mcpServers: { selected } } });
+    const host = { ...placement(directory), config: { ...placement(directory).config, mcpServers: { existing: { type: 'http' as const, url: 'https://synthetic.invalid/host' } } } };
+    await startBotSession(store, api, input, host, tools);
+    assert.equal(created[0].config.mcpServers!.existing.type, 'http');
+    assert.deepEqual(created[0].config.mcpServers!.selected, selected);
+    assert.ok(created[0].config.mcpServers!['paseo-guys']);
+    await store.updateBot('chief', { capabilities: { skills: [{ name: 'synthetic', path }], mcpServers: { selected: { ...selected, url: 'https://synthetic.invalid/changed' } } } });
+    await assert.rejects(() => startBotSession(store, api, input, host, tools), (error: unknown) => error instanceof StoreError && error.code === 'request_conflict');
+    assert.equal(created.length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('同输入并发启动复用一个意图、Agent 和原生幂等键', { timeout: 5000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-concurrent-'));
   let release!: () => void;

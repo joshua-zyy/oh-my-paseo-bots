@@ -6,6 +6,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { BotStore, StoreError } from '../server/store.js';
+import { botCapabilitiesSchema } from '../shared/capabilities.js';
 
 const createdDirs: string[] = [];
 
@@ -100,6 +101,26 @@ describe('固定 Bot 身份', () => {
 });
 
 describe('Bot 独立配置兼容', () => {
+  it('能力按Bot持久化、保留和显式清空，拒绝覆盖系统MCP或夹带权限字段', async () => {
+    const { baseDir, store } = await makeStore();
+    const capabilities = botCapabilitiesSchema.parse({ skills: [{ name: 'check', path: '/synthetic/SKILL.md' }], mcpServers: {
+      local: { type: 'stdio', command: 'synthetic-command', args: ['--test'], env: { SYNTHETIC: '1' } },
+      remote: { type: 'http', url: 'https://synthetic.invalid/mcp', headers: { 'X-Synthetic': '1' }, alwaysLoad: true },
+      events: { type: 'sse', url: 'https://synthetic.invalid/sse' },
+    } });
+    await store.createBot({ id: 'reader', name: '资料', role: '核对', capabilities });
+    await store.createBot({ id: 'writer', name: '写作', role: '写作' });
+    await store.updateBot('reader', { name: '资料核对' });
+    assert.deepEqual((await new BotStore({ baseDir }).getBot('reader'))!.bot.capabilities, capabilities);
+    assert.deepEqual((await store.getBot('writer'))!.bot.capabilities, { skills: [], mcpServers: {} });
+    for (const mcpServers of [
+      { 'paseo-guys': { type: 'http', url: 'https://synthetic.invalid' } },
+      { paseo: { type: 'stdio', command: 'synthetic' } },
+      { extra: { type: 'stdio', command: 'synthetic', toolPolicy: { preapproved: [] } } },
+    ]) assert.equal(botCapabilitiesSchema.safeParse({ mcpServers }).success, false);
+    assert.deepEqual((await store.updateBot('reader', { capabilities: {} })).capabilities, { skills: [], mcpServers: {} });
+  });
+
   it('配置可持久化和整体清除覆盖，只改名称不会清空说明、记忆或会话', async () => {
     const { baseDir, store } = await makeStore();
     const execution = { provider: 'pi/model', cwd: baseDir, modeId: 'configured-mode', thinkingOptionId: 'high' };
@@ -131,10 +152,11 @@ describe('Bot 独立配置兼容', () => {
     const legacy = JSON.parse(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'));
     delete legacy.bot.instructions;
     delete legacy.bot.execution;
+    delete legacy.bot.capabilities;
     const before = JSON.stringify(legacy);
     await writeFile(path.join(baseDir, 'legacy.json'), before);
     const reloaded = await new BotStore({ baseDir }).getBot('legacy');
-    assert.deepEqual(reloaded?.bot, { ...legacy.bot, instructions: '', execution: {} });
+    assert.deepEqual(reloaded?.bot, { ...legacy.bot, instructions: '', execution: {}, capabilities: { skills: [], mcpServers: {} } });
     assert.equal(reloaded?.sessions[0].sessionId, 'legacy-native');
     assert.equal(reloaded?.memories[0].content, '保留旧记忆');
     assert.equal(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'), before);
@@ -439,7 +461,7 @@ describe('持久化形态', () => {
 
     const parsed = JSON.parse(await readFile(path.join(baseDir, 'chief.json'), 'utf8'));
     assert.deepEqual(Object.keys(parsed).sort(), ['bot', 'creationIntents', 'memories', 'schemaVersion', 'sessions']);
-    assert.deepEqual(Object.keys(parsed.bot).sort(), ['createdAt', 'execution', 'id', 'instructions', 'name', 'role', 'updatedAt']);
+    assert.deepEqual(Object.keys(parsed.bot).sort(), ['capabilities', 'createdAt', 'execution', 'id', 'instructions', 'name', 'role', 'updatedAt']);
     assert.deepEqual(Object.keys(parsed.sessions[0]).sort(), ['linkedAt', 'sessionId', 'title', 'workspaceId']);
     assert.deepEqual(Object.keys(parsed.memories[0]).sort(), [
       'confirmedAt',

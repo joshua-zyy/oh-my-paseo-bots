@@ -48,12 +48,13 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 
 ## 配置与持久化
 
-配置字段以 [shared/bot.ts](shared/bot.ts)、[shared/contracts.ts](shared/contracts.ts) 和 [shared/office.ts](shared/office.ts) 为准；路径、进程环境与外部连接器均属于 daemon 机器，不属于远程客户端。
+配置字段以 [shared/bot.ts](shared/bot.ts)、[shared/capabilities.ts](shared/capabilities.ts)、[shared/contracts.ts](shared/contracts.ts) 和 [shared/office.ts](shared/office.ts) 为准；路径、进程环境与外部连接器均属于 daemon 机器，不属于远程客户端。
 
 | 配置面 | 关键字段与条件 |
 | --- | --- |
 | 宿主 `bots` | 默认 `cwd`／`provider`／模式与思考选项；跟进需 `paseoCommand` 和当前 daemon 的绝对 `paseoHome`（后者可由 `PASEO_HOME` 提供） |
 | Bot 身份与执行 | `instructions` 为长期说明；`execution` 可覆盖 `provider`、绝对 `cwd`、`modeId`、`thinkingOptionId`。旧存档默认空说明与空覆盖；普通开始与固定同事委派使用同一映射 |
+| Bot 既有能力 | `capabilities.skills` 为 `{name, description, path}` 的已有 SKILL.md 索引，`path` 使用宿主绝对路径；`capabilities.mcpServers` 沿用宿主 stdio/http/sse 配置，不接管连接器生命周期或原生工具审批 |
 | Bot Gmail | `command`、现有登录目录 `configDir`、预期 `account`、固定允许 `query`；适配基线 `gws 0.22.5` |
 | Bot 飞书 | `command`／`args`、`appId`、`secretEnv` 或 `secretFile`、`documentIds`／`wikiTokens`；适配基线 `lark-mcp 0.5.1` |
 | 业务数据 | 默认 `~/.paseo-guys`，可由 `PASEO_GUYS_DATA_DIR` 指定；单 daemon、单插件实例写入，不复制原生聊天历史 |
@@ -61,7 +62,9 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 
 `bots.update` 按字段修改身份和说明，提供 `execution` 时整体替换执行覆盖，空对象恢复宿主默认。修改只影响新会话，不重配已有原生执行；有效配置参与创建请求指纹。同一模型未指定的模式／思考选项继承宿主默认，改选不同模型时使用其原生默认；显式 `null` 清除对应宿主选项。
 
-`create_colleague` 仅服务端绑定的 Chief 可调用，登记固定身份但不自动开工；未指定执行字段沿用创建者配置，不复制记忆或历史。`update_colleague` 允许普通同事改自己、Chief 改团队；执行字段局部合并，而非 RPC 的整体替换。工具仅开放模型、目录与思考选项，不开放 `modeId`、账户或工具授权；换模型保留已有显式执行模式，由宿主校验兼容性，仅清除未重选的思考选项。两类写工具都要求当前事项仍在进行。
+`capabilities` 独立于 `execution`，由用户配置，提供时整体替换；旧存档读取为空技能与空 MCP，不改写旧文件。技能只在提示中列索引，使用时由原生 Agent 读取原文件，不复制正文、安装技能或修改工作树。MCP 配置交给原生创建，`paseo`／`paseo-guys` 为保留名称，传输环境和认证头不放进技能提示；配置会保存在本地 Bot 数据中，不应写入无关凭据。绑定叠加于宿主能力，不移除全局技能或 MCP，不代表沙箱或新增账户授权。
+
+`create_colleague` 仅服务端绑定的 Chief 可调用，登记固定身份但不自动开工；未指定执行字段沿用创建者配置，不复制记忆、历史或能力绑定。`update_colleague` 允许普通同事改自己、Chief 改团队；执行字段局部合并，而非 RPC 的整体替换。工具仅开放模型、目录与思考选项，不开放能力绑定、`modeId`、账户或工具授权；换模型保留已有显式执行模式，由宿主校验兼容性，仅清除未重选的思考选项。两类写工具都要求当前事项仍在进行。
 
 连接器由外部安装与登录，插件不创建 OAuth 服务。飞书使用与既有只读登录一致的 `offline_access docx:document:readonly` scope 选择续期路径，不开放默认写工具；`secretFile` 为单行密钥文件绝对路径，每次现读，指定后失败不回退环境变量。平台 keyring 行为不保证一致。
 

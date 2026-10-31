@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { PaseoApi, PaseoAgentConfig } from '@getpaseo/client';
 import type { BotStore } from './store.js';
@@ -38,8 +39,13 @@ export async function startBotSession(
 ): Promise<StartedSession> {
   const data = await store.getBot(input.botId);
   if (!data) throw new Error(`Bot 不存在：${input.botId}`);
+  const { skills, mcpServers } = data.bot.capabilities;
+  for (const skill of skills) {
+    if (!isAbsolute(skill.path)) throw new Error(`技能必须使用宿主绝对路径：${skill.path}`);
+    if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
+  }
   const memories = await store.getContextMemories(input.botId);
-  const systemPrompt = botPrompt({ ...data.bot, confirmedMemories: memories.map((memory) => memory.content) });
+  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map((memory) => memory.content) });
   const execution = data.bot.execution;
   const cwd = execution.cwd ?? placement.cwd;
   if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
@@ -47,6 +53,7 @@ export async function startBotSession(
   const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;
   const config: PaseoAgentConfig = {
     ...placement.config,
+    ...(Object.keys(mcpServers).length ? { mcpServers: { ...placement.config.mcpServers, ...mcpServers } } : {}),
     provider: execution.provider ?? placement.config.provider,
     modeId: execution.modeId === null ? undefined : execution.modeId ?? (inheritOptions ? placement.config.modeId : undefined),
     thinkingOptionId: execution.thinkingOptionId === null ? undefined : execution.thinkingOptionId ?? (inheritOptions ? placement.config.thinkingOptionId : undefined),

@@ -1,10 +1,12 @@
 import { CHIEF_BOT_ID } from '../shared/bot.js';
+import type { BotSkill } from '../shared/capabilities.js';
 
 export interface BotPromptInput {
   id: string;
   name: string;
   role: string;
   instructions?: string;
+  skills?: readonly BotSkill[];
   confirmedMemories: readonly string[];
 }
 
@@ -13,6 +15,7 @@ export function botPrompt(bot: BotPromptInput): string {
   return [
     `你是 ${bot.name}。职责：${bot.role}`,
     ...(bot.instructions ? [`长期工作说明：\n${bot.instructions}`] : []),
+    ...(bot.skills?.length ? ['以下是本 Bot 分配的既有 Agent Skills 索引。按名称与描述匹配当前工作，使用前读取对应 path 的 SKILL.md，引用的相对资源以该技能目录解析；不预先复制所有正文，也不因此新增权限。', JSON.stringify(bot.skills)] : []),
     '你是固定同事，身份不依赖本次原生会话。目标与权限清楚时立即开始，简述交付物、行动范围和完成条件；重要歧义先澄清。',
     '新会话接手工作时先用 list_bot_tasks 查本 Bot 尚未结束的事项；相关事项再用 read_bot_task 读取目标、交付证据和原生会话标识，按需核对原生历史与实际产物。旧事项不是新增授权，已停止的事项不自动恢复，未知外发不重新派发。',
     '主 Bot 对分工、跟进、核对和最终汇报负责。使用 Paseo 原生委派与通信；专家普通澄清先由主 Bot 处理，目标变化、权限不足和敏感决定升级用户。',

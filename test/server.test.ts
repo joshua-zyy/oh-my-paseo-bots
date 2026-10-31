@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PluginServerContext } from '@getpaseo/plugin/server';
@@ -218,8 +218,15 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const childClient = new Client({ name: 'fixed-colleague', version: '0' });
   const cleanup = contribute(server);
   try {
-    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '协调交付', instructions: 'Chief 专用说明', execution: { provider: 'chief-provider/model', cwd: join(directory, 'chief'), modeId: 'chief-mode', thinkingOptionId: 'chief-thinking' } });
-    await invoke('bots.create', { id: 'researcher', name: '资料同事', role: '核对资料', instructions: '资料同事专用说明', execution: { provider: 'research-provider/model', cwd: join(directory, 'researcher') } });
+    const rootSkill = join(directory, 'root-skill', 'SKILL.md');
+    const readerSkill = join(directory, 'reader-skill', 'SKILL.md');
+    await mkdir(join(directory, 'root-skill')); await mkdir(join(directory, 'reader-skill'));
+    await writeFile(rootSkill, '---\nname: chief-check\ndescription: Chief 合成技能\n---\nROOT-SKILL-BODY-ONLY');
+    await writeFile(readerSkill, '---\nname: reader-check\ndescription: 资料合成技能\n---\nREADER-SKILL-BODY-ONLY');
+    const rootServer = { type: 'http', url: 'http://127.0.0.1:31911/synthetic', headers: { Authorization: 'SYNTHETIC-ROOT-TRANSPORT-SECRET' } };
+    const readerServer = { type: 'stdio', command: 'synthetic-reader', args: ['--fixture'], env: { SYNTHETIC_ONLY: 'READER-TRANSPORT-SECRET' }, alwaysLoad: true };
+    await invoke('bots.create', { id: 'chief', name: '主 Bot', role: '协调交付', instructions: 'Chief 专用说明', execution: { provider: 'chief-provider/model', cwd: join(directory, 'chief'), modeId: 'chief-mode', thinkingOptionId: 'chief-thinking' }, capabilities: { skills: [{ name: 'chief-check', description: 'Chief 合成技能', path: rootSkill }], mcpServers: { 'chief-helper': rootServer } } });
+    await invoke('bots.create', { id: 'researcher', name: '资料同事', role: '核对资料', instructions: '资料同事专用说明', execution: { provider: 'research-provider/model', cwd: join(directory, 'researcher') }, capabilities: { skills: [{ name: 'reader-check', description: '资料合成技能', path: readerSkill }], mcpServers: { 'reader-helper': readerServer } } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '主 Bot 的无关记忆' });
     await invoke('bots.memory.save', { botId: 'researcher', kind: 'confirmed', content: '结论必须附资料来源' });
     const root = await invoke('bots.start', { botId: 'chief', title: '整理合成资料', prompt: '请分工核对指定资料并形成报告' }) as { agentId: string };
@@ -228,6 +235,10 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(created[0].config.modeId, 'chief-mode');
     assert.equal(created[0].config.thinkingOptionId, 'chief-thinking');
     assert.match(created[0].config.systemPrompt!, /Chief 专用说明/);
+    assert.deepEqual(created[0].config.mcpServers!['chief-helper'], rootServer);
+    assert.equal(created[0].config.mcpServers!['reader-helper'], undefined);
+    assert.match(created[0].config.systemPrompt!, /chief-check/);
+    assert.doesNotMatch(created[0].config.systemPrompt!, /reader-check|TRANSPORT-SECRET|SKILL-BODY-ONLY/);
     const tools = created[0].config.mcpServers!['paseo-guys'];
     if (tools.type !== 'http') throw new Error('expected HTTP tools');
     await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
@@ -246,6 +257,10 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(created[1].config.provider, 'research-provider/model');
     assert.equal(created[1].config.modeId, undefined, '模型改选后不套用另一模型的宿主模式');
     assert.equal(created[1].config.thinkingOptionId, undefined);
+    assert.deepEqual(created[1].config.mcpServers!['reader-helper'], readerServer);
+    assert.equal(created[1].config.mcpServers!['chief-helper'], undefined);
+    assert.match(created[1].config.systemPrompt!, /reader-check/);
+    assert.doesNotMatch(created[1].config.systemPrompt!, /chief-check|TRANSPORT-SECRET|SKILL-BODY-ONLY/);
     assert.match(created[1].config.systemPrompt!, /资料同事专用说明/);
     assert.match(created[1].config.systemPrompt!, /只修改自己/);
     assert.doesNotMatch(created[1].config.systemPrompt!, /团队固定 Chief/);

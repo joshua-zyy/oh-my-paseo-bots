@@ -14,7 +14,12 @@ export interface ColleagueToolScope {
 }
 
 const editableExecution = botExecutionSchema.omit({ modeId: true }).strict();
-const editablePatch = z.strictObject({ ...botPatchSchema.shape, execution: editableExecution.optional() });
+const editablePatch = z.strictObject({
+  name: botPatchSchema.shape.name,
+  role: botPatchSchema.shape.role,
+  instructions: botPatchSchema.shape.instructions,
+  execution: editableExecution.optional(),
+});
 
 /** 局部更新保留覆盖与显式执行模式；模型改变仅清除未重选的思考选项。 */
 function mergeExecution(current: BotDetails['execution'], patch: z.output<typeof editableExecution>) {
