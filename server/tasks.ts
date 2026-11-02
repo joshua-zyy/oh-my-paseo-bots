@@ -473,6 +473,24 @@ export class TaskTracker {
       }
       if (prepared.status === 'canceled' || prepared.status === 'completed') return view(prepared);
 
+      if (value.outcome === 'completed') {
+        const paseo = this.getPaseo();
+        const child = await paseo.agents.ref(aid).refresh();
+        const parentId = child?.agent.labels?.['paseo.parent-agent-id'];
+        if (parentId) {
+          const parent = await paseo.agents.ref(parentId).refresh();
+          const parentBotId = parent?.agent.labels?.['paseo-guys.bot'];
+          const parentTask = parentBotId ? await this.get(parentBotId, parentId) : null;
+          if (parentTask?.status === 'active' && !parent?.agent.archivedAt && parentTask.specialists.includes(aid)) {
+            // SDK parent only sets ownership; report before archive interrupts the child turn.
+            await paseo.agents.ref(parentId).send(
+              `固定同事 ${id} 已保存子事项交付报告。请核对实际产物和主事项的完成条件，不把回报当成整个主事项完成。\n${JSON.stringify({ agentId: aid, title: prepared.title, summary: prepared.summary, evidence: prepared.evidence })}`,
+              { sourceAgentId: aid, activeTurnBehavior: 'steer', messageId: `paseo-guys:delivery:${aid}` },
+            );
+          }
+        }
+      }
+
       try {
         await this.getPaseo().agents.ref(aid).archive();
       } catch (error) {

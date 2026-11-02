@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PluginServerContext } from '@getpaseo/plugin/server';
 import type { PluginRpcContract } from '@getpaseo/plugin';
-import type { PaseoApi, PaseoAgentCreateOptions } from '@getpaseo/client';
+import type { PaseoApi, PaseoAgentCreateOptions, PaseoAgentSendOptions } from '@getpaseo/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import contribute from '../index.server.js';
@@ -205,6 +205,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
   const created: PaseoAgentCreateOptions[] = [];
   const opened: string[] = [];
+  const nativeEvents: { kind: 'send' | 'archive'; agentId: string; text?: string; options?: PaseoAgentSendOptions }[] = [];
   const createNative = async (options: PaseoAgentCreateOptions, workspaceCwd?: string) => {
     // 实机已证实：未显式放置的子 Agent 会继承父 workspace，cwd 参数不改变归属。
     const parent = created.find(item => item.agentId === options.parent);
@@ -216,10 +217,20 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     return { agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => createNative({ ...options, cwd }, cwd) } };
   } }, agents: {
     create: createNative,
-    ref: (id: string) => ({ refresh: async () => {
-      const options = created.find(item => item.agentId === id);
-      return options ? { agent: { id, title: options.title, workspaceId: 'ws-team', labels: { ...options.labels, ...(options.parent ? { 'paseo.parent-agent-id': options.parent } : {}) } } } : null;
-    } }),
+    ref: (id: string) => ({
+      send: async (text: string, options?: PaseoAgentSendOptions) => {
+        nativeEvents.push({ kind: 'send', agentId: id, text, options });
+        const tasks = await invoke('bots.tasks', { botId: 'researcher' }) as { agentId: string; status: string; evidence: string[] }[];
+        const report = tasks.find(task => task.agentId === options?.sourceAgentId)!;
+        assert.equal(report.status, 'stopping', '回报前已保存交付，当前子 Agent 尚未归档');
+        assert.deepEqual(report.evidence, ['findings.md']);
+      },
+      archive: async () => { nativeEvents.push({ kind: 'archive', agentId: id }); return { archivedAt: 'now' }; },
+      refresh: async () => {
+        const options = created.find(item => item.agentId === id);
+        return options ? { agent: { id, title: options.title, workspaceId: 'ws-team', labels: { ...options.labels, ...(options.parent ? { 'paseo.parent-agent-id': options.parent } : {}) } } } : null;
+      },
+    }),
   } } as unknown as PaseoApi;
   const server = {
     registerSettings: () => ({ read: async () => ({ status: 'ready', revision: 'r1', values: { cwd: directory, provider: 'configured/model', modeId: 'host-mode', thinkingOptionId: 'host-thinking' } }) }),
@@ -319,6 +330,27 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(created[2].config.thinkingOptionId, 'host-thinking');
     assert.match(created[2].config.systemPrompt!, /更新后的资料同事说明/);
     assert.equal(created[1].config.provider, 'research-provider/model', '编辑只作用于新会话');
+    const deliveryTools = created[2].config.mcpServers!['paseo-guys'];
+    if (deliveryTools.type !== 'http') throw new Error('expected HTTP tools');
+    const deliveryClient = new Client({ name: 'colleague-delivery', version: '0' });
+    try {
+      await deliveryClient.connect(new StreamableHTTPClientTransport(new URL(deliveryTools.url), { requestInit: { headers: deliveryTools.headers } }));
+      const report = { summary: '资料已核对并写入 findings.md', evidence: ['findings.md'] };
+      const result = await deliveryClient.callTool({ name: 'complete_task', arguments: report });
+      assert.equal(result.isError, undefined);
+      assert.equal(payload(result).status, 'completed');
+      assert.deepEqual(nativeEvents.map(({ kind, agentId }) => ({ kind, agentId })), [
+        { kind: 'send', agentId: root.agentId }, { kind: 'archive', agentId: next.agentId },
+      ], '固定同事的实际交付先通过原生通信回报 Chief，再归档');
+      assert.deepEqual(nativeEvents[0].options, { sourceAgentId: next.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:delivery:${next.agentId}` });
+      const returned = JSON.parse(nativeEvents[0].text!.split('\n')[1]);
+      assert.deepEqual(returned, { agentId: next.agentId, title: request.title, ...report });
+      assert.doesNotMatch(nativeEvents[0].text!, /主 Bot 的无关记忆|TRANSPORT-SECRET|SKILL-BODY-ONLY/);
+      assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '子交付回报不自动完成 Chief 事项');
+      await deliveryClient.callTool({ name: 'complete_task', arguments: report });
+      assert.equal(nativeEvents.length, 2, '重复完成不重复回报或归档');
+      assert.equal(created.length, 3, '回报沿用原生通信，不创建新执行 Agent');
+    } finally { await deliveryClient.close(); }
   } finally {
     await client.close(); await childClient.close(); await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;

@@ -18,7 +18,7 @@ async function withTasks(run: (fixture: { tracker: TaskTracker; reopen: () => Ta
     baseDir: dir,
     store: new BotStore({ baseDir: join(dir, 'store') }),
     cli: { command: 'unused', cwd: dir },
-    getPaseo: () => ({ agents: { ref: (agentId: string) => ({ archive: async () => {
+    getPaseo: () => ({ agents: { ref: (agentId: string) => ({ refresh: async () => ({ agent: { id: agentId, labels: {} } }), archive: async () => {
       if (agentId === 'agent-stopping') throw new Error('offline archive pending');
       return { archivedAt: 'now' };
     } }) } }) as unknown as PaseoApi,

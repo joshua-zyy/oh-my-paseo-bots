@@ -39,7 +39,7 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     inputSchema: { name: z.string().min(1), prompt: z.string().min(1), cron: z.string().min(1), timezone: z.string().min(1) },
   }, input => run(() => tasks.follow(botId, agentId, input)));
   server.registerTool('complete_task', {
-    description: '仅当约定交付条件已满足时保存 summary 和 evidence。普通事项随后停止跟进并归档；独立例程只保存本次报告，随后正常回复，让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据，不以费用或轮次数自动完成。',
+    description: '仅当约定交付条件已满足时保存 summary 和 evidence。普通子事项先经原生通信向仍进行中的委派事项回报摘要与证据；普通事项随后停止跟进并归档。独立例程只保存本次报告，随后正常回复，让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据，不以费用或轮次数自动完成。',
     inputSchema: { summary: z.string().trim().min(1), evidence: z.array(z.string().trim().min(1)).min(1) },
   }, input => run(() => tasks.stop(botId, agentId, { ...input, outcome: 'completed' })));
   if (cancelExplicit) server.registerTool('cancel_task', {

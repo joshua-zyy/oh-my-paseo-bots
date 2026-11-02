@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import type { PaseoApi } from '@getpaseo/client';
+import type { PaseoApi, PaseoAgentSendOptions } from '@getpaseo/client';
 
 import { BotStore } from '../server/store.js';
 import { TaskError, TaskTracker, type TaskCli, type TaskErrorCode, type TaskExecute } from '../server/tasks.js';
@@ -56,11 +56,15 @@ class FakeCli {
 
 class FakePaseo {
   readonly archived: string[] = [];
+  readonly labels = new Map<string, Record<string, string>>();
+  readonly sent: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
   behavior: { archive?: (agentId: string) => Promise<{ archivedAt: string }> } = {};
 
   readonly api = {
     agents: {
       ref: (agentId: string) => ({
+        refresh: async () => ({ agent: { id: agentId, labels: this.labels.get(agentId) ?? {} } }),
+        send: async (text: string, options?: PaseoAgentSendOptions) => { this.sent.push({ agentId, text, options }); },
         archive: async () => {
           this.archived.push(agentId);
           if (this.behavior.archive) return this.behavior.archive(agentId);
@@ -68,7 +72,7 @@ class FakePaseo {
         },
       }),
     },
-    // SAFETY: 测试只提供 stop() 用到的 agents.ref().archive 两个成员。
+    // Offline native snapshots, delivery and archiving only.
   } as unknown as PaseoApi;
 }
 
@@ -245,6 +249,21 @@ describe('原生跟进关联', () => {
     assert.equal(observed?.summary, completed.summary);
     assert.deepEqual(observed?.evidence, completed.evidence);
     assert.deepEqual(completed.evidence, ['report.md']);
+  });
+
+  it('已停止的父事项不会被固定同事的完成回报重新唤醒', async () => {
+    for (const outcome of ['canceled', 'completed'] as const) {
+      const { tracker, paseo } = await setup();
+      await tracker.ensure('chief', 'agent-chief', { title: '主事项' });
+      await tracker.ensure('other', 'agent-other', { title: '子事项' });
+      await tracker.observeSpecialist('chief', 'agent-chief', 'agent-other');
+      paseo.labels.set('agent-other', { 'paseo.parent-agent-id': 'agent-chief' });
+      paseo.labels.set('agent-chief', { 'paseo-guys.bot': 'chief' });
+      await tracker.stop('chief', 'agent-chief', { outcome, summary: '主事项已停止', evidence: ['report.md'] });
+      await tracker.stop('other', 'agent-other', { outcome: 'completed', summary: '子事项已交付', evidence: ['findings.md'] });
+      assert.deepEqual(paseo.sent, []);
+      assert.equal((await tracker.get('chief', 'agent-chief'))?.status, outcome);
+    }
   });
 
   it('follow 先落盘意图再调用原生 CLI，回执后置 active', async () => {
