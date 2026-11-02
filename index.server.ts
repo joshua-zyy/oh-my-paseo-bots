@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
 import { BotJournal } from './server/journal.js';
-import { startBotSession, type SessionInput } from './server/sessions.js';
+import { botSessionConfig, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
 import { rememberExplicit, latestUserMessage } from './server/memory.js';
 import type { PaseoApi } from '@getpaseo/client';
@@ -14,6 +14,8 @@ import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
 import { TaskTracker } from './server/tasks.js';
 import * as taskRpc from './shared/tasks.js';
+import { BotRoutines } from './server/routines.js';
+import * as routineRpc from './shared/routines.js';
 
 export default function contribute(server: PluginServerContext) {
   const baseDir = process.env.PASEO_GUYS_DATA_DIR ?? join(homedir(), '.paseo-guys');
@@ -38,7 +40,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, startColleague: async input => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, readContext: (botId, agentId) => routines.context(botId, agentId), startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
   }, cancelExplicit: async (botId, agentId, quote) => {
@@ -52,6 +54,15 @@ export default function contribute(server: PluginServerContext) {
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
   server.handle(taskRpc.listTasks, input => tasks.list(input.botId));
+  server.handle(routineRpc.listRoutines, input => routines.list(input.botId));
+  server.handle(routineRpc.createRoutine, input => routines.create(input.botId, input));
+  server.handle(routineRpc.pauseRoutine, input => routines.action(input.botId, input.routineId, 'pause'));
+  server.handle(routineRpc.resumeRoutine, input => routines.action(input.botId, input.routineId, 'resume'));
+  server.handle(routineRpc.runRoutine, input => routines.action(input.botId, input.routineId, 'run-once'));
+  server.handle(routineRpc.cancelRoutine, async (input, { paseo }) => {
+    currentPaseo = paseo;
+    return routines.cancel(input.botId, input.routineId);
+  });
   server.handle(taskRpc.cancelTask, async (input, { paseo }) => {
     currentPaseo = paseo;
     await tasks.ensure(input.botId, input.agentId, { title: input.agentId });
@@ -119,17 +130,28 @@ export default function contribute(server: PluginServerContext) {
       },
     });
   }
+  const routines = new BotRoutines({ baseDir, store, tasks, cli: async () => {
+    const state = await settings.read();
+    if (state.status !== 'ready') throw new Error('请先设置宿主原生 CLI 与目录');
+    const home = state.values.paseoHome ?? process.env.PASEO_HOME;
+    if (!state.values.paseoCommand || !home || !isAbsolute(home)) throw new Error('独立例程需配置当前 daemon 的 CLI 命令及绝对 home');
+    return { command: state.values.paseoCommand, home, cwd: state.values.cwd };
+  }, defaults: async () => {
+    const state = await settings.read();
+    if (state.status !== 'ready') throw new Error('Bot 执行设置无效');
+    return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId } };
+  } });
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(agent.id).refresh();
-    const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
+    const botId = snapshot?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(agent.id);
     let parentBotId: string | null = null;
     let parentId = agent.parentAgentId;
     const seen = new Set<string>([agent.id]);
     while (parentId && !seen.has(parentId)) {
       seen.add(parentId);
       const parent = await context.paseo.agents.ref(parentId).refresh();
-      const owner = parent?.agent.labels?.['paseo-guys.bot'];
+      const owner = parent?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(parentId);
       if (owner && await store.getBot(owner)) {
         try {
           await store.linkSession(owner, { sessionId: parentId, title: parent!.agent.title, workspaceId: parent!.agent.workspaceId });
@@ -150,6 +172,14 @@ export default function contribute(server: PluginServerContext) {
   }
   const opened = server.before('agent.session_open', async ({ request }, context) => {
     currentPaseo = context.paseo;
+    if (request.labels?.['paseo.schedule-id']) {
+      const routine = await routines.bind(request);
+      if (!routine) return;
+      const bot = await store.getBot(routine.botId);
+      if (!bot) throw new Error('例程绑定的 Bot 不存在');
+      const config = await botSessionConfig(store, routine.botId, { cwd: request.cwd, config: { provider: request.provider } }, 'routine');
+      return { ...request, mcpServers: { ...request.mcpServers, ...config.config.mcpServers, 'paseo-guys': await mcp.mount(routine.botId, request.agentId) } };
+    }
     try {
       const snapshot = await context.paseo.agents.ref(request.agentId).refresh();
       const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
@@ -166,7 +196,7 @@ export default function contribute(server: PluginServerContext) {
   const archived = server.on('agent.archived', async (event, context) => {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(event.agent.id).refresh();
-    const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
+    const botId = snapshot?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(event.agent.id);
     if (botId && await store.getBot(botId)) {
       await tasks.observeArchived(botId, event.agent.id);
       const requestId = snapshot?.agent.labels?.['paseo-guys.request'];

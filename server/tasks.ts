@@ -10,8 +10,8 @@ import { botIdPattern, type BotStore } from './store.js';
  * A06/A08 的最小原生跟进关联：只记录「这个 Bot 事项」与原生会话、原生 heartbeat 的对应关系，
  * 不实现调度器、队列、Provider runner 或协作总线。
  *
- * - 例程一律通过公开 CLI 的 `heartbeat create` 建立，绑定到本事项的 Agent；不由插件保存
- *   原生 schedules，也不私造 RPC。
+ * - 本模块的事项跟进通过公开 CLI 的 `heartbeat create` 建立，绑定到当前 Agent；独立
+ *   new-agent 例程的归属适配见 routines.ts，不由本模块保存原生 schedules 或私造 RPC。
  * - 创建前先落盘意图（固定 --name），回执丢失只标 unknown；CLI 不提供 upsert，不盲重试。
  * - 停止先落盘 stopping（立刻拒绝新推进），再 `agents.ref(agentId).archive()`；archive 会把
  *   包括 ID 未知的 heartbeat 一并完成，随后尽量 delete 已知原生 id。
@@ -20,7 +20,7 @@ import { botIdPattern, type BotStore } from './store.js';
 
 const SCHEMA_VERSION = 1;
 
-export type TaskStatus = 'active' | 'stopping' | 'canceled' | 'completed';
+export type TaskStatus = 'active' | 'stopping' | 'canceled' | 'completed' | 'awaiting_review';
 export type FollowupStatus = 'pending' | 'active' | 'unknown' | 'inactive' | 'deleted';
 
 /** 一条原生 heartbeat 例程。`key` 同时是 `--name`，用于事项内的本地幂等关联。 */
@@ -47,6 +47,7 @@ export interface TaskRecord {
   followups: TaskFollowup[];
   /** 只记录原生父子 id 关系，不复制专家历史或记忆。 */
   specialists: string[];
+  routine?: { id: string; runId: string; prompt: string };
 }
 
 export interface TaskDocument {
@@ -104,7 +105,7 @@ export class TaskError extends Error {
   }
 }
 
-const TASK_STATUSES = ['active', 'stopping', 'canceled', 'completed'] as const;
+const TASK_STATUSES = ['active', 'stopping', 'canceled', 'completed', 'awaiting_review'] as const;
 const FOLLOWUP_STATUSES = ['pending', 'active', 'unknown', 'inactive', 'deleted'] as const;
 const CLI_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT = 4 * 1024 * 1024;
@@ -120,7 +121,8 @@ const timezoneSchema = text(100).refine(
 const evidenceSchema = z.array(text(500)).max(20);
 
 const titleSchema = z.string().trim().min(1);
-const ensureSchema = z.object({ title: titleSchema, goal: text(2000).optional() });
+const routineSchema = z.object({ id: z.uuid(), runId: text(200), prompt: text(8000) });
+const ensureSchema = z.object({ title: titleSchema, goal: text(2000).optional(), routine: routineSchema.optional() });
 const followSchema = z.object({
   name: text(120),
   prompt: text(8000),
@@ -158,6 +160,7 @@ const taskSchema = z.object({
   detail: text(2000).optional(),
   followups: z.array(followupSchema),
   specialists: z.array(agentIdSchema),
+  routine: routineSchema.optional(),
 });
 const documentSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION),
@@ -224,6 +227,7 @@ function view(task: TaskRecord): TaskRecord {
     evidence: task.evidence ? [...task.evidence] : undefined,
     followups: task.followups.map((followup) => ({ ...followup })),
     specialists: [...task.specialists],
+    ...(task.routine ? { routine: { ...task.routine } } : {}),
   };
 }
 
@@ -278,7 +282,7 @@ export class TaskTracker {
   }
 
   /** 幂等关联已存在的 Bot 会话（或创建意图）；不会创建会话，也不复制记忆。 */
-  async ensure(botId: string, agentId: string, input: { title: string; goal?: string }): Promise<TaskRecord> {
+  async ensure(botId: string, agentId: string, input: { title: string; goal?: string; routine?: TaskRecord['routine'] }): Promise<TaskRecord> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(agentIdSchema, agentId, 'agentId');
     const value = parseInput(ensureSchema, input, 'task');
@@ -287,9 +291,16 @@ export class TaskTracker {
     return this.withFileLock(id, async () => {
       const document = await this.readDocument(id);
       const existing = document.tasks.find((task) => task.agentId === aid);
-      if (existing) return view(existing);
+      if (existing) {
+        if (value.routine && !existing.routine) {
+          existing.routine = value.routine;
+          await this.writeDocument(id, document);
+        }
+        return view(existing);
+      }
       const task: TaskRecord = { agentId: aid, title: value.title, status: 'active', followups: [], specialists: [] };
       if (value.goal !== undefined) task.goal = value.goal;
+      if (value.routine !== undefined) task.routine = value.routine;
       document.tasks.push(task);
       await this.writeDocument(id, document);
       return view(task);
@@ -322,8 +333,8 @@ export class TaskTracker {
       if (!task) return null;
       // stop() 自己归档时已是 stopping，其最终完成/取消结论仍由原请求写入。
       if (task.status !== 'active') return view(task);
-      task.status = 'canceled';
-      task.detail = '原生会话已归档，本事项已停止推进';
+      task.status = task.routine ? 'awaiting_review' : 'canceled';
+      task.detail = task.routine ? '原生例程会话已收尾归档，尚无满足交付条件的完成报告；请核对原生结果' : '原生会话已归档，本事项已停止推进';
       for (const followup of task.followups) {
         if (followup.status === 'deleted' || followup.status === 'inactive') continue;
         followup.status = 'inactive';
@@ -438,6 +449,15 @@ export class TaskTracker {
         const document = await this.readDocument(id);
         const task = requireTask(document, aid, id);
         if (task.status === 'canceled' || task.status === 'completed') return task;
+        if (task.routine && value.outcome === 'completed') {
+          if (task.status !== 'active') throw new TaskError('task_not_active', '已停止的例程运行不能再报告完成');
+          task.status = 'completed';
+          task.summary = value.summary;
+          task.evidence = value.evidence;
+          task.detail = '已保存本次交付报告；由原生调度正常收尾，不提前归档当前会话';
+          await this.writeDocument(id, document);
+          return task;
+        }
         task.status = 'stopping';
         task.detail = '正在停止：原生 archive 进行中，期间不再接受新的推进';
         // 先把用户上报的结果落盘，避免 archive 之后的写入失败丢掉交付证据。
@@ -446,6 +466,11 @@ export class TaskTracker {
         await this.writeDocument(id, document);
         return task;
       });
+      if (prepared.routine && prepared.status === 'completed' && value.outcome === 'canceled') {
+        // A schedule can still be running after its delivery report. Stop execution without erasing that report.
+        await this.getPaseo().agents.ref(aid).archive();
+        return view(prepared);
+      }
       if (prepared.status === 'canceled' || prepared.status === 'completed') return view(prepared);
 
       try {

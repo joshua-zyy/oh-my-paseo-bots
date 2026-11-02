@@ -37,27 +37,7 @@ export async function startBotSession(
   placement: { cwd: string; config: PaseoAgentConfig },
   tools: Pick<BotMcp, 'mount'>,
 ): Promise<StartedSession> {
-  const data = await store.getBot(input.botId);
-  if (!data) throw new Error(`Bot 不存在：${input.botId}`);
-  const { skills, mcpServers } = data.bot.capabilities;
-  for (const skill of skills) {
-    if (!isAbsolute(skill.path)) throw new Error(`技能必须使用宿主绝对路径：${skill.path}`);
-    if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
-  }
-  const memories = await store.getContextMemories(input.botId);
-  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map((memory) => memory.content) });
-  const execution = data.bot.execution;
-  const cwd = execution.cwd ?? placement.cwd;
-  if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
-  // 改选模型不隐式沿用宿主默认选项；Bot 显式执行模式保留，由宿主校验，不为兼容性自动放宽。
-  const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;
-  const config: PaseoAgentConfig = {
-    ...placement.config,
-    ...(Object.keys(mcpServers).length ? { mcpServers: { ...placement.config.mcpServers, ...mcpServers } } : {}),
-    provider: execution.provider ?? placement.config.provider,
-    modeId: execution.modeId === null ? undefined : execution.modeId ?? (inheritOptions ? placement.config.modeId : undefined),
-    thinkingOptionId: execution.thinkingOptionId === null ? undefined : execution.thinkingOptionId ?? (inheritOptions ? placement.config.thinkingOptionId : undefined),
-  };
+  const { cwd, config, systemPrompt } = await botSessionConfig(store, input.botId, placement);
   const fingerprint = createHash('sha256')
     .update(
       stable({
@@ -101,6 +81,31 @@ export async function startBotSession(
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
   });
   return { agentId: agent.id, requestId: proposal.intent.requestId };
+}
+
+/** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' = 'interactive') {
+  const data = await store.getBot(botId);
+  if (!data) throw new Error(`Bot 不存在：${botId}`);
+  const { skills, mcpServers } = data.bot.capabilities;
+  for (const skill of skills) {
+    if (!isAbsolute(skill.path)) throw new Error(`技能必须使用宿主绝对路径：${skill.path}`);
+    if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
+  }
+  const memories = await store.getContextMemories(botId);
+  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
+  const execution = data.bot.execution;
+  const cwd = execution.cwd ?? placement.cwd;
+  if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
+  const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;
+  const config: PaseoAgentConfig = {
+    ...placement.config,
+    ...(Object.keys(mcpServers).length ? { mcpServers: { ...placement.config.mcpServers, ...mcpServers } } : {}),
+    provider: execution.provider ?? placement.config.provider,
+    modeId: execution.modeId === null ? undefined : execution.modeId ?? (inheritOptions ? placement.config.modeId : undefined),
+    thinkingOptionId: execution.thinkingOptionId === null ? undefined : execution.thinkingOptionId ?? (inheritOptions ? placement.config.thinkingOptionId : undefined),
+  };
+  return { cwd, config, systemPrompt };
 }
 
 /**

@@ -9,6 +9,7 @@ import { CHIEF_BOT_ID } from './shared/bot.js';
 import { Office } from './client/office.js';
 import { Tasks } from './client/tasks.js';
 import { BotConfiguration } from './client/bot-config.js';
+import { Routines } from './client/routines.js';
 
 function Bots({ navigation }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
@@ -144,6 +145,7 @@ function Bots({ navigation }: PluginScreenProps) {
     </SettingsSection>
     {bots.some(bot => bot.id === selected) && <Office key={selected} botId={selected} />}
     {bots.some(bot => bot.id === selected) && <Tasks key={`tasks:${selected}`} botId={selected} openAgent={navigation ? id => navigation.openAgent({ agentId: id }) : undefined} />}
+    {bots.some(bot => bot.id === selected) && <Routines key={`routines:${selected}`} botId={selected} openAgent={navigation ? id => navigation.openAgent({ agentId: id }) : undefined} />}
   </ScrollView>;
 }
 

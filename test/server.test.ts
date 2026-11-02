@@ -41,6 +41,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   const cleanup = contribute(server);
   try {
     assert.deepEqual(await invoke('bots.tools.status', {}), { state: 'idle' });
+    assert.ok(handlers.has('bots.routine.create'), '固定入口可登记独立原生例程');
     const seeded = await invoke('bots.list', {}) as { bots: { id: string; name: string }[] };
     assert.deepEqual(seeded.bots.map(bot => bot.id), ['chief'], '首次打开即有固定 Chief，不用手工注册');
     assert.equal(created.length, 0, '创建入口元数据不会自动调用模型');
@@ -83,6 +84,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
       const catalog = await client.listTools();
+      assert.ok(catalog.tools.some(tool => tool.name === 'get_bot_context'), '每次独立例程可读取当前固定身份、记忆和工作约束');
       assert.ok(catalog.tools.some(tool => tool.name === 'propose_mail'));
       assert.equal(catalog.tools.some(tool => /approve|allow_fixed/.test(tool.name)), false);
       const colleague = await client.callTool({ name: 'create_colleague', arguments: { id: 'helper', name: '核对同事', role: '复核资料', instructions: '结论附来源' } });

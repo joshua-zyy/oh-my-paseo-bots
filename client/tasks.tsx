@@ -25,7 +25,7 @@ export function Tasks({ botId, openAgent }: { botId: string; openAgent?: (id: st
     void list({ botId }).then(value => { if (active) setTasks(value); }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [botId, list]);
-  const status: Record<string, string> = { active: '进行中', stopping: '停止尚未确认', canceled: '已取消', completed: '主 Bot 已报告完成' };
+  const status: Record<string, string> = { active: '进行中', stopping: '停止尚未确认', canceled: '已取消', completed: '已报告完成', awaiting_review: '运行已结束，待核对交付' };
   return <SettingsSection title={`事项与原生跟进：${botId}`}>
     <SettingsRow label="取消事项会停止后续推进并归档对应原生会话与专家；Paseo 的单轮停止按钮只停止当前轮次。已准入的外发可能完成，未知结果仍可回查。" error={error || null} />
     <SettingsRow label="完成工具归档当前会话时可能中断收尾回复。交付摘要与证据保存在事项中，工作日志仍记录原生轮次的实际结果。" />

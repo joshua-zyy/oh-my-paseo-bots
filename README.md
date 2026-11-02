@@ -15,6 +15,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | 事项 | 插件关联的目标、状态、专家、跟进和交付证据；轮次结束不等于事项完成 |
 | 记忆 | 明确记忆与推断候选分开保存，仅确认内容用于新会话 |
 | 跟进 | 绑定事项 Agent 的原生 heartbeat；创建回执不证明已经执行 |
+| 独立例程 | 固定 Bot 关联的原生 new-agent schedule；每次执行建立新的事项与产物关联 |
 
 完整范围与 A01–A08 在本地 `docs/internal/PRODUCT.md`，不随 Git 分发；缺失时不能据本文推定或缩减验收范围。
 
@@ -28,6 +29,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、明确记忆来源核对、原生轮次观察日志 |
 | [server/mcp.ts](server/mcp.ts) | 插件内回环 HTTP MCP、稳定端点、Bot／Agent 凭证绑定与工具挂载 |
 | [server/tasks.ts](server/tasks.ts)、[server/task-tools.ts](server/task-tools.ts)、[server/colleague-tools.ts](server/colleague-tools.ts) | 事项状态、跨会话查询、原生跟进、固定同事配置与委派 |
+| [server/routines.ts](server/routines.ts)、[shared/routines.ts](shared/routines.ts)、[client/routines.tsx](client/routines.tsx) | 独立例程创建意图、原生调度控制、运行关联与结果展示 |
 | [server/office.ts](server/office.ts)、[server/office-tools.ts](server/office-tools.ts) | 按 Bot／事项绑定办公范围；Gmail、飞书及外发登记接入 |
 | [server/mail.ts](server/mail.ts)、[server/gmail.ts](server/gmail.ts)、[server/feishu.ts](server/feishu.ts) | 邮件状态与批准／撤销、gws 适配、lark-mcp 只读适配 |
 | [test/](test/)、[scripts/build.mjs](scripts/build.mjs) | 本地单元与离线契约测试、类型编译与双端 bundle 构建 |
@@ -43,6 +45,12 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
 
 `remember_explicit` 由服务端回查原生用户消息依据；推断只作候选，确认前不注入新会话。纠正记忆不擦除原生历史或备份。工作日志记录实际轮次观察，不自动判定事项完成。
+
+独立例程复用 `schedule create/inspect/pause/resume/run-once`，不另建调度器。创建意图先落盘，未知回执只回查唯一原生名称；首轮与重启恢复按 `paseo.schedule-id/run` 权威标签关联 Bot 和本次事项，再由打开钩子注入本次 HTTP MCP 与 Bot 选择的 MCP。动态 `get_bot_context` 给出当前身份、确认记忆、技能索引与本次目标，其结果不属于 system 层，也不构成宿主强制的开工屏障。
+
+例程模型、目录、模式与思考选项在创建时按共用 Bot 配置映射设置，后续由原生 schedule 决定；修改 Bot 执行设置后需新建例程并取消旧例程。身份、记忆、技能与 MCP 在每次打开时读取当前值。默认原生 local 工作区保留 Bot 目录中的产物，其他临时工作区的文件不能据路径直接认定为永久交付。启用上轮参考时只取同一目标、原生成功且已报告完成的有限摘要，仍需核对实际产物。
+
+例程 `complete_task` 保存本次交付报告后正常回复，由原生调度收尾归档；自动归档但没有完成报告的运行记为 `awaiting_review`，不标成用户取消。暂停只停未来触发；取消还停止当前关联执行，即使完成报告已经保存也不漏停或擦除报告。取消后的原生历史可继续读取。手动运行先返回本地派发状态，原生回执与实际结果分开显示；重载中断回执时保留未知，不自动重新触发。
 
 Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完整内容核对后固定实际标识。发送回执丢失且标识再次变化时，自动回查可能无法定位，仍保留未知并升级人工核对。来源／草稿核对期间撤销不能被迟到结果覆盖，未知创建在撤销后仍不可重建。
 
