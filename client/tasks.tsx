@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { useRpc } from '@getpaseo/plugin/client';
+import { History } from './history.js';
 import { SettingsAction, SettingsRow, SettingsSection } from '@getpaseo/plugin/client/ui';
 import * as rpc from '../shared/tasks.js';
 
@@ -34,6 +35,7 @@ export function Tasks({ botId, openAgent }: { botId: string; openAgent?: (id: st
       <SettingsRow label={task.summary || task.goal || task.agentId} hint={task.detail} />
       {task.evidence?.map((item, index) => <SettingsRow key={index} label={`交付证据：${item}`} />)}
       <SettingsAction label="原生执行与实际结果" actionLabel="打开会话" disabled={!openAgent || busy} onPress={() => openAgent?.(task.agentId)} />
+      <History key={task.agentId} botId={botId} agentId={task.agentId} />
       <SettingsAction label="停止这个事项及其跟进" actionLabel={task.status === 'stopping' ? '重试确认停止' : '取消事项'} disabled={busy || task.status === 'canceled' || task.status === 'completed'} onPress={() => void run(() => cancel({ botId, agentId: task.agentId }))} />
       {task.followups.map(followup => <SettingsRow key={followup.key} label={`${followup.name} · ${followup.cron} · ${followup.timezone}`} hint={`登记状态 ${followup.status}；${followup.nativeId || '原生标识未确认'}；${followup.detail || '创建回执不等于实际执行，请查原生会话与工作日志'}`} />)}
       {task.specialists.map(id => <SettingsAction key={id} label={`原生专家 ${id}`} actionLabel="查看实际结果" disabled={busy || !openAgent} onPress={() => openAgent?.(id)} />)}

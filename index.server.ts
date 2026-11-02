@@ -6,7 +6,9 @@ import { BotStore } from './server/store.js';
 import { BotJournal } from './server/journal.js';
 import { botSessionConfig, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
-import { rememberExplicit, latestUserMessage } from './server/memory.js';
+import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory } from './server/memory.js';
+import { readBotHistory } from './server/history.js';
+import { readHistory } from './shared/history.js';
 import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
@@ -50,10 +52,20 @@ export default function contribute(server: PluginServerContext) {
   }, rememberExplicit: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未保存明确记忆');
     return rememberExplicit(store, currentPaseo, botId, agentId, input);
+  }, correctMemory: async (botId, agentId, input) => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未纠正记忆');
+    return correctExplicitMemory(store, currentPaseo, botId, agentId, input);
+  }, forgetMemory: async (botId, agentId, input) => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未遗忘记忆');
+    return forgetExplicitMemory(store, currentPaseo, botId, agentId, input);
+  }, readHistory: async (botId, input) => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未读取历史');
+    return readBotHistory(store, currentPaseo, botId, input);
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
   server.handle(taskRpc.listTasks, input => tasks.list(input.botId));
+  server.handle(readHistory, async (input, { paseo }) => readHistory.output.parse(await readBotHistory(store, paseo, input.botId, input)));
   server.handle(routineRpc.listRoutines, input => routines.list(input.botId));
   server.handle(routineRpc.createRoutine, input => routines.create(input.botId, input));
   server.handle(routineRpc.pauseRoutine, input => routines.action(input.botId, input.routineId, 'pause'));

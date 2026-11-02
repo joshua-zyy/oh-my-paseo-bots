@@ -13,6 +13,8 @@ import { registerOfficeTools } from './office-tools.js';
 import type { TaskTracker } from './tasks.js';
 import { registerTaskTools } from './task-tools.js';
 import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
+import type { MemoryCorrection, MemoryForget } from './memory.js';
+import type { BotHistoryInput } from './history.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -68,6 +70,9 @@ export interface BotMcpOptions {
   journal: BotJournal;
   /** 存在时才注册 `remember_explicit`；缺失时该工具不出现，Agent 只能提交候选。 */
   rememberExplicit?: RememberExplicit;
+  correctMemory?: (botId: string, agentId: string, input: MemoryCorrection) => Promise<unknown>;
+  forgetMemory?: (botId: string, agentId: string, input: MemoryForget) => Promise<unknown>;
+  readHistory?: (botId: string, input: BotHistoryInput) => Promise<unknown>;
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
   startColleague?: ColleagueToolScope['start'];
@@ -81,6 +86,9 @@ export interface BotMcpToolScope {
   store: BotStore;
   journal: BotJournal;
   rememberExplicit?: RememberExplicit;
+  correctMemory?: BotMcpOptions['correctMemory'];
+  forgetMemory?: BotMcpOptions['forgetMemory'];
+  readHistory?: BotMcpOptions['readHistory'];
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
   startColleague?: ColleagueToolScope['start'];
@@ -197,6 +205,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     },
     async ({ content }) => {
       try {
+        await scope.tasks?.requireActive(botId, agentId);
         const memory = await store.addMemory(botId, { kind: 'candidate', content, source: 'agent' });
         return toolResult({
           memoryId: memory.id,
@@ -230,6 +239,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
       },
       async ({ content, userQuote }) => {
         try {
+          await scope.tasks?.requireActive(botId, agentId);
           const memory = await rememberExplicit(botId, agentId, { content, userQuote });
           return toolResult({
             status: 'saved',
@@ -244,6 +254,43 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
       },
     );
   }
+
+  const memorySelection = {
+    memoryId: z.string().min(1).max(64),
+    currentContent: z.string().min(1).max(MAX_MEMORY_CHARS).describe('read_memories 返回的当前内容，须逐字一致'),
+    userQuote: z.string().min(1).max(MAX_MEMORY_CHARS).describe('最新完整用户消息；不得截取片段或引用旧消息'),
+  };
+  if (scope.correctMemory) server.registerTool('correct_memory', {
+    description: '用户当前消息明确要求纠正长期记忆时，先读取条目，再引用完整原话修改。新内容须逐字来自本条用户消息；推断或改写使用候选。只改本 Bot 记忆，不擦除原生历史或备份。',
+    inputSchema: { ...memorySelection, content: z.string().min(1).max(MAX_MEMORY_CHARS) },
+  }, async input => {
+    try {
+      await scope.tasks?.requireActive(botId, agentId);
+      return toolResult(await scope.correctMemory!(botId, agentId, input));
+    } catch (error) { return toolFailure(error); }
+  });
+  if (scope.forgetMemory) server.registerTool('forget_memory', {
+    description: '仅在用户当前消息明确要求遗忘该条长期记忆时使用。先读取条目，引用最新完整用户消息；仅删除本 Bot 记忆条目，不擦除原生历史或备份。',
+    inputSchema: memorySelection,
+  }, async input => {
+    try {
+      await scope.tasks?.requireActive(botId, agentId);
+      return toolResult(await scope.forgetMemory!(botId, agentId, input));
+    } catch (error) { return toolFailure(error); }
+  });
+  if (scope.readHistory) server.registerTool('read_bot_history', {
+    description: '读取本 Bot 已关联原生会话的历史。先从事项记录或会话目录取得 agentId；tail 读末页，before/startCursor 查更早，after/endCursor 查更晚。返回游标、epoch 和两侧边界；不恢复或重新派发旧工作，不读取未关联专家或其他 Bot。',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      agentId: z.string().min(1).max(200),
+      direction: z.enum(['tail', 'before', 'after']).default('tail'),
+      cursor: z.object({ epoch: z.string().min(1), seq: z.number().int().nonnegative() }).optional(),
+      limit: z.number().int().min(1).max(100).default(50),
+    },
+  }, async input => {
+    try { return toolResult(await scope.readHistory!(botId, input)); }
+    catch (error) { return toolFailure(error); }
+  });
 
   server.registerTool(
     'read_journal',
@@ -283,6 +330,9 @@ export class BotMcp {
   private readonly store: BotStore;
   private readonly journal: BotJournal;
   private readonly rememberExplicit?: RememberExplicit;
+  private readonly correctMemory?: BotMcpOptions['correctMemory'];
+  private readonly forgetMemory?: BotMcpOptions['forgetMemory'];
+  private readonly readHistory?: BotMcpOptions['readHistory'];
   private readonly office?: BotOfficeAccess;
   private readonly tasks?: TaskTracker;
   private readonly startColleague?: ColleagueToolScope['start'];
@@ -303,6 +353,9 @@ export class BotMcp {
     this.store = options.store;
     this.journal = options.journal;
     this.rememberExplicit = options.rememberExplicit;
+    this.correctMemory = options.correctMemory;
+    this.forgetMemory = options.forgetMemory;
+    this.readHistory = options.readHistory;
     this.office = options.office;
     this.tasks = options.tasks;
     this.startColleague = options.startColleague;
@@ -467,6 +520,9 @@ export class BotMcp {
       store: this.store,
       journal: this.journal,
       rememberExplicit: this.rememberExplicit,
+      correctMemory: this.correctMemory,
+      forgetMemory: this.forgetMemory,
+      readHistory: this.readHistory,
       office: this.office,
       tasks: this.tasks,
       startColleague: this.startColleague,

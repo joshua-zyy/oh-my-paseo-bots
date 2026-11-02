@@ -25,7 +25,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     ref: (id: string) => ({
       archive: async () => { archived.push(id); return { archivedAt: new Date().toISOString() }; },
       refresh: async () => ({ agent: { id, title: '原生事项', workspaceId: 'ws-configured', labels: id === 'grandchild' ? { 'paseo.parent-agent-id': 'child' } : id === 'child' ? { 'paseo.parent-agent-id': created[0].agentId } : { 'paseo-guys.bot': 'chief' } } }),
-      timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, epoch: 'test-epoch', hasOlder: false, entries: [{ item: { type: 'user_message', text: userMessage } }] }) },
+      timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, epoch: 'test-epoch', hasOlder: false, hasNewer: false, startCursor: { epoch: 'test-epoch', seq: 1 }, endCursor: { epoch: 'test-epoch', seq: 1 }, entries: [{ provider: 'pi', timestamp: '2026-11-02T00:00:00Z', seqStart: 1, seqEnd: 1, sourceSeqRanges: [], collapsed: [], item: { type: 'user_message', text: userMessage } }] }) },
     }),
   } } as unknown as PaseoApi;
   const server = {
@@ -85,6 +85,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       await client.connect(new StreamableHTTPClientTransport(new URL(tools.url), { requestInit: { headers: tools.headers } }));
       const catalog = await client.listTools();
       assert.ok(catalog.tools.some(tool => tool.name === 'get_bot_context'), '每次独立例程可读取当前固定身份、记忆和工作约束');
+      for (const name of ['correct_memory', 'forget_memory', 'read_bot_history']) assert.ok(catalog.tools.some(tool => tool.name === name), `${name} 通过当前 Bot 工具可达`);
       assert.ok(catalog.tools.some(tool => tool.name === 'propose_mail'));
       assert.equal(catalog.tools.some(tool => /approve|allow_fixed/.test(tool.name)), false);
       const colleague = await client.callTool({ name: 'create_colleague', arguments: { id: 'helper', name: '核对同事', role: '复核资料', instructions: '结论附来源' } });
@@ -97,8 +98,14 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.deepEqual(JSON.parse((office.content as { text: string }[])[0].text), { gmail: { configured: false }, feishu: { configured: false, documentIds: [], wikiTokens: [] } });
       const result = await client.callTool({ name: 'remember_explicit', arguments: { content: '后续报告使用中文', userQuote: '请记住：后续报告使用中文。' } });
       assert.equal(result.isError, undefined);
-      const saved = await invoke('bots.memories', { botId: 'chief' }) as { kind: string; content: string }[];
+      const saved = await invoke('bots.memories', { botId: 'chief' }) as { id: string; kind: string; content: string }[];
       assert.ok(saved.some(item => item.kind === 'confirmed' && item.content === '后续报告使用中文'));
+      const memoryId = saved.find(item => item.content === '后续报告使用中文')!.id;
+      userMessage = '请纠正长期记忆：后续报告使用英文。';
+      assert.equal((await client.callTool({ name: 'correct_memory', arguments: { memoryId, currentContent: '后续报告使用中文', content: '后续报告使用英文', userQuote: userMessage } })).isError, undefined);
+      userMessage = '请遗忘后续报告使用英文这条长期记忆。';
+      assert.equal((await client.callTool({ name: 'forget_memory', arguments: { memoryId, currentContent: '后续报告使用英文', userQuote: userMessage } })).isError, undefined);
+      assert.deepEqual((await invoke('bots.memories', { botId: 'chief' }) as { content: string }[]).map(item => item.content), ['纠正后的明确记忆']);
       // 专家只靠原生父链关联到事项，不获得根 Bot 的会话绑定或工具凭证。
       const specialist = { id: 'grandchild', parentAgentId: 'child', title: '专家核对', workspaceId: 'ws-expert' };
       await hooks.get('agent.created')!({ agent: specialist }, { paseo });
@@ -115,6 +122,15 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.deepEqual(archived, [started.agentId]);
       assert.equal((await client.callTool({ name: 'propose_mail', arguments: { requestId: 'after-stop', to: ['test@example.com'], subject: '测试', text: '停止后不得提案' } })).isError, true);
       assert.equal((await client.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续推进', cron: '0 9 * * *', timezone: 'Asia/Shanghai' } })).isError, true);
+      for (const name of ['propose_memory', 'remember_explicit', 'correct_memory', 'forget_memory']) {
+        assert.equal((await client.callTool({ name, arguments: { memoryId, currentContent: '后续报告使用英文', content: '取消', userQuote: userMessage } })).isError, true, `${name} 不允许终态事项继续写记忆`);
+      }
+      assert.equal((await client.callTool({ name: 'read_bot_history', arguments: { agentId: started.agentId } })).isError, undefined);
+      assert.equal((await client.callTool({ name: 'read_bot_history', arguments: { agentId: specialist.id } })).isError, true);
+      const history = await invoke('bots.history', { botId: 'chief', agentId: started.agentId }) as { entries: { item: { text: string } }[] };
+      assert.equal(history.entries[0].item.text, userMessage);
+      assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string }[]).find(task => task.agentId === started.agentId)?.status, 'canceled');
+      assert.equal(created.length, 1, '终态历史查询不重新派发');
     } finally { await client.close(); }
     await invoke('bots.creation.acknowledge', { botId: 'chief', requestId: started.requestId });
     assert.deepEqual(await invoke('bots.creations.pending', { botId: 'chief' }), []);

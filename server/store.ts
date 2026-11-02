@@ -134,6 +134,7 @@ export type StoreErrorCode =
   | 'bot_exists'
   | 'bot_not_found'
   | 'memory_not_found'
+  | 'memory_conflict'
   | 'creation_not_found'
   | 'request_conflict'
   | 'corrupt_store';
@@ -429,7 +430,7 @@ export class BotStore {
    * 纠正记忆：改内容、确认候选（`kind: 'confirmed'`）或降级回候选。
    * 纠正只改动本存储中的业务元数据，不触及 Paseo 原生历史或任何外部备份。
    */
-  async updateMemory(botId: string, memoryId: string, input: UpdateMemoryInput): Promise<MemoryEntry> {
+  async updateMemory(botId: string, memoryId: string, input: UpdateMemoryInput, expectedContent?: string): Promise<MemoryEntry> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const mid = parseInput(z.string().min(1).max(64), memoryId, 'memoryId');
     const value = parseInput(updateMemorySchema, input, 'memory');
@@ -437,6 +438,7 @@ export class BotStore {
       const document = await this.requireDocument(id);
       const entry = document.memories.find((memory) => memory.id === mid);
       if (!entry) throw new StoreError('memory_not_found', `memory ${mid} not found on bot ${id}`);
+      if (expectedContent !== undefined && entry.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变，请重新读取后按当前内容操作');
 
       const now = new Date().toISOString();
       if (value.content !== undefined) entry.content = value.content;
@@ -451,11 +453,13 @@ export class BotStore {
   }
 
   /** 删除记忆条目；返回是否真的删除过。 */
-  async removeMemory(botId: string, memoryId: string): Promise<boolean> {
+  async removeMemory(botId: string, memoryId: string, expectedContent?: string): Promise<boolean> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const mid = parseInput(z.string().min(1).max(64), memoryId, 'memoryId');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
+      const entry = document.memories.find(memory => memory.id === mid);
+      if (expectedContent !== undefined && entry?.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变或移除，请重新读取后按当前内容操作');
       const remaining = document.memories.filter((memory) => memory.id !== mid);
       if (remaining.length === document.memories.length) return false;
       document.memories = remaining;

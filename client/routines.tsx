@@ -4,6 +4,7 @@ import { useRpc } from '@getpaseo/plugin/client';
 import { SettingsAction, SettingsInput, SettingsRow, SettingsSection } from '@getpaseo/plugin/client/ui';
 import * as rpc from '../shared/routines.js';
 import { listTasks } from '../shared/tasks.js';
+import { History } from './history.js';
 
 export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
   const list = useRpc(rpc.listRoutines);
@@ -66,6 +67,7 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
           {report?.summary && <SettingsRow label={report.summary} />}
           {report?.evidence?.map((evidence, index) => <SettingsRow key={index} label={`交付证据：${evidence}`} />)}
           <SettingsAction label="原生会话与实际产物" actionLabel="打开会话" disabled={!openAgent || !execution.agentId || busy} onPress={() => execution.agentId && openAgent?.(execution.agentId)} />
+          {execution.agentId && <History key={execution.agentId} botId={botId} agentId={execution.agentId} />}
         </SettingsSection>;
       })}
     </SettingsSection>)}

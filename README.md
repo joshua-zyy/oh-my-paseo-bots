@@ -26,7 +26,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [index.client.tsx](index.client.tsx)、[client/](client/) | “固定同事”界面、宿主配置、记忆、办公与事项控件 |
 | [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
 | [server/sessions.ts](server/sessions.ts)、[server/store.ts](server/store.ts) | 原生创建意图、幂等键、Bot 身份与会话关联持久化 |
-| [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、明确记忆来源核对、原生轮次观察日志 |
+| [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/history.ts](server/history.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、记忆来源核对、原生历史分页与轮次观察日志 |
 | [server/mcp.ts](server/mcp.ts) | 插件内回环 HTTP MCP、稳定端点、Bot／Agent 凭证绑定与工具挂载 |
 | [server/tasks.ts](server/tasks.ts)、[server/task-tools.ts](server/task-tools.ts)、[server/colleague-tools.ts](server/colleague-tools.ts) | 事项状态、跨会话查询、原生跟进、固定同事配置与委派 |
 | [server/routines.ts](server/routines.ts)、[shared/routines.ts](shared/routines.ts)、[client/routines.tsx](client/routines.tsx) | 独立例程创建意图、原生调度控制、运行关联与结果展示 |
@@ -40,11 +40,11 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 1. **开始事项**：宿主 `bots` 配置提供默认工作目录和模型，Bot 的 `execution` 可覆盖；`startBotSession` 读取该 Bot 的身份、长期说明和确认记忆，先保存创建意图，再挂载 Bot MCP 并调用 Paseo 原生创建，最后关联会话。同请求重试保留原始键，未知结果先回查。
 2. **固定同事委派**：`list_colleagues` 查询职责，`delegate_to_colleague` 复用同一创建流程，显式打开接收方目录的原生工作区，再带 `parent` 创建子 Agent。仅传 `cwd` 时宿主可能仍沿用父工作区，不能据创建参数推定目录已生效。接收方使用自己的配置、身份、确认记忆和工具绑定，不自动继承 Chief 的历史或无关记忆；实际结果经原生通信取得并核对。
-3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`read_bot_task` 按需取完整记录。查询不重新派发工作、不恢复终态，也不新增权限；原生历史和实际产物仍须核对。
+3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`includeFinished` 可查终态，`read_bot_task` 按需取完整记录。`read_bot_history` 只读本 Bot 已关联会话／创建意图的原生 canonical 分页，返回两侧游标与边界；游标失效、缺口或 epoch 变化时拒绝本页，重新从 tail 查询。固定入口的“读取历史”复用同一读取函数，归档工作区也可查回；原生“打开会话”导航仍可能要求取消工作区归档。查询不重新派发工作、不恢复终态，也不新增权限；实际产物仍须核对。
 4. **完成与停止**：显式完成须附摘要和交付证据；停止先持久化，再归档关联原生会话与专家、清理已知跟进。原生归档观察同步收尾，但不覆盖已有完成结论。Paseo 单轮停止不等于取消插件事项；自身归档可能中断收尾回复。
 5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
 
-`remember_explicit` 由服务端回查原生用户消息依据；推断只作候选，确认前不注入新会话。纠正记忆不擦除原生历史或备份。工作日志记录实际轮次观察，不自动判定事项完成。
+`remember_explicit` 由服务端回查原生用户消息依据；`correct_memory`／`forget_memory` 还要求引用当前完整用户消息，并在存储锁内比较条目旧内容，陈旧选取拒绝写入。纠正内容须逐字来自当前用户消息；自然语言意图仍由 Bot 判断，来源核对不构成语义隔离。推断只作候选，确认前不注入新会话；MCP 记忆写入要求事项 active。纠正／遗忘不擦除原生历史或备份。工作日志记录实际轮次观察，不自动判定事项完成。
 
 独立例程复用 `schedule create/inspect/pause/resume/run-once`，不另建调度器。创建意图先落盘，未知回执只回查唯一原生名称；首轮与重启恢复按 `paseo.schedule-id/run` 权威标签关联 Bot 和本次事项，再由打开钩子注入本次 HTTP MCP 与 Bot 选择的 MCP。动态 `get_bot_context` 给出当前身份、确认记忆、技能索引与本次目标，其结果不属于 system 层，也不构成宿主强制的开工屏障。
 
