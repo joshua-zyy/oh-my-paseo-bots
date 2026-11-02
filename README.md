@@ -84,7 +84,7 @@ npm test
 
 验证先选受影响的现有测试；共享契约变更和收尾再跑适用的完整层级。本地 bundle 构建不是 Paseo 宿主加载验收。真实验证按 `AGENTS.md` 已确认的权限和数据范围执行，不因有运行命令就自动扩大授权。
 
-插件清单 [paseo-plugin.json](paseo-plugin.json) 声明 `>=0.12.0 <0.14.0`；开发依赖为 0.12.0 SDK，另做过官方 0.13.2 契约核对与加载实测。修改接缝前核对目标 daemon、app 和发布 SDK，不把最新文档当作已安装版本事实。
+插件清单 [paseo-plugin.json](paseo-plugin.json) 声明 `>=0.14.0 <0.15.0`；开发依赖为正式发布的 0.14.0 SDK。该发布包仍使用 `server.before('agent.session_open', ...)`，打开请求提供只读 Agent 标签与可编辑 MCP 配置；不能照抄主线文档的 `addHook` 注册名称。修改接缝前核对目标 daemon、app 和发布 SDK，不把最新文档当作已安装版本事实。
 
 宿主检查入口为 `paseo plugin ls`／`paseo plugin logs paseo-guys`；本地目录安装为 `paseo plugin install /absolute/path/to/paseo-guys`，源码更新使用 `paseo plugin reload paseo-guys`。先核目标 daemon 与全局插件开关，不为加载源码重启 daemon。公共契约参见 [Paseo 插件文档](https://paseo.sh/docs/plugins)。
 
