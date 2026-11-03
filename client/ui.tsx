@@ -16,12 +16,12 @@ export function Copy({ children, muted = false, small = false }: { children: Rea
   return <Text selectable style={{ color: muted ? colors.foregroundMuted : colors.foreground, fontSize: small ? 12 : 14, lineHeight: small ? 18 : 22 }}>{children}</Text>;
 }
 
-export function Button({ label, icon, primary = false, disabled = false, onPress }: { label: string; icon?: string; primary?: boolean; disabled?: boolean; onPress(): void }) {
+export function Button({ label, icon, iconOnly = false, primary = false, disabled = false, onPress }: { label: string; icon?: string; iconOnly?: boolean; primary?: boolean; disabled?: boolean; onPress(): void }) {
   const { colors, compact } = useUi();
   const color = primary ? colors.surface0 : colors.foreground;
   return <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => ({ minHeight: compact ? 44 : 36, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: primary ? colors.foreground : pressed ? colors.surface2 : 'transparent', opacity: disabled ? 0.4 : pressed ? 0.8 : 1 })}>
     {icon && <Icon name={icon} size={16} color={color} />}
-    <Text style={{ color, fontSize: 14, fontWeight: '500', flexShrink: 1 }}>{label}</Text>
+    {!iconOnly && <Text style={{ color, fontSize: 14, fontWeight: '500', flexShrink: 1 }}>{label}</Text>}
   </Pressable>;
 }
 

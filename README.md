@@ -24,8 +24,10 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 | 入口 | 职责 |
 | --- | --- |
-| [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，工作／记忆／例程导航，主题控件 |
-| [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 交办、未决创建回查、事项报告与逐条记忆编辑 |
+| [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，聊天／工作／记忆／例程导航，主题控件 |
+| [client/chat.tsx](client/chat.tsx)、[client/chat-state.ts](client/chat-state.ts)、[client/chat-timeline.tsx](client/chat-timeline.tsx) | 原生持续聊天、按 Agent 保存草稿、实时历史分页与订阅恢复，插件内打开事项 |
+| [client/chat-permission.tsx](client/chat-permission.tsx)、[client/chat-question.ts](client/chat-question.ts) | 原生权限动作与问题回应，保留原生 action 与 answers 协议 |
+| [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
 | [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/office.tsx](client/office.tsx) | 按需打开同事与插件宿主配置、办公连接和受控外发 |
 | [client/journal.tsx](client/journal.tsx)、[client/history.tsx](client/history.tsx)、[client/usage.tsx](client/usage.tsx) | 工作日志与原生历史分页、按需读取会话用量 |
 | [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
@@ -46,7 +48,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 1. **开始事项**：宿主 `bots` 配置提供默认工作目录和模型，Bot 的 `execution` 可覆盖；`startBotSession` 读取该 Bot 的身份、长期说明和确认记忆，先保存创建意图，再挂载 Bot MCP，并在按 Bot 与目录幂等复用的原生后台工作区创建 Agent，最后关联会话。同请求重试保留原始键，未知结果先回查。
 2. **固定同事委派**：`list_colleagues` 查询职责，`delegate_to_colleague` 复用同一创建流程，显式打开接收方目录的原生工作区，再带 `parent` 创建子 Agent。仅传 `cwd` 时宿主可能仍沿用父工作区，不能据创建参数推定目录已生效。接收方使用自己的配置、身份、确认记忆和工具绑定，不自动继承 Chief 的历史或无关记忆。0.14 SDK 的 `parent` 只建立归属，不注册原生 MCP 创建路径的完成回调；`complete_task` 保存报告后、归档前通过原生 `send` 回报仍进行中且已登记委派关系的父事项。例程父会话没有普通 Bot 标签时，交付与失败回报复用已持久化的例程归属查询。消息含子事项标识、摘要与证据，使用子 Agent 来源和稳定 messageId；接收方仍须核对实际产物，回报不自动完成父事项。交互事项仅剩等待交付时，结束当前轮次、保持事项 active，由原生交付消息唤醒，无须周期轮询；异常新证据或用户询问仍可按需查询。独立例程在同轮用原生 CLI 等待，不注入交互事项的结束轮次等待指引。
-3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`includeFinished` 可查终态，`read_bot_task` 按需取完整记录。`read_bot_history` 只读本 Bot 已关联会话／创建意图的原生 canonical 分页，返回两侧游标与边界；游标失效、缺口或 epoch 变化时拒绝本页，重新从 tail 查询。固定入口的“读取历史”复用同一读取函数，归档工作区也可查回；原生“打开会话”导航仍可能要求取消工作区归档。查询不重新派发工作、不恢复终态，也不新增权限；实际产物仍须核对。
+3. **跨会话查询**：`list_bot_tasks` 默认列本 Bot 的未结事项，`includeFinished` 可查终态，`read_bot_task` 按需取完整记录。`read_bot_history` 只读本 Bot 已关联会话／创建意图的原生 canonical 分页，返回两侧游标与边界；游标失效、缺口或 epoch 变化时拒绝本页，重新从 tail 查询。固定入口的“读取历史”复用同一读取函数，归档工作区也可查回；打开事项与会话始终留在插件页，通过明确 Agent ID 读取原生历史。查询不重新派发工作、不恢复终态，也不新增权限；实际产物仍须核对。
 4. **完成与停止**：显式完成须附摘要和交付证据；停止先持久化，再归档关联原生会话与专家、清理已知跟进。原生归档观察同步收尾，但不覆盖已有完成结论。Paseo 单轮停止不等于取消插件事项；自身归档可能中断收尾回复。
 5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
 
@@ -59,6 +61,8 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 独立例程复用 `schedule create/inspect/pause/resume/run-once`，不另建调度器。创建意图先落盘，未知回执只回查唯一原生名称；首轮与重启恢复按 `paseo.schedule-id/run` 权威标签关联 Bot 和本次事项，再由打开钩子注入本次 HTTP MCP 与 Bot 选择的 MCP。动态 `get_bot_context` 给出当前身份、确认记忆、技能索引、本次目标及 `nativeCli.command/home`，其结果不属于 system 层，也不构成宿主强制的开工屏障。
 
 `workspace.create` 钩子仅将已登记 Bot、其原生调用方及本插件原生例程的执行工作区设为 `background`。普通 Paseo 工作区不变；显示 Bot 详情时通过明确 Agent ID 读取原生状态与历史，不打开普通工作区列表。
+
+聊天页复用原生 projected timeline 和 Markdown／StreamedText，执行过程及信息通知折叠，警告与错误保持可见。消息发送使用固定 messageId；回执未确认时保留原文，先回查或明确重试同一消息，不自动重发。0.14 的 Agent 本地监听须配合含后台会话的 owned 列表观察，提供实时状态和权限更新；重连补读历史，replacement、缺口和 epoch 变化重读 tail，离开会话释放订阅。草稿按 Agent 保留于当前挂载页面；归档事项只读，返回主聊天继续对话。复用部分许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 0.14 原生 schedule 只等待根 Agent 的轮次，不等待全部子事项；结束轮次即可能将本次 run 收尾为 succeeded，`archiveOnFinish=false` 也不延长 run。例程先委派并推进独立工作，再使用已配置 CLI 的 `agent wait <完整子AgentId> --timeout 45s --json` 在同轮等原生事件，显式传已配置 `--home` 并按 shell 引用路径。读取 JSON 状态，不能仅看退出码：timeout 仅结束本次等待，可继续等待未完成同事；idle 不等于实际交付，无报告时查询活动并决定恢复或升级，不能反复等待 idle；error／permission 结合已保存报告与实际产物处理。CLI 等待不新增权限、调度框架或产品停止条件。
 
