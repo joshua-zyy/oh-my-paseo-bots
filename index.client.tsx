@@ -18,6 +18,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
   const create = useRpc(rpc.createBot);
   const update = useRpc(rpc.updateBot);
+  const createConversation = useRpc(rpc.createConversation);
   const [bots, setBots] = useState<RpcOutput<typeof rpc.listBots>['bots']>([]);
   const [selected, select] = useState(CHIEF_BOT_ID);
   const [tab, setTab] = useState<'聊天' | '工作' | '记忆' | '例程'>('聊天');
@@ -50,6 +51,13 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
     {!shown.length && <Copy muted>没有匹配的同事</Copy>}
   </>;
   const openAgent = (agentId: string) => { setViewedSession(agentId); setTab('聊天'); setPanel(null); };
+  async function newConversation() {
+    if (guard.current) return;
+    guard.current = true; setBusy(true); setError('');
+    try { openAgent((await createConversation({ botId: selected })).agentId); }
+    catch (failure) { setError(String(failure)); }
+    finally { guard.current = false; setBusy(false); }
+  }
   return <UiProvider value={{ colors, compact }}>
     <View onLayout={event => setWidth(event.nativeEvent.layout.width)} style={{ flex: 1, flexDirection: compact ? 'column' : 'row', backgroundColor: colors.surface0 }}>
       {!compact && <View style={{ width: 220, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.surface1 }}>
@@ -63,6 +71,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
             {panel ? <><Button label="返回" icon="ArrowLeft" disabled={busy} onPress={() => setPanel(null)} /><Text style={{ color: colors.foreground, fontSize: 18, fontWeight: '500', flex: 1 }}>{panel === 'host' ? '默认设置' : '同事设置'}</Text></> : <>
               {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 20, fontWeight: '500', flex: 1 }}>{current?.name || '固定同事'}</Text>}
               {compact && <Button label="添加" icon="Plus" iconOnly disabled={busy} onPress={() => setCreating(true)} />}
+              <Button label="新对话" icon="SquarePen" iconOnly disabled={!current || busy} onPress={() => void newConversation()} />
               <Button label="设置" icon="Settings" iconOnly disabled={!current || busy} onPress={() => setPanel('settings')} />
             </>}
           </View>
@@ -74,11 +83,11 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
         {current && <View style={{ flex: 1, minHeight: 0, display: !panel && tab === '聊天' ? 'flex' : 'none' }}><Chat key={host.id} botId={selected} hostId={host.id} sessionId={viewedSession} openAgent={openAgent} returnToChat={() => setViewedSession(undefined)} /></View>}
         <ScrollView key={`${host.id}:${selected}:${panel || tab}`} style={{ flex: 1, display: panel || tab !== '聊天' ? 'flex' : 'none' }} contentContainerStyle={{ paddingHorizontal: compact ? 16 : 28, paddingTop: 14, paddingBottom: 32 }} keyboardShouldPersistTaps="handled">
           <View style={{ maxWidth: 960, width: '100%', alignSelf: 'center' }}>
-            {panel === 'host' ? <HostSettings /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async patch => {
+            {panel === 'host' ? <HostSettings /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew) => {
               if (guard.current) return;
               guard.current = true;
               setBusy(true); setError('');
-              try { await update({ botId: selected, patch }); await refresh(); }
+              try { await update({ botId: selected, patch }); if (startNew) openAgent((await createConversation({ botId: selected })).agentId); await refresh(); }
               catch (failure) { setError(String(failure)); }
               finally { guard.current = false; setBusy(false); }
             }} /> : tab === '工作' ? <Work key={selected} botId={selected} openAgent={openAgent} /> : tab === '记忆' ? <Memories key={selected} botId={selected} /> : tab === '例程' ? <Routines key={selected} botId={selected} openAgent={openAgent} /> : null : <Copy muted>读取同事中…</Copy>}

@@ -165,6 +165,13 @@ export default function contribute(server: PluginServerContext) {
     await store.acknowledgeCreation(botId, result.requestId);
     return { agentId: result.agentId };
   });
+  server.handle(rpc.createConversation, async ({ botId }, { paseo }) => {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error(`Bot 不存在：${botId}`);
+    const result = await startBoundSession({ botId, requestId: randomUUID(), title: bot.bot.name, kind: 'conversation' }, paseo);
+    await store.acknowledgeCreation(botId, result.requestId);
+    return { agentId: result.agentId };
+  });
   async function startBoundSession(input: SessionInput, paseo: PaseoApi) {
     currentPaseo = paseo;
     const state = await settings.read();

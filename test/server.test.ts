@@ -104,6 +104,17 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.equal((await client.callTool({ name: 'update_colleague', arguments: { patch: { role: '继续核对工作' } } })).isError, undefined);
     assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
     assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === conversation.agentId), false);
+    await invoke('bots.update', { botId: 'chief', patch: { instructions: '新对话输出精简报告', execution: { provider: 'synthetic/new-model' } } });
+    await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '报告先列结论' });
+    const fresh = await invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
+    assert.notEqual(fresh.agentId, conversation.agentId);
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), fresh);
+    assert.equal(created.at(-1)!.config.provider, 'synthetic/new-model');
+    assert.match(created.at(-1)!.config.systemPrompt!, /新对话输出精简报告/);
+    assert.match(created.at(-1)!.config.systemPrompt!, /报告先列结论/);
+    assert.equal(created.at(-1)!.prompt, undefined, '开新对话不自行发起模型轮次');
+    assert.equal(archived.has(conversation.agentId), false, '开新对话不关闭原对话或停止其工作');
+    assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === fresh.agentId), false);
   } finally {
     for (const client of clients) await client.close();
     await cleanup();

@@ -71,7 +71,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
   const error = opened.key === key ? opened.error || chat.error : '';
   const blocked = !agentId || offline || chat.loading || !!error || !!chat.agent?.archivedAt || !!draft.sending;
   return <View style={{ flex: 1, minHeight: 0 }}>
-    {sessionId && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: compact ? 16 : 28, paddingVertical: 8 }}><Button label="返回聊天" icon="ArrowLeft" onPress={returnToChat} /><View style={{ flex: 1 }}><Copy>{chat.agent?.title}</Copy></View></View>}
+    {sessionId && chat.agent && chat.agent.labels['paseo-guys.conversation'] !== 'true' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: compact ? 16 : 28, paddingVertical: 8 }}><Button label="返回聊天" icon="ArrowLeft" onPress={returnToChat} /><View style={{ flex: 1 }}><Copy>{chat.agent.title}</Copy></View></View>}
     <ScrollView key={agentId} ref={scroll} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: compact ? 16 : 28, paddingVertical: 20 }} keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onScroll={event => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;

@@ -5,7 +5,7 @@ import { botCapabilitiesSchema } from '../shared/capabilities.js';
 import { OfficeConfiguration } from './office.js';
 import { Actions, Button, Copy, Field, Notice, Section } from './ui.js';
 
-export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetailsInput; botId: string; disabled: boolean; save(value: BotDetails): Promise<unknown> }) {
+export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetailsInput; botId: string; disabled: boolean; save(value: BotDetails, startNew?: boolean): Promise<unknown> }) {
   const [value, setValue] = useState<BotDetails>(() => botDetailsSchema.parse(bot));
   const [tab, setTab] = useState('同事');
   const [capabilitiesText, setCapabilitiesText] = useState(() => JSON.stringify(value.capabilities, null, 2));
@@ -36,7 +36,7 @@ export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetai
         <Notice error={capabilities ? '' : 'JSON 无效，请检查 skills / mcpServers；草稿未保存。'} />
         <Copy muted small>技能填写已有 SKILL.md 的 name、description、宿主绝对 path。MCP 沿用宿主格式；配置不批准工具与账户，也不移除宿主全局能力。</Copy>
       </>}
-      <Actions>{tab === '模型' && <Button label="恢复宿主默认" disabled={disabled || !capabilities} onPress={() => void save({ ...edited, execution: {} })} />}<Button label="保存同事配置" primary disabled={disabled || !capabilities || !botDetailsSchema.safeParse(edited).success} onPress={() => void save(edited)} /></Actions>
+      <Actions>{tab === '模型' && <Button label="恢复宿主默认" disabled={disabled || !capabilities} onPress={() => void save({ ...edited, execution: {} })} />}<Button label="保存" disabled={disabled || !capabilities || !botDetailsSchema.safeParse(edited).success} onPress={() => void save(edited)} /><Button label="保存并开始新对话" primary disabled={disabled || !capabilities || !botDetailsSchema.safeParse(edited).success} onPress={() => void save(edited, true)} /></Actions>
     </>}
   </>;
 }
