@@ -8,8 +8,10 @@ import { History } from './history.js';
 import { Usage } from './usage.js';
 import { Journal } from './journal.js';
 import { OfficeActions } from './office.js';
+import { useBotUpdates } from './use-bot-updates.js';
 
 export function Work({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
+  const updates = useBotUpdates(botId);
   const unresolved = useRpc(rpc.pendingCreations);
   const inspect = useRpc(rpc.inspectCreation);
   const acknowledge = useRpc(rpc.acknowledgeCreation);
@@ -41,13 +43,13 @@ export function Work({ botId, openAgent }: { botId: string; openAgent?: (id: str
     let active = true;
     void unresolved({ botId }).then(value => { if (active) setPending(value.filter(item => item.status === 'pending')); }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, unresolved]);
+  }, [botId, unresolved, updates.revision]);
   return <>
-    <Notice error={error} />
-    <Tasks botId={botId} openAgent={openAgent} revision={revision} />
-    <OfficeActions botId={botId} revision={revision} />
+    <Notice error={error || updates.error} />
+    <Tasks botId={botId} openAgent={openAgent} revision={revision + updates.revision} />
+    <OfficeActions botId={botId} revision={revision + updates.revision} />
     {pending.length > 0 && <Disclosure title="创建回查" open={requestsOpen} onPress={() => setRequestsOpen(value => !value)}>{pending.map(item => <Actions key={item.requestId}><Copy muted>{item.agentId}</Copy><Button label="回查并打开" disabled={busy || !openAgent} onPress={() => void recover(item.requestId)} /></Actions>)}</Disclosure>}
-    <Disclosure title="全部会话" open={sessionsOpen} onPress={() => setSessionsOpen(value => !value)}><Sessions botId={botId} openAgent={openAgent} revision={revision} /></Disclosure>
+    <Disclosure title="全部会话" open={sessionsOpen} onPress={() => setSessionsOpen(value => !value)}><Sessions botId={botId} openAgent={openAgent} revision={revision + updates.revision} /></Disclosure>
     <Disclosure title="工作日志" open={journalOpen} onPress={() => setJournalOpen(value => !value)}><Journal botId={botId} /></Disclosure>
   </>;
 }

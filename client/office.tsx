@@ -11,7 +11,8 @@ const labels: Record<string, string> = {
   send_unknown: '发送结果不确定', sent: '已发送', revoked: '已撤销',
 };
 
-export function OfficeActions({ botId, revision }: { botId: string; revision: number }) {
+export function OfficeActions({ botId, revision = 0, inlineActions, onChanged }: { botId: string; revision?: number; inlineActions?: RpcOutput<typeof rpc.listMail>; onChanged?(): Promise<void> }) {
+  const inline = inlineActions !== undefined;
   const list = useRpc(rpc.listMail);
   const grants = useRpc(rpc.listMailGrants);
   const send = useRpc(rpc.sendMail);
@@ -36,30 +37,30 @@ export function OfficeActions({ botId, revision }: { botId: string; revision: nu
     guard.current = true; setBusy(true); setError('');
     try { await work(); } catch (failure) { setError(String(failure)); }
     finally {
-      try { await refresh(); } catch (failure) { setError(current => `${current}${current ? '；' : ''}${String(failure)}`); }
+      try { if (inline) await onChanged?.(); else await refresh(); } catch (failure) { setError(current => `${current}${current ? '；' : ''}${String(failure)}`); }
       guard.current = false; setBusy(false);
     }
   }
   useEffect(() => {
+    if (inlineActions) { setActions(inlineActions); return; }
     let active = true;
     void Promise.all([list({ botId }), grants({ botId })]).then(([a, g]) => { if (active) { setActions(a); setAllowed(g); } }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, list, grants, revision]);
+  }, [botId, list, grants, revision, inlineActions]);
   function row(action: RpcOutput<typeof rpc.listMail>[number]) {
-    return <Disclosure key={action.id} title={action.subject} status={labels[action.status] ?? action.status} open={opened === action.id} onPress={() => setOpened(opened === action.id ? undefined : action.id)}>
-      <Copy>账户：{action.account}{'\n'}收件人：{action.to.join('、')}{'\n'}主题：{action.subject}</Copy>
+    return <Disclosure key={action.id} title={action.subject} status={labels[action.status] ?? action.status} open={opened === action.id || (inline && !['sent', 'revoked'].includes(action.status))} onPress={() => setOpened(opened === action.id ? undefined : action.id)}>
+      <Copy>{action.account} → {action.to.join('、')}</Copy>
       <Copy>{action.text}</Copy>
-      <Copy muted small>事项：{action.agentId}{'\n'}来源邮件：{action.sourceIds.join('、') || '无'}{'\n'}批准查询：{action.query}</Copy>
+      <Copy muted small>来源邮件：{action.sourceIds.join('、') || '无'}{'\n'}资料范围：{action.query}</Copy>
       {action.detail && <Copy muted>{action.detail}</Copy>}
-      <Copy muted small>登记：{action.id}{action.sentId ? `\n已发送邮件：${action.sentId}` : action.draftId ? `\n草稿：${action.draftId}` : ''}</Copy>
-      <Copy>{action.approvedAt ? `用户确认于 ${action.approvedAt}` : action.grantId ? `固定预授权：${action.grantId}` : '尚无用户确认或有效固定预授权'}</Copy>
+      {!inline && <Copy muted small>事项：{action.agentId}{'\n'}登记：{action.id}{action.sentId ? `\n已发送邮件：${action.sentId}` : action.draftId ? `\n草稿：${action.draftId}` : ''}{action.approvedAt ? `\n用户确认于 ${action.approvedAt}` : action.grantId ? `\n固定预授权：${action.grantId}` : ''}</Copy>}
       {!['sent', 'revoked'].includes(action.status) && <Copy muted small>按以上完整内容确认。未知结果先回查，撤销不收回已准入或已发出的邮件。</Copy>}
       <Actions>
-        <Button label={action.status === 'draft' ? '继续已确认的发送' : '确认并发送'} primary disabled={busy || !['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status)} onPress={() => void run(() => send({ botId, actionId: action.id }))} />
-        <Button label="只回查" disabled={busy || !['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => reconcile({ botId, actionId: action.id }))} />
-        <Button label="撤销" disabled={busy || ['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => revoke({ botId, actionId: action.id }))} />
+        {['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status) && <Button label={action.status === 'draft' ? '继续发送' : '确认并发送'} primary disabled={busy} onPress={() => void run(async () => { const result = await send({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
+        {['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status) && <Button label="回查" primary disabled={busy} onPress={() => void run(async () => { const result = await reconcile({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
+        {!['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status) && <Button label="撤销" disabled={busy} onPress={() => void run(async () => { const result = await revoke({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
       </Actions>
-      {!['creating_draft', 'draft_unknown', 'sending', 'send_unknown', 'sent', 'revoked'].includes(action.status) && <>
+      {!inline && !['creating_draft', 'draft_unknown', 'sending', 'send_unknown', 'sent', 'revoked'].includes(action.status) && <>
         <Copy muted small>固定预授权只允许本事项以后发送完全相同的账户、查询、收件人、主题、正文与来源组合。</Copy>
         <Actions><Button label="批准固定动作" disabled={busy} onPress={() => void run(() => allow({ botId, actionId: action.id }))} /></Actions>
       </>}
@@ -69,7 +70,7 @@ export function OfficeActions({ botId, revision }: { botId: string; revision: nu
   const past = actions.filter(action => ['sent', 'revoked'].includes(action.status));
   return <>
     <Notice error={error} />
-    {(actions.length > 0 || allowed.length > 0) && <Section title="办公动作" action={<Button label="刷新外发" disabled={busy} onPress={() => void run(async () => {})} />}>
+    {inline ? actions.map(row) : (actions.length > 0 || allowed.length > 0) && <Section title="办公动作" action={<Button label="刷新外发" disabled={busy} onPress={() => void run(async () => {})} />}>
       {current.map(row)}
       {past.length > 0 && <Disclosure title="外发历史" status={String(past.length)} open={pastOpen} onPress={() => setPastOpen(value => !value)}>{past.map(row)}</Disclosure>}
       {allowed.length > 0 && <Disclosure title="固定预授权" status={String(allowed.length)} open={grantsOpen} onPress={() => setGrantsOpen(value => !value)}>{allowed.map(grant => <View key={grant.id} style={{ gap: 8 }}>

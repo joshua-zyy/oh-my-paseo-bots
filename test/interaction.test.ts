@@ -1,0 +1,109 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
+
+async function sourceFile(path: string) {
+  const root = process.env.BOT_UI_SOURCE_DIR ?? fileURLToPath(new URL('../../', import.meta.url));
+  return ts.createSourceFile(path, await readFile(resolve(root, path), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+}
+
+test('执行详情保留主聊天及草稿归属，只有打开同事聊天才切换固定身份', async () => {
+  const source = await sourceFile('index.client.tsx');
+  let callback = '';
+  let detailCallback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'openAgent') callback = `${node.getText(source)}\nreturn openAgent;`;
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'openAgent' && node.initializer) callback = `return (${node.initializer.getText(source)});`;
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Chat') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+      if (attributes.find(attribute => attribute.name.getText(source) === 'botId')?.initializer?.getText(source) === '{detail.owner}') {
+        const action = attributes.find(attribute => attribute.name.getText(source) === 'openAgent')?.initializer;
+        if (action && ts.isJsxExpression(action) && action.expression) detailCallback = `return (${action.expression.getText(source)});`;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  let mainSession = 'chief-chat';
+  let selected = 'chief';
+  let conversations: Record<string, string> = { chief: mainSession };
+  let detail: { agentId: string; owner: string; executor: string } | undefined;
+  const api = { agents: { ref: (id: string) => ({ refresh: async () => ({ agent: {
+    id, title: `执行 ${id}`, labels: id === 'expert' ? {} : { 'paseo-guys.bot': 'helper', ...(id === 'helper-chat' ? { 'paseo-guys.conversation': 'true' } : {}) },
+  } }) }) } };
+  const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const open = new Function('api', 'selected', 'current', 'bots', 'choose', 'setConversations', 'setDetail', 'setPanel', 'setError', 'setViewedSession', 'setTab', body)(
+    api, selected, { name: '主 Bot' }, [{ id: 'helper', name: '核对同事' }],
+    (id: string) => { selected = id; detail = undefined; },
+    (update: (value: Record<string, string>) => Record<string, string>) => { conversations = update(conversations); },
+    (value: typeof detail) => { detail = value; }, () => {}, (error: unknown) => assert.fail(String(error)),
+    (id: string) => { mainSession = id; }, () => {},
+  );
+  open('worker');
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(mainSession, 'chief-chat');
+  assert.equal(selected, 'chief');
+  assert.deepEqual({ ...conversations }, { chief: 'chief-chat' });
+  assert.equal(detail?.owner, 'helper');
+  assert.equal(detail?.executor, '核对同事');
+  assert.ok(detailCallback);
+  const openFromDetail = new Function('openAgent', 'detail', ts.transpileModule(detailCallback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(open, detail);
+  openFromDetail('expert');
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(detail?.owner, 'helper', '从受托同事详情打开原生专家时保留实际 Bot 归属，停止回复不误用 Chief');
+  open('expert');
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(detail?.executor, '原生专家');
+  assert.equal(selected, 'chief');
+  open('helper-chat');
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(selected, 'helper');
+  assert.equal(conversations.helper, 'helper-chat');
+  assert.equal(detail, undefined);
+});
+
+interface Element { type: string; props: Record<string, any>; children: any[] }
+test('聊天显示完整邮件后才提供确认，未知发送只提供回查并保留原动作标识', async () => {
+  const source = await sourceFile('client/office.tsx');
+  let row = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'row') row = node.getText(source);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(row);
+  const body = ts.transpileModule(`${row}\nreturn row;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText;
+  const calls: { kind: string; input: unknown }[] = [];
+  const action = { id: 'registered-mail', agentId: 'worker', account: 'sender@example.test', to: ['receiver@example.test'], subject: '完整草案', text: '完整正文\n第二行。', sourceIds: ['source-1'], query: 'label:synthetic', status: 'pending_confirmation' };
+  let actions: typeof action[] = [action];
+  let pending: Promise<unknown> = Promise.resolve();
+  const render = new Function('h', 'Fragment', 'Disclosure', 'Copy', 'Actions', 'Button', 'labels', 'opened', 'inline', 'busy', 'setOpened', 'botId', 'run', 'send', 'reconcile', 'revoke', 'allow', 'setActions', body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', 'Disclosure', 'Copy', 'Actions', 'Button', {}, undefined, true, false, () => {}, 'chief',
+    (work: () => Promise<unknown>) => { pending = work(); return pending; },
+    async (input: unknown) => { calls.push({ kind: 'send', input }); return { ...action, status: 'sent' }; },
+    async (input: unknown) => { calls.push({ kind: 'reconcile', input }); return { ...action, status: 'send_unknown' }; },
+    async () => {}, async () => {}, (update: (value: typeof actions) => typeof actions) => { actions = update(actions); },
+  );
+  const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
+  const text = (node: any): string => Array.isArray(node) ? node.map(text).join('') : node && typeof node === 'object' && 'children' in node ? text(node.children) : typeof node === 'string' ? node : '';
+  const draft = render(action) as Element;
+  assert.equal(draft.props.open, true);
+  assert.equal(draft.props.title, action.subject);
+  for (const value of [action.account, action.to[0], action.text, action.query, action.sourceIds[0]]) assert.ok(text(draft).includes(value));
+  const confirm = elements(draft).find(node => node.type === 'Button' && node.props.label === '确认并发送')!;
+  assert.ok(confirm && !confirm.props.disabled);
+  confirm.props.onPress(); await pending;
+  assert.deepEqual(calls, [{ kind: 'send', input: { botId: 'chief', actionId: 'registered-mail' } }]);
+  assert.equal(actions[0].status, 'sent');
+  const unknown = render({ ...action, status: 'send_unknown' }) as Element;
+  const controls = elements(unknown).filter(node => node.type === 'Button');
+  assert.equal(controls.some(node => node.props.label === '确认并发送'), false);
+  const reconcile = controls.find(node => node.props.label === '回查')!;
+  assert.ok(reconcile && !reconcile.props.disabled);
+  reconcile.props.onPress(); await pending;
+  assert.deepEqual(calls[1], { kind: 'reconcile', input: { botId: 'chief', actionId: 'registered-mail' } });
+});

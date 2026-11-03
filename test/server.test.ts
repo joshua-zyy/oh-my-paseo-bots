@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
 import { TaskTracker } from '../server/tasks.js';
+import { MailOutbox, type GmailClient } from '../server/mail.js';
 
 test('同事页持续聊天复用原生会话，自身子事项完成和定向取消均不关闭聊天', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-conversation-'));
@@ -29,7 +30,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
   } }, agents: { ref: (agentId: string) => ({
     refresh: async () => {
       const input = created.find(item => item.agentId === agentId);
-      return input ? { agent: { id: agentId, title: input.title, workspaceId: 'ws-background', archivedAt: archived.has(agentId) ? 'now' : null, labels: { ...input.labels, ...(input.parent ? { 'paseo.parent-agent-id': input.parent } : {}) } } } : null;
+      return input ? { agent: { id: agentId, title: input.title, status: 'idle', pendingPermissions: [], workspaceId: 'ws-background', archivedAt: archived.has(agentId) ? 'now' : null, labels: { ...input.labels, ...(input.parent ? { 'paseo.parent-agent-id': input.parent } : {}) } } } : null;
     },
     archive: async () => {
       archived.add(agentId);
@@ -116,6 +117,23 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.equal(created.at(-1)!.prompt, undefined, '开新对话不自行发起模型轮次');
     assert.equal(archived.has(conversation.agentId), false, '开新对话不关闭原对话或停止其工作');
     assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === fresh.agentId), false);
+    const delegated = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { colleagueId: 'helper', requestId: 'chat-preview', title: '同事核对', prompt: '仅核对合成数据' } }));
+    const outbox = new MailOutbox({ baseDir: directory, store: new BotStore({ baseDir: directory }), getClient: async () => ({
+      config: { command: 'synthetic', configDir: directory, account: 'sender@example.test', query: 'label:synthetic' },
+      buildMail: value => Buffer.from(JSON.stringify(value)).toString('base64url'),
+    } as GmailClient) });
+    const proposal = { to: ['receiver@example.test'], subject: '合成确认', text: '仅用于离线显示测试' };
+    const mainMail = await outbox.propose('chief', conversation.agentId, { ...proposal, requestId: 'main-mail' });
+    const colleagueMail = await outbox.propose('helper', delegated.agentId, { ...proposal, requestId: 'colleague-mail' });
+    await outbox.propose('helper', other.agentId, { ...proposal, requestId: 'other-mail' });
+    const preview = await invoke('bots.conversation.work', { botId: 'chief', agentId: conversation.agentId }) as { entries: { agentId: string; botId: string; status: string; summary?: string }[]; mail: { id: string; botId: string }[] };
+    assert.equal(preview.entries.find(item => item.agentId === child.agentId)?.summary, '数字已核对');
+    assert.equal(preview.entries.find(item => item.agentId === next.agentId)?.status, 'canceled');
+    assert.equal(preview.entries.find(item => item.agentId === delegated.agentId)?.botId, 'helper', '主 Bot 聊天展示实际受托同事的工作');
+    assert.equal(preview.entries.some(item => item.agentId === other.agentId), false, '不混入同事无关的持续聊天');
+    assert.deepEqual(preview.mail.map(({ id, botId }) => ({ id, botId })), [{ id: mainMail.id, botId: 'chief' }, { id: colleagueMail.id, botId: 'helper' }], '只展示本聊天及受托同事的邮件，保留实际批准归属');
+    assert.deepEqual(await invoke('bots.conversation.work', { botId: 'chief', agentId: fresh.agentId }), { entries: [], mail: [] });
+    await assert.rejects(() => invoke('bots.conversation.work', { botId: 'helper', agentId: conversation.agentId }), /持续聊天/);
   } finally {
     for (const client of clients) await client.close();
     await cleanup();

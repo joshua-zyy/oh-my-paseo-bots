@@ -16,6 +16,7 @@ import * as rpc from './shared/contracts.js';
 import * as filesRpc from './shared/files.js';
 import { readDirectory, readSkill, readMcp } from './server/files.js';
 import { stopBotReply } from './server/reply.js';
+import { conversationWork } from './shared/chat.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
@@ -81,6 +82,28 @@ export default function contribute(server: PluginServerContext) {
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
   server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
+  server.handle(conversationWork, async ({ botId, agentId }, { paseo }) => {
+    const conversation = await tasks.get(botId, agentId);
+    const bot = await store.getBot(botId);
+    if (!bot || !conversation?.conversation) throw new Error('未找到本 Bot 的持续聊天');
+    const entries = await Promise.all(conversation.specialists.map(async agentId => {
+      const snapshot = await paseo.agents.ref(agentId).refresh();
+      const owner = snapshot?.agent.labels['paseo-guys.bot'] ?? await routines.owner(agentId) ?? botId;
+      const task = await tasks.get(owner, agentId);
+      const colleague = owner === botId ? bot : await store.getBot(owner);
+      return {
+        agentId, botId: owner, botName: colleague?.bot.name ?? owner,
+        title: task?.title ?? snapshot?.agent.title ?? agentId,
+        nativeStatus: snapshot?.agent.status ?? 'unknown', pendingPermissions: snapshot?.agent.pendingPermissions.length ?? 0,
+        ...(snapshot?.agent.lastError ? { error: snapshot.agent.lastError } : {}),
+        ...(task ? { status: task.status, summary: task.summary, evidence: task.evidence, detail: task.detail } : {}),
+      };
+    }));
+    const related = new Set([agentId, ...conversation.specialists]);
+    const mail = (await Promise.all([...new Set([botId, ...entries.map(entry => entry.botId)])].map(async botId =>
+      (await office.mail.list(botId)).filter(action => related.has(action.agentId)).map(action => ({ ...action, botId }))))).flat();
+    return { entries, mail };
+  });
   server.handle(readHistory, async (input, { paseo }) => readHistory.output.parse(await readBotHistory(store, paseo, input.botId, input)));
   server.handle(routineRpc.listRoutines, input => routines.list(input.botId));
   server.handle(routineRpc.createRoutine, input => routines.create(input.botId, input));

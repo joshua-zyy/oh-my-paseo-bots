@@ -24,9 +24,11 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 | 入口 | 职责 |
 | --- | --- |
-| [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，聊天／工作／记忆／例程导航，主题控件 |
+| [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，持续聊天、同事菜单和独立执行详情，主题控件 |
 | [client/chat.tsx](client/chat.tsx)、[client/chat-state.ts](client/chat-state.ts)、[client/chat-timeline.tsx](client/chat-timeline.tsx) | 原生持续聊天、按 Agent 保存草稿、实时历史分页与订阅恢复，插件内打开事项 |
 | [client/chat-permission.tsx](client/chat-permission.tsx)、[client/chat-question.ts](client/chat-question.ts) | 原生权限动作与问题回应，保留原生 action 与 answers 协议 |
+| [client/chat-work.tsx](client/chat-work.tsx)、[shared/chat.ts](shared/chat.ts) | 当前聊天关联的实际工作、报告和完整邮件草案，按实际 Bot 归属确认与回查 |
+| [client/agent-changes.ts](client/agent-changes.ts)、[client/use-bot-updates.ts](client/use-bot-updates.ts) | 原生 owned 元数据订阅；初始及重连快照、增量状态和移除驱动业务面板刷新 |
 | [server/reply.ts](server/reply.ts) | 按 Bot 会话／已登记专家绑定调用原生 `agent stop`，中断当前回复并核对回执 |
 | [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
 | [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/execution.tsx](client/execution.tsx)、[client/capabilities.tsx](client/capabilities.tsx) | 同事与默认配置；复用原生模型目录和设置控件，选择已有技能与 MCP |
@@ -92,6 +94,10 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 `bots.update` 按字段修改身份和说明，提供 `execution` 时整体替换执行覆盖，空对象恢复宿主默认。修改只影响新会话，不重配已有原生执行；有效配置参与创建请求指纹。同一模型未指定的模式／思考选项继承宿主默认，改选不同模型时使用其原生默认；显式 `null` 清除对应宿主选项。
 
 `bots.conversation.open` 返回本 Bot 最近的有效持续聊天；`bots.conversation.create` 在用户明确开新对话时读取最新配置和确认记忆。新对话仍使用后台原生工作区，不自行发起模型轮次，也不归档旧对话或停止既有事项。配置页的保存与保存后开新对话对应不同操作。
+
+同事菜单承载设置、工作记录、记忆与例程；主聊天保持挂载。执行 Agent 在独立原生 Modal 中显示实际执行者，保留主聊天及其草稿；打开持续聊天时按其 Bot 标签切换同事，会话选择按 Bot 保存。
+
+`bots.conversation.work` 只聚合该持续聊天已登记的专家及其实际 Bot 归属，邮件按聊天与专家 Agent ID 筛选。聊天内完整展示待确认草案，调用现有外发 RPC；结果不确定时只提供回查。固定预授权及其撤销仍在工作记录入口，泛泛的聊天同意不替代批准。业务面板订阅原生状态、轮次、权限和归档变化，流式 token 更新不反复读取业务目录。
 
 `bots.create` 未给 `id` 时生成内部标识，显式标识仍兼容已有调用。配置模型选择使用当前宿主 `providers.snapshot`，模型标识只在第一个 `/` 分开 Provider；切换模型清除旧模式和思考选项。目录浏览只读目录及选定的 SKILL.md / MCP 配置；路径属于 daemon 机器。MCP 名称预览不返回连接环境或认证头，`bots.update.mcpImports` 在保存时现读文件、校验后仅合入选定名称，失败不部分保存其他字段。无需安装能力库或更改宿主工具权限。
 

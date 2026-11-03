@@ -7,6 +7,7 @@ import { listTasks } from '../shared/tasks.js';
 import { History } from './history.js';
 import { Usage } from './usage.js';
 import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
+import { useBotUpdates } from './use-bot-updates.js';
 
 export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
   const list = useRpc(rpc.listRoutines);
@@ -17,6 +18,7 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
   const trigger = useRpc(rpc.runRoutine);
   const cancel = useRpc(rpc.cancelRoutine);
   const [items, setItems] = useState<RpcOutput<typeof rpc.listRoutines>>();
+  const updates = useBotUpdates(botId, items?.flatMap(item => item.routine.nativeId ? [item.routine.nativeId] : []) ?? []);
   const [reports, setReports] = useState<RpcOutput<typeof listTasks>>([]);
   const [creating, setCreating] = useState(false);
   const [opened, setOpened] = useState<string>();
@@ -47,11 +49,11 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
     let active = true;
     void Promise.all([list({ botId }), tasks({ botId })]).then(([rows, records]) => { if (active) { setItems(rows); setReports(records); } }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, list, tasks]);
+  }, [botId, list, tasks, updates.revision]);
   const statuses: Record<string, string> = { active: '已开启', paused: '已暂停', completed: '触发已结束' };
   const outcomes: Record<string, string> = { running: '运行中', succeeded: '原生成功', failed: '原生失败' };
   return <>
-    <Notice error={error} />
+    <Notice error={error || updates.error} />
     <Actions><Button label="刷新例程" disabled={busy} onPress={() => void run()} /><Button label="新建例程" icon="Plus" disabled={busy} onPress={() => setCreating(true)} /></Actions>
     {creating && <Section title="新建例程">
       <Field label="名称" value={name} onChangeText={setName} maxLength={120} disabled={busy} />

@@ -6,11 +6,12 @@ import * as rpc from '../shared/contracts.js';
 import { EMPTY_CHAT, observeChat, type ChatState } from './chat-state.js';
 import { ChatTimeline } from './chat-timeline.js';
 import { ChatPermission } from './chat-permission.js';
+import { ChatWork } from './chat-work.js';
 import { Actions, Button, Copy, Notice, useUi } from './ui.js';
 
 interface Draft { text: string; messageId?: string; sending?: boolean; unknown?: boolean; error?: string; stopping?: boolean; stopError?: string }
 
-export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { botId: string; hostId: string; sessionId?: string; openAgent(id: string): void; returnToChat(): void }) {
+export function Chat({ botId, hostId, sessionId, openAgent }: { botId: string; hostId: string; sessionId?: string; openAgent(id: string): void }) {
   const api = usePaseo();
   const hosts = useHosts();
   const open = useRpc(rpc.openConversation);
@@ -87,7 +88,6 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
   const error = opened.key === key ? opened.error || chat.error : '';
   const blocked = !agentId || offline || chat.loading || !!error || !!chat.agent?.archivedAt || !!draft.sending || !!draft.stopping;
   return <View style={{ flex: 1, minHeight: 0 }}>
-    {sessionId && chat.agent && chat.agent.labels['paseo-guys.conversation'] !== 'true' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: compact ? 16 : 28, paddingVertical: 8 }}><Button label="返回聊天" icon="ArrowLeft" onPress={returnToChat} /><View style={{ flex: 1 }}><Copy>{chat.agent.title}</Copy></View></View>}
     <ScrollView key={agentId} ref={scroll} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: compact ? 16 : 28, paddingVertical: 20 }} keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onScroll={event => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
@@ -97,6 +97,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
         {(chat.loading || (!agentId && !error)) && <Copy muted>读取中…</Copy>}
         {chat.hasOlder && <Button label={chat.loadingOlder ? '读取中…' : '更早消息'} disabled={chat.loadingOlder} onPress={() => { nearBottom.current = false; void observer.current?.loadOlder(); }} />}
         <ChatTimeline entries={chat.entries} activeTurnId={chat.agent?.activeTurn?.turnId} openAgent={openAgent} />
+        {agentId && chat.agent?.labels['paseo-guys.conversation'] === 'true' && <ChatWork key={agentId} botId={opened.owner} agentId={agentId} signal={`${chat.agent.status}:${chat.agent.activeTurn?.turnId ?? ''}:${chat.entries.filter(entry => entry.item.type === 'tool_call' && entry.item.status !== 'running').at(-1)?.seqEnd ?? ''}`} openAgent={openAgent} />}
         {chat.agent?.pendingPermissions.map(permission => <ChatPermission key={`${agentId}:${permission.id}`} permission={permission} agent={api.agents.ref(agentId!)} />)}
       </View>
     </ScrollView>

@@ -4,8 +4,10 @@ import { useRpc } from '@getpaseo/plugin/client';
 import type { RpcOutput } from '@getpaseo/plugin';
 import * as rpc from '../shared/contracts.js';
 import { Actions, Button, Copy, Field, Notice, Section, useUi } from './ui.js';
+import { useBotUpdates } from './use-bot-updates.js';
 
 export function Memories({ botId }: { botId: string }) {
+  const updates = useBotUpdates(botId);
   const list = useRpc(rpc.listMemories);
   const save = useRpc(rpc.saveMemory);
   const correct = useRpc(rpc.correctMemory);
@@ -26,9 +28,9 @@ export function Memories({ botId }: { botId: string }) {
     let active = true;
     void list({ botId }).then(value => { if (active) setEntries(value); }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, list]);
+  }, [botId, list, updates.revision]);
   return <>
-    <Notice error={error} />
+    <Notice error={error || updates.error} />
     <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '', kind: 'confirmed' })} /></Actions>
     {editing && <View style={{ padding: 16, marginVertical: 16, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Field label={editing.id ? '纠正记忆' : '记忆内容'} value={editing.content} maxLength={8000} multiline disabled={busy} onChangeText={content => setEditing({ ...editing, content })} />
