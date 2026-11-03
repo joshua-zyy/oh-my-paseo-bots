@@ -23,7 +23,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   let userMessage = '请记住：后续报告使用中文。';
   const archived: string[] = [];
   const created: PaseoAgentCreateOptions[] = [];
-  const paseo = { agents: {
+  const paseo = { workspaces: { create: async (options: { source: { path: string } }) => ({ agents: { create: (input: Omit<PaseoAgentCreateOptions, 'cwd'>) => paseo.agents.create({ ...input, cwd: options.source.path }) } }) }, agents: {
     create: async (options: PaseoAgentCreateOptions) => { created.push(options); return { id: options.agentId!, workspaceId: 'ws-configured' }; },
     ref: (id: string) => ({
       archive: async () => { archived.push(id); return { archivedAt: new Date().toISOString() }; },
@@ -48,6 +48,12 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     const seeded = await invoke('bots.list', {}) as { bots: { id: string; name: string }[] };
     assert.deepEqual(seeded.bots.map(bot => bot.id), ['chief'], '首次打开即有固定 Chief，不用手工注册');
     assert.equal(created.length, 0, '创建入口元数据不会自动调用模型');
+    const normalWorkspace = { source: { kind: 'directory', path: directory } };
+    assert.equal(await hooks.get('workspace.create')!({ request: normalWorkspace }, { paseo }), undefined, '正常 Paseo 工作区不变');
+    const botWorkspace = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'chief' } } };
+    assert.deepEqual(await hooks.get('workspace.create')!({ request: botWorkspace }, { paseo }), { ...botWorkspace, background: true });
+    const unknownBot = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'missing' } } };
+    assert.equal(await hooks.get('workspace.create')!({ request: unknownBot }, { paseo }), undefined, '未登记标签不能改变正常工作区');
     assert.deepEqual(await invoke('bots.list', {}), seeded, '再次打开沿用同一 Chief');
     await invoke('bots.update', { botId: 'chief', patch: { name: '主 Bot', role: '核对' } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '用户明确记忆' });
@@ -216,7 +222,8 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     created.push({ ...options, cwd: workspaceCwd ?? parent?.cwd ?? options.cwd });
     return { id: options.agentId!, workspaceId: 'ws-team' };
   };
-  const paseo = { workspaces: { open: async (cwd: string) => {
+  const paseo = { workspaces: { create: async (options: { source: { path: string } }) => {
+    const cwd = options.source.path;
     opened.push(cwd);
     return { agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => createNative({ ...options, cwd }, cwd) } };
   } }, agents: {
@@ -290,7 +297,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(created.length, 2, '相同委派不新建第三个原生会话');
     assert.equal(created[1].parent, root.agentId);
     assert.equal(created[1].cwd, join(directory, 'researcher'));
-    assert.deepEqual(opened, [join(directory, 'researcher')], '显式选择接收方工作区，但保留原生 parent');
+    assert.deepEqual(opened, [join(directory, 'chief'), join(directory, 'researcher')], '根 Bot 和接收方各自显式选择后台工作区，保留原生 parent');
     assert.equal(created[1].config.provider, 'research-provider/model');
     assert.equal(created[1].config.modeId, undefined, '模型改选后不套用另一模型的宿主模式');
     assert.equal(created[1].config.thinkingOptionId, undefined);

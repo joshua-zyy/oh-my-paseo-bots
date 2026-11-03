@@ -69,10 +69,15 @@ export async function startBotSession(
       prompt: input.prompt,
       labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId },
     };
-    // parent 默认继承父工作区；显式放置才能让固定同事使用自己的目录。
-    agent = input.parentAgentId
-      ? await (await paseo.workspaces.open(cwd)).agents.create(options)
-      : await paseo.agents.create({ ...options, cwd });
+    // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
+    const workspaceKey = createHash('sha256').update(stable({ bot: input.botId, cwd })).digest('hex');
+    const workspace = await paseo.workspaces.create({
+      source: { kind: 'directory', path: cwd },
+      title: `oh-my-paseo-bots:${input.botId}`,
+      background: true,
+      idempotencyKey: `oh-my-paseo-bots:workspace:${workspaceKey}`,
+    });
+    agent = await workspace.agents.create(options);
   }
 
   await store.completeCreation(input.botId, proposal.intent.requestId, {

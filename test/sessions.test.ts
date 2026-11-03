@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { PaseoApi, PaseoAgentCreateOptions } from '@getpaseo/client';
+import type { PaseoApi, PaseoAgentCreateOptions, PaseoWorkspaceCreateOptions } from '@getpaseo/client';
 import { BotStore, StoreError } from '../server/store.js';
 import { startBotSession } from '../server/sessions.js';
 
@@ -48,7 +48,7 @@ test('同输入并发启动复用一个意图、Agent 和原生幂等键', { tim
     const store = new BotStore({ baseDir: directory });
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对交付' });
     const created: PaseoAgentCreateOptions[] = [];
-    const api = { agents: {
+    const api = { workspaces: { create: async () => ({ agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => api.agents.create({ ...options, cwd: directory }) } }) }, agents: {
       create: async (options: PaseoAgentCreateOptions) => {
         created.push(options);
         if (created.length === 1) entered();
@@ -79,12 +79,20 @@ test('同输入并发启动复用一个意图、Agent 和原生幂等键', { tim
 /** 记录原生调用；`existing` 中的 agentId 视为回查可见，用于验证不重复创建。 */
 function fakePaseo(existing: string[] = []) {
   const created: PaseoAgentCreateOptions[] = [];
+  const workspaces: PaseoWorkspaceCreateOptions[] = [];
   const create = async (options: PaseoAgentCreateOptions) => {
     created.push(options);
     return { id: options.agentId ?? `agent-native-${created.length}`, workspaceId: 'ws-1' };
   };
   const api = {
-    workspaces: { open: async (cwd: string) => ({ agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...options, cwd }) } }) },
+    workspaces: {
+      open: async (cwd: string) => ({ agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...options, cwd }) } }),
+      create: async (options: PaseoWorkspaceCreateOptions) => {
+        workspaces.push(options);
+        const cwd = options.source.kind === 'directory' ? options.source.path : '';
+        return { agents: { create: (input: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...input, cwd }) } };
+      },
+    },
     agents: {
       create,
       ref: (agentId: string) => ({
@@ -92,8 +100,30 @@ function fakePaseo(existing: string[] = []) {
       }),
     },
   } as unknown as PaseoApi;
-  return { api, created };
+  return { api, created, workspaces };
 }
+
+test('Bot 会话和固定委派使用后台工作区，保留目录并按 Bot 复用原生工作区', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-background-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '协调' });
+    await store.createBot({ id: 'reader', name: '资料同事', role: '核对', execution: { cwd: join(directory, 'reader') } });
+    const { api, created, workspaces } = fakePaseo();
+    const first = await startBotSession(store, api, { botId: 'chief', requestId: 'first', title: '对话', prompt: '整理' }, placement(directory), tools);
+    await startBotSession(store, api, { botId: 'chief', requestId: 'second', title: '其他工作', prompt: '检查' }, placement(directory), tools);
+    await startBotSession(store, api, { botId: 'reader', requestId: 'child', parentAgentId: first.agentId, title: '资料核对', prompt: '核对来源' }, placement(directory), tools);
+    assert.equal(workspaces.length, 3);
+    assert.ok(workspaces.every(workspace => workspace.background === true));
+    assert.ok(workspaces[0].idempotencyKey);
+    assert.equal(workspaces[0].idempotencyKey, workspaces[1].idempotencyKey, '同 Bot 同目录交由原生幂等复用');
+    assert.notEqual(workspaces[0].idempotencyKey, workspaces[2].idempotencyKey, '固定同事使用自己的工作区');
+    assert.equal(created[0].cwd, directory);
+    assert.equal(created[2].cwd, join(directory, 'reader'));
+    assert.equal(created[2].parent, first.agentId, '隔离位置不改变原生父子关系');
+    assert.equal(created[2].background, undefined, '后台标记属于工作区创建，不传给已有工作区内的 Agent');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 class FlakyLinkStore extends BotStore {
   failNextCreation = true;

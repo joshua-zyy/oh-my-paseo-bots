@@ -128,6 +128,17 @@ export class BotRoutines {
     return null;
   }
 
+  async ownsSchedule(scheduleId: string): Promise<boolean> {
+    const document = await this.read();
+    let record = document.routines.find(item => item.nativeId === scheduleId);
+    if (!record && !document.routines.some(item => !item.nativeId)) return false;
+    if (!record) {
+      const native = await this.inspect(scheduleId);
+      record = document.routines.find(item => !item.nativeId && native.name === nativeName(item));
+    }
+    return !!record && !!await this.options.store.getBot(record.botId);
+  }
+
   async context(botId: string, agentId: string) {
     const task = await this.options.tasks.get(botId, agentId);
     const mapped = await botSessionConfig(this.options.store, botId, await this.options.defaults(), task?.routine ? 'routine' : 'interactive');

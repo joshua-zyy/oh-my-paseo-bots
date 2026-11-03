@@ -71,6 +71,8 @@ test('独立例程沿同一 Bot 配置映射，不复制记忆/MCP秘密；重�
   await f.store.addMemory('chief', { content: '只在动态上下文出现的记忆', kind: 'confirmed' });
   const [created] = await Promise.all([f.routines.create('chief', f.input), f.routines.create('chief', f.input)]);
   assert.equal(created.state, 'ready');
+  assert.equal(await f.routines.ownsSchedule(created.nativeId!), true, '本插件的原生例程可在工作区创建前识别');
+  assert.equal(await f.routines.ownsSchedule('unrelated'), false, '不改变其他原生例程');
   const args = f.calls.find(call => call.args[1] === 'create')!.args;
   assert.ok(args.includes('pi/test')); assert.ok(args.includes(f.dir));
   assert.ok(args.includes('configured-mode')); assert.ok(args.includes('configured-thinking'));

@@ -185,6 +185,17 @@ export default function contribute(server: PluginServerContext) {
     catch (error) { console.error(`Bot ${botId} 的事项关联未保存；仍记录原生观察`, error); }
     return botId;
   }
+  const hidden = server.before('workspace.create', async ({ request }, { paseo }) => {
+    const botId = request.agent?.labels?.['paseo-guys.bot'];
+    if (botId && await store.getBot(botId)) return { ...request, background: true };
+    const scheduleId = request.agent?.labels?.['paseo.schedule-id'];
+    if (scheduleId && await routines.ownsSchedule(scheduleId)) return { ...request, background: true };
+    if (request.callerAgentId) {
+      const caller = await paseo.agents.ref(request.callerAgentId).refresh();
+      const owner = caller?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(request.callerAgentId);
+      if (owner && await store.getBot(owner)) return { ...request, background: true };
+    }
+  });
   const opened = server.before('agent.session_open', async ({ request }, context) => {
     currentPaseo = context.paseo;
     if (request.labels?.['paseo.schedule-id']) {
@@ -242,5 +253,5 @@ export default function contribute(server: PluginServerContext) {
       { sourceAgentId: event.agent.id, activeTurnBehavior: 'steer', ...(event.turnId === null ? {} : { messageId: `paseo-guys:failure:${event.agent.id}:${event.turnId}` }) },
     );
   });
-  return async () => { started(); ended(); created(); archived(); opened(); await restoring.catch(() => {}); await mcp.close(); };
+  return async () => { started(); ended(); created(); archived(); opened(); hidden(); await restoring.catch(() => {}); await mcp.close(); };
 }
