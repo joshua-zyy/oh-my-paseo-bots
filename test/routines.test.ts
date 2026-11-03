@@ -145,6 +145,20 @@ test('动态上下文读取最新本 Bot 确认记忆，有限上轮参考排除
   assert.equal((await f.routines.context('chief', next.agentId)).previousResult, undefined);
 }));
 
+test('持续聊天动态上下文保持聊天指引，独立事项保留原来的收尾指引', async () => fixture(async f => {
+  await f.store.linkSession('chief', { sessionId: 'chat', title: '聊天' });
+  await f.store.linkSession('chief', { sessionId: 'task', title: '独立事项' });
+  await f.tasks.ensure('chief', 'chat', { title: '聊天', conversation: true });
+  await f.tasks.ensure('chief', 'task', { title: '独立事项' });
+  const chat = await f.routines.context('chief', 'chat');
+  assert.equal(chat.task?.conversation, true);
+  assert.match(chat.instructions, /当前是持续聊天，不能对自身调用 complete_task/);
+  assert.doesNotMatch(chat.instructions, /停止跟进并归档本事项/);
+  const task = await f.routines.context('chief', 'task');
+  assert.match(task.instructions, /停止跟进并归档本事项/);
+  assert.doesNotMatch(task.instructions, /当前是持续聊天/);
+}));
+
 test('暂停不停止当前工作；取消停止当前关联并拒绝未来执行，失败不假报完全停止', async () => fixture(async f => {
   const created = await f.routines.create('chief', f.input);
   const running = f.request(created.nativeId!); await f.routines.bind(running);
