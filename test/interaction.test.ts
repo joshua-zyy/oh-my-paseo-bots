@@ -151,3 +151,50 @@ test('例程列表显示普通时间，其他 Cron 保留原文', async () => {
     ['0 9 1 * *', '0 9 1 * *'], ['*/10 * * * *', '*/10 * * * *'],
   ]) assert.equal(describeRoutineCron(expression), expected);
 });
+
+test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容保持完整', async () => {
+  const source = await sourceFile('client/chat.tsx');
+  let callback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'send') callback = `${node.getText(source)}\nreturn send;`;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const createSend = new Function('agentId', 'sends', 'stops', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', body);
+  const text = '请记住：后续报告使用英文。\n本条原话不能附加或删改。';
+  const attachment = { type: 'text', mimeType: 'text/plain', title: '最新确认记忆', text: '["使用英文"]' };
+  let preparations = 0;
+  const requests: { text: string; options: unknown }[] = [];
+  let drafts: Record<string, any> = { 'helper-chat': { text, messageId: 'same-message' } };
+  let sendFails = true;
+  let contextFails = false;
+  let conversation = true;
+  const invoke = () => createSend('helper-chat', { current: new Set() }, { current: new Set() }, drafts['helper-chat'], false,
+    { loading: false, agent: { archivedAt: null, labels: conversation ? { 'paseo-guys.conversation': 'true' } : {} } }, { current: { refresh() {} } },
+    (update: (value: typeof drafts) => typeof drafts) => { drafts = update(drafts); },
+    { agents: { ref: () => ({ send: async (text: string, options: unknown) => { requests.push({ text, options }); if (sendFails) throw new Error('回执丢失'); } }) } },
+    { owner: 'helper' }, async (input: unknown) => { preparations++; assert.deepEqual(input, { botId: 'helper', agentId: 'helper-chat' }); if (contextFails) throw new Error('记忆读取失败'); return attachment; },
+  )();
+  await invoke();
+  assert.equal(preparations, 1);
+  assert.deepEqual(requests, [{ text, options: { messageId: 'same-message', activeTurnBehavior: 'steer', attachments: [attachment] } }]);
+  assert.equal(drafts['helper-chat'].unknown, true);
+  sendFails = false;
+  await invoke();
+  assert.equal(preparations, 1, '回执不确定时沿用原消息的上下文附件，不重新取内容或换消息标识');
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(drafts['helper-chat'].text, '');
+  drafts['helper-chat'] = { text, messageId: 'not-dispatched' };
+  contextFails = true;
+  await invoke();
+  assert.equal(requests.length, 2, '上下文读取失败不发送原生消息');
+  assert.notEqual(drafts['helper-chat'].unknown, true, '尚未派发不能报告为发送回执不确定');
+  assert.equal(drafts['helper-chat'].text, text);
+  conversation = false;
+  drafts['helper-chat'] = { text, messageId: 'expert-message' };
+  await invoke();
+  assert.equal(preparations, 2, '原生专家详情不自动取得固定 Bot 的全部记忆');
+  assert.deepEqual(requests[2], { text, options: { messageId: 'expert-message', activeTurnBehavior: 'steer' } });
+});

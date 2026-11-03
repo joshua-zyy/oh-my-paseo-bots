@@ -2,20 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import { View, type ScrollView as NativeScrollView } from 'react-native';
 import { ScrollView, TextInput } from '@getpaseo/plugin/client/ui';
 import { useHosts, usePaseo, useRpc } from '@getpaseo/plugin/client';
+import type { PaseoAgentSendOptions } from '@getpaseo/client';
 import * as rpc from '../shared/contracts.js';
+import { conversationContext } from '../shared/chat.js';
 import { EMPTY_CHAT, observeChat, type ChatState } from './chat-state.js';
 import { ChatTimeline } from './chat-timeline.js';
 import { ChatPermission } from './chat-permission.js';
 import { ChatWork } from './chat-work.js';
 import { Actions, Button, Copy, Notice, useUi } from './ui.js';
 
-interface Draft { text: string; messageId?: string; sending?: boolean; unknown?: boolean; error?: string; stopping?: boolean; stopError?: string }
+interface Draft { text: string; messageId?: string; attachments?: PaseoAgentSendOptions['attachments']; sending?: boolean; unknown?: boolean; error?: string; stopping?: boolean; stopError?: string }
 
 export function Chat({ botId, hostId, sessionId, openAgent }: { botId: string; hostId: string; sessionId?: string; openAgent(id: string): void }) {
   const api = usePaseo();
   const hosts = useHosts();
   const open = useRpc(rpc.openConversation);
   const stop = useRpc(rpc.stopReply);
+  const prepare = useRpc(conversationContext);
   const { colors, compact } = useUi();
   const [opened, setOpened] = useState<{ key: string; agentId?: string; owner: string; error: string }>({ key: '', owner: botId, error: '' });
   const [state, setState] = useState<ChatState>(EMPTY_CHAT);
@@ -61,13 +64,18 @@ export function Chat({ botId, hostId, sessionId, openAgent }: { botId: string; h
     const current = observer.current;
     const text = draft.text;
     const messageId = draft.messageId ?? `bots:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    let attachments = draft.attachments;
+    let dispatched = false;
     sends.current.add(target);
     setDrafts(current => ({ ...current, [target]: { text, messageId, sending: true } }));
     try {
-      await api.agents.ref(target).send(text, { messageId, activeTurnBehavior: 'steer' });
+      if (!attachments && chat.agent?.labels['paseo-guys.conversation'] === 'true') attachments = [await prepare({ botId: opened.owner, agentId: target })];
+      setDrafts(current => ({ ...current, [target]: { text, messageId, attachments, sending: true } }));
+      dispatched = true;
+      await api.agents.ref(target).send(text, { messageId, activeTurnBehavior: 'steer', ...(attachments ? { attachments } : {}) });
       setDrafts(current => ({ ...current, [target]: { text: '' } }));
     } catch (failure) {
-      setDrafts(current => ({ ...current, [target]: { text, messageId, unknown: true, error: `发送回执未确认：${String(failure)}` } }));
+      setDrafts(current => ({ ...current, [target]: { text, messageId, attachments, unknown: dispatched, error: `${dispatched ? '发送回执未确认' : '读取确认记忆失败，消息尚未发送'}：${String(failure)}` } }));
     } finally { sends.current.delete(target); }
     void current?.refresh();
   }

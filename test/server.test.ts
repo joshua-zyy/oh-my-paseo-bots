@@ -69,6 +69,8 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
   try {
     await invoke('bots.list', {});
     await invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    const memory = await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '报告使用中文' }) as { id: string };
+    await invoke('bots.memory.save', { botId: 'chief', kind: 'candidate', content: '尚未确认的偏好' });
     const conversation = await invoke('bots.conversation.open', { botId: 'chief' }) as { agentId: string };
     const other = await invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
     assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
@@ -80,10 +82,23 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.match(created[0].config.systemPrompt!, /持续聊天/);
     assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), []);
     const client = await connect(conversation.agentId);
+    const context = () => invoke('bots.conversation.context', { botId: 'chief', agentId: conversation.agentId }) as Promise<{ type: string; mimeType: string; title: string; text: string }>;
+    assert.match(created[0].config.systemPrompt!, /报告使用中文/);
+    assert.doesNotMatch(created[0].config.systemPrompt!, /尚未确认的偏好/);
+    await invoke('bots.memory.correct', { botId: 'chief', memoryId: memory.id, content: '报告使用英文', kind: 'confirmed' });
+    const updated = await context();
+    assert.equal(updated.type, 'text'); assert.equal(updated.mimeType, 'text/plain');
+    assert.match(updated.text, /报告使用英文/);
+    assert.doesNotMatch(updated.text, /报告使用中文|尚未确认的偏好/);
+    assert.match(created[0].config.systemPrompt!, /报告使用中文/, '旧创建快照保留，最新记忆通过原生上下文附件用于下一条消息');
+    await new BotStore({ baseDir: directory }).removeMemory('chief', memory.id);
+    assert.match((await context()).text, /\[\]/, '遗忘后发送空的当前确认列表，不继续沿用旧创建快照');
+    await assert.rejects(() => invoke('bots.conversation.context', { botId: 'helper', agentId: conversation.agentId }), /持续聊天/);
     assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).conversation, true);
     assert.equal((await client.callTool({ name: 'complete_task', arguments: { summary: '结束回复', evidence: ['回复'] } })).isError, true);
     const request = { requestId: 'check-1', title: '数字核对', prompt: '核对合成数字，交付 findings.md' };
     const child = payload(await client.callTool({ name: 'start_task', arguments: request }));
+    await assert.rejects(() => invoke('bots.conversation.context', { botId: 'chief', agentId: child.agentId }), /持续聊天/);
     assert.equal(created[2].parent, conversation.agentId);
     assert.equal(created[2].labels?.['paseo-guys.bot'], 'chief');
     assert.equal(created[2].labels?.['paseo-guys.conversation'], undefined);

@@ -16,7 +16,7 @@ import * as rpc from './shared/contracts.js';
 import * as filesRpc from './shared/files.js';
 import { readDirectory, readSkill, readMcp } from './server/files.js';
 import { stopBotReply } from './server/reply.js';
-import { conversationWork } from './shared/chat.js';
+import { conversationContext, conversationWork } from './shared/chat.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
@@ -82,6 +82,16 @@ export default function contribute(server: PluginServerContext) {
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
   server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
+  server.handle(conversationContext, async ({ botId, agentId }, { paseo }) => {
+    const task = await tasks.get(botId, agentId);
+    const snapshot = await paseo.agents.ref(agentId).refresh();
+    if (!task?.conversation || snapshot?.agent.labels['paseo-guys.bot'] !== botId || snapshot.agent.archivedAt) throw new Error('未找到本 Bot 的有效持续聊天');
+    const memories = await store.getContextMemories(botId);
+    return {
+      type: 'text' as const, mimeType: 'text/plain' as const, title: '最新确认记忆',
+      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}`,
+    };
+  });
   server.handle(conversationWork, async ({ botId, agentId }, { paseo }) => {
     const conversation = await tasks.get(botId, agentId);
     const bot = await store.getBot(botId);

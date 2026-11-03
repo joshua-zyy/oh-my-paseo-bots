@@ -2,6 +2,11 @@ import { defineRpc } from '@getpaseo/plugin';
 import { z } from 'zod';
 import { mailAction } from './office.js';
 
+export const conversationContext = defineRpc({
+  name: 'bots.conversation.context', input: z.object({ botId: z.string(), agentId: z.string() }),
+  output: z.object({ type: z.literal('text'), mimeType: z.literal('text/plain'), title: z.string(), text: z.string() }),
+});
+
 export const conversationWork = defineRpc({
   name: 'bots.conversation.work', input: z.object({ botId: z.string(), agentId: z.string() }),
   output: z.object({

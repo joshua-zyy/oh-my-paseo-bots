@@ -14,7 +14,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | 原生 Agent | Paseo 管理的执行会话；创建、通信、历史与归档复用宿主 |
 | 持续聊天 | 每位 Bot 的用户对话，按原生 Agent 关联；独立事项结束不关闭它 |
 | 事项 | 插件关联的目标、状态、专家、跟进和交付证据；轮次结束不等于事项完成 |
-| 记忆 | 明确记忆与推断候选分开保存，仅确认内容用于新会话 |
+| 记忆 | 明确记忆与推断候选分开保存，仅确认内容用于新会话和持续聊天的本轮上下文 |
 | 跟进 | 绑定事项 Agent 的原生 heartbeat；创建回执不证明已经执行 |
 | 独立例程 | 固定 Bot 关联的原生 new-agent schedule；每次执行建立新的事项与产物关联 |
 
@@ -27,7 +27,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，持续聊天、同事菜单和独立执行详情，主题控件 |
 | [client/chat.tsx](client/chat.tsx)、[client/chat-state.ts](client/chat-state.ts)、[client/chat-timeline.tsx](client/chat-timeline.tsx) | 原生持续聊天、按 Agent 保存草稿、实时历史分页与订阅恢复，插件内打开事项 |
 | [client/chat-permission.tsx](client/chat-permission.tsx)、[client/chat-question.ts](client/chat-question.ts) | 原生权限动作与问题回应，保留原生 action 与 answers 协议 |
-| [client/chat-work.tsx](client/chat-work.tsx)、[shared/chat.ts](shared/chat.ts) | 当前聊天关联的实际工作、报告和完整邮件草案，按实际 Bot 归属确认与回查 |
+| [client/chat-work.tsx](client/chat-work.tsx)、[shared/chat.ts](shared/chat.ts) | 当前聊天的最新记忆附件、关联工作、报告和完整邮件草案，按实际 Bot 归属确认与回查 |
 | [client/agent-changes.ts](client/agent-changes.ts)、[client/use-bot-updates.ts](client/use-bot-updates.ts) | 原生 owned 元数据订阅；初始及重连快照、增量状态和移除驱动业务面板刷新 |
 | [server/reply.ts](server/reply.ts) | 按 Bot 会话／已登记专家绑定调用原生 `agent stop`，中断当前回复并核对回执 |
 | [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
@@ -99,6 +99,8 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 同事菜单承载设置、工作记录、记忆与例程；主聊天保持挂载。执行 Agent 在独立原生 Modal 中显示实际执行者，保留主聊天及其草稿；打开持续聊天时按其 Bot 标签切换同事，会话选择按 Bot 保存。
 
 `bots.conversation.work` 只聚合该持续聊天已登记的专家及其实际 Bot 归属，邮件按聊天与专家 Agent ID 筛选。聊天内完整展示待确认草案，调用现有外发 RPC；结果不确定时只提供回查。固定预授权及其撤销仍在工作记录入口，泛泛的聊天同意不替代批准。业务面板订阅原生状态、轮次、权限和归档变化，流式 token 更新不反复读取业务目录。
+
+`bots.conversation.context` 核对原生 Bot 标签、持续聊天绑定和未归档状态，现读已确认记忆。聊天发送将其作为原生 `text/plain` 附件交给同一 Bot，用户正文保持独立；Paseo 自行去掉正文首尾空白，附件不会进入明确记忆和取消依据的 `latestUserMessage`。空列表也发送，用于纠正旧创建快照；本条用户的新偏好优先，保存后可通过 `get_bot_context` 读取更新。回执不确定时保留原消息 ID 与附件，读取上下文失败且尚未派发时不报告为发送未知。执行详情不自动附加固定 Bot 的全部记忆。插件不向原生记忆文件复制偏好；旧历史与原生项目指令仍保留，不承诺消除所有来源的语义冲突。
 
 `bots.create` 未给 `id` 时生成内部标识，显式标识仍兼容已有调用。配置模型选择使用当前宿主 `providers.snapshot`，模型标识只在第一个 `/` 分开 Provider；切换模型清除旧模式和思考选项。目录浏览只读目录及选定的 SKILL.md / MCP 配置；路径属于 daemon 机器。MCP 名称预览不返回连接环境或认证头，`bots.update.mcpImports` 在保存时现读文件、校验后仅合入选定名称，失败不部分保存其他字段。无需安装能力库或更改宿主工具权限。
 
