@@ -36,6 +36,23 @@ export function registerColleagueTools(server: McpServer, scope: ColleagueToolSc
     try { return { content: [{ type: 'text' as const, text: JSON.stringify(await action()) }] }; }
     catch (error) { return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : '同事委派未完成' }] }; }
   };
+  const workInput = {
+    requestId: z.string().trim().min(1).max(120),
+    title: z.string().trim().min(1).max(200),
+    prompt: z.string().trim().min(1).max(20000),
+  };
+  async function startWork(botId: string, input: { requestId: string; title: string; prompt: string }, kind: 'task' | 'delegation') {
+    await scope.tasks.requireActive(scope.botId, scope.agentId);
+    const source = createHash('sha256').update(scope.agentId).digest('hex');
+    const namespace = `${kind}:${source}:`;
+    const result = await scope.start({ botId, parentAgentId: scope.agentId, requestId: `${namespace}${input.requestId}`, title: input.title, prompt: input.prompt });
+    await scope.tasks.observeSpecialist(scope.botId, scope.agentId, result.agentId);
+    return { agentId: result.agentId, requestId: result.requestId.slice(namespace.length) };
+  }
+  server.registerTool('start_task', {
+    description: '为本 Bot 建立独立 Paseo 子事项，适合从持续聊天交办需要完成、取消或定时跟进的工作。传明确目标、交付物和必要上下文；不复制整段聊天、记忆或新增权限。保持原始 requestId 重试，启动回执不等于完成；结果经原生通信返回父聊天，由父 Bot 核对。普通问答直接回复，不建立事项。',
+    inputSchema: workInput,
+  }, input => run(() => startWork(scope.botId, input, 'task')));
   server.registerTool('create_colleague', {
     description: '仅 Chief 可登记一个确有长期职责且未重复的固定同事，不自动启动执行 Agent。id 是稳定小写标识，结果不确定时先查目录，不换标识重复创建。未指定执行配置沿用创建者；模型、思考和目录仅按用户要求或现有授权选择，不提供账户、工具权限或 modeId 授权。登记后用 delegate_to_colleague 交办实际工作。',
     inputSchema: {
@@ -74,25 +91,11 @@ export function registerColleagueTools(server: McpServer, scope: ColleagueToolSc
     description: '把当前事项中明确的一部分交给已注册的其他固定同事，通过 Paseo 原生父子会话运行。仅传任务必要上下文；不传全部记忆或历史，不扩大权限。requestId 为本次委派的稳定原始标识，重试用同一输入，不换标识规避未知结果。启动回执不等于完成；使用 Paseo 原生通知与通信取得实际结果并按交付条件核对。',
     inputSchema: {
       colleagueId: z.string().trim().min(1).max(64),
-      requestId: z.string().trim().min(1).max(120),
-      title: z.string().trim().min(1).max(200),
-      prompt: z.string().trim().min(1).max(20000),
+      ...workInput,
     },
   }, input => run(async () => {
     if (input.colleagueId === scope.botId) throw new Error('请委派给其他固定同事，不能委派给自己');
     if (!await scope.store.getBot(input.colleagueId)) throw new Error(`固定同事未注册：${input.colleagueId}`);
-    await scope.tasks.requireActive(scope.botId, scope.agentId);
-    // 源 Agent 最长200字符；哈希命名空间保证整体不超过存储的200字符上限。
-    const source = createHash('sha256').update(scope.agentId).digest('hex');
-    const namespace = `delegation:${source}:`;
-    const result = await scope.start({
-      botId: input.colleagueId,
-      parentAgentId: scope.agentId,
-      requestId: `${namespace}${input.requestId}`,
-      title: input.title,
-      prompt: input.prompt,
-    });
-    await scope.tasks.observeSpecialist(scope.botId, scope.agentId, result.agentId);
-    return { agentId: result.agentId, requestId: result.requestId.slice(namespace.length) };
+    return startWork(input.colleagueId, input, 'delegation');
   }));
 }

@@ -119,3 +119,16 @@ test('重开 BotStore 和 TaskTracker 后，新会话仍可查询既有事项及
     assert.deepEqual(completed.evidence, ['local/report.md']);
   }));
 });
+
+test('持续聊天的控制记录不出现在事项目录', async () => {
+  await withTasks(async ({ tracker, dir }) => {
+    const store = new BotStore({ baseDir: join(dir, 'store') });
+    await store.linkSession('chief', { sessionId: 'conversation-chief' });
+    const input = { title: '主聊天', conversation: true as const };
+    await tracker.ensure('chief', 'conversation-chief', input);
+    await withClient(tracker, async client => {
+      const listed = payload<Partial<TaskRecord>[]>(await client.callTool({ name: 'list_bot_tasks', arguments: { includeFinished: true } }));
+      assert.equal(listed.some(task => task.agentId === 'conversation-chief'), false);
+    });
+  });
+});

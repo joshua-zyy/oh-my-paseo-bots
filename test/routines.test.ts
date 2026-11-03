@@ -50,7 +50,7 @@ async function setup() {
     }
     return { stdout: JSON.stringify(payload), stderr: '' };
   };
-  const api = { agents: { ref: (id: string) => ({ archive: async () => {
+  const api = { agents: { ref: (id: string) => ({ refresh: async () => ({ agent: { id, labels: {} } }), archive: async () => {
     if (failArchive) throw new Error('synthetic archive unavailable');
     archives.push(id); return { archivedAt: new Date().toISOString() };
   } }) } } as unknown as PaseoApi;

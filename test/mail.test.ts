@@ -384,7 +384,7 @@ describe('Gmail 专用外发登记', () => {
 
   it('事项在草稿核对期间取消后不准入发送，仍可回查未知结果且不阻塞其他事项', async () => {
     const { dir, store, gmail } = await setup();
-    const tasks = new TaskTracker({ baseDir: dir, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });
+    const tasks = new TaskTracker({ baseDir: dir, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ refresh: async () => ({ agent: { labels: {} } }), archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });
     const outbox = new MailOutbox({ baseDir: dir, store, getClient: async () => gmail, requireActive: (bot, agent) => tasks.requireActive(bot, agent) });
     const action = await outbox.propose('chief', 'agent-chief', proposal('stopped-during-draft'));
     await outbox.approve('chief', action.id);

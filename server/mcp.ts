@@ -11,7 +11,7 @@ import type { BotStore } from './store.js';
 import type { BotOfficeAccess } from './office.js';
 import { registerOfficeTools } from './office-tools.js';
 import type { TaskTracker } from './tasks.js';
-import { registerTaskTools } from './task-tools.js';
+import { registerTaskTools, type ExplicitTaskCancel } from './task-tools.js';
 import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
 import type { MemoryCorrection, MemoryForget } from './memory.js';
 import type { BotHistoryInput } from './history.js';
@@ -77,7 +77,7 @@ export interface BotMcpOptions {
   tasks?: TaskTracker;
   startColleague?: ColleagueToolScope['start'];
   readContext?: (botId: string, agentId: string) => Promise<unknown>;
-  cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
+  cancelExplicit?: ExplicitTaskCancel;
 }
 
 export interface BotMcpToolScope {
@@ -93,7 +93,7 @@ export interface BotMcpToolScope {
   tasks?: TaskTracker;
   startColleague?: ColleagueToolScope['start'];
   readContext?: (botId: string, agentId: string) => Promise<unknown>;
-  cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>;
+  cancelExplicit?: ExplicitTaskCancel;
 }
 
 function isBotId(value: string): boolean {

@@ -20,7 +20,7 @@ async function withColleagues(run: (value: { client: Client; store: BotStore; ta
   await store.createBot({ id: 'research', name: '研究同事', role: '整理指定资料' });
   await store.createBot({ id: 'writer', name: '写作同事', role: '撰写报告' });
   await store.linkSession('chief', { sessionId: 'source-agent' });
-  const tasks = new TaskTracker({ baseDir: directory, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });
+  const tasks = new TaskTracker({ baseDir: directory, store, cli: { command: '', cwd: '' }, getPaseo: () => ({ agents: { ref: () => ({ refresh: async () => ({ agent: { labels: {} } }), archive: async () => ({ archivedAt: 'now' }) }) } }) as unknown as PaseoApi });
   await tasks.ensure('chief', 'source-agent', { title: '整理资料与核对' });
   const started: Parameters<ColleagueToolScope['start']>[0][] = [];
   let failNext = false;
@@ -48,6 +48,23 @@ function text(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 const input = { colleagueId: 'research', requestId: 'research-1', title: '整理指定资料', prompt: '仅核对给出的合成摘要，交付 report.md。' };
+
+test('start_task 用本 Bot 的独立原生子事项执行工作，保留父聊天和稳定请求键', async () => {
+  await withColleagues(async ({ client, started, tasks }) => {
+    const request = { requestId: 'work-1', title: '核对数字', prompt: '核对合成资料，交付 report.md' };
+    const result = await client.callTool({ name: 'start_task', arguments: request });
+    assert.notEqual(result.isError, true, text(result));
+    assert.equal(started.length, 1);
+    assert.equal(started[0].botId, 'chief');
+    assert.equal(started[0].parentAgentId, 'source-agent');
+    assert.equal(JSON.parse(text(result)).requestId, request.requestId);
+    assert.equal((await tasks.get('chief', 'source-agent'))?.status, 'active');
+    assert.deepEqual((await tasks.get('chief', 'source-agent'))?.specialists, ['research-native-agent']);
+    await tasks.stop('chief', 'source-agent', { outcome: 'canceled', summary: '停止旧事项' });
+    assert.equal((await client.callTool({ name: 'start_task', arguments: request })).isError, true);
+    assert.equal(started.length, 1, '停止后不再派发');
+  });
+});
 
 test('Chief可创建和调整固定同事，仅配置选定字段，不启动原生Agent或修改授权', async () => {
   await withColleagues(async ({ client, store, started }) => {

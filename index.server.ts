@@ -48,8 +48,15 @@ export default function contribute(server: PluginServerContext) {
   const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, readContext: (botId, agentId) => routines.context(botId, agentId), startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
-  }, cancelExplicit: async (botId, agentId, quote) => {
+  }, cancelExplicit: async (botId, agentId, quote, targetAgentId) => {
     if (!currentPaseo || (await latestUserMessage(currentPaseo, agentId)).trim() !== quote.trim()) throw new Error('取消依据与原生最新完整用户消息不符，未取消事项');
+    if (targetAgentId && targetAgentId !== agentId) {
+      const caller = await tasks.requireActive(botId, agentId);
+      const target = await currentPaseo.agents.ref(targetAgentId).refresh();
+      const owner = target?.agent.labels?.['paseo-guys.bot'];
+      if (!caller.specialists.includes(targetAgentId) || target?.agent.labels?.['paseo.parent-agent-id'] !== agentId || !owner) throw new Error('只能取消当前聊天实际交办的固定同事子事项');
+      return tasks.stop(owner, targetAgentId, { outcome: 'canceled', summary: '用户在父聊天中明确取消此子事项' });
+    }
     await tasks.ensure(botId, agentId, { title: agentId });
     return tasks.stop(botId, agentId, { outcome: 'canceled', summary: '用户在原生会话中明确取消事项' });
   }, rememberExplicit: async (botId, agentId, input) => {
@@ -67,7 +74,7 @@ export default function contribute(server: PluginServerContext) {
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
-  server.handle(taskRpc.listTasks, input => tasks.list(input.botId));
+  server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
   server.handle(readHistory, async (input, { paseo }) => readHistory.output.parse(await readBotHistory(store, paseo, input.botId, input)));
   server.handle(routineRpc.listRoutines, input => routines.list(input.botId));
   server.handle(routineRpc.createRoutine, input => routines.create(input.botId, input));
@@ -133,6 +140,31 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rpc.startSession, async (input, { paseo }) => {
     return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
   });
+  server.handle(rpc.openConversation, async ({ botId }, { paseo }) => {
+    currentPaseo = paseo;
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error(`Bot 不存在：${botId}`);
+    const existing = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active').at(-1);
+    const pending = (await store.listPendingCreations(botId)).find(intent => intent.agentId === existing?.agentId);
+    let requestId: string = randomUUID();
+    if (existing) {
+      const snapshot = await paseo.agents.ref(existing.agentId).refresh();
+      if (snapshot && !snapshot.agent.archivedAt) {
+        if (pending) {
+          await store.completeCreation(botId, pending.requestId, { sessionId: existing.agentId, title: snapshot.agent.title, workspaceId: snapshot.agent.workspaceId });
+          await store.acknowledgeCreation(botId, pending.requestId);
+        }
+        await mcp.mount(botId, existing.agentId);
+        return { agentId: existing.agentId };
+      }
+      if (snapshot?.agent.archivedAt) await tasks.observeArchived(botId, existing.agentId);
+      else if (pending) requestId = pending.requestId;
+      else throw new Error('持续聊天的原生会话暂未找到；保留关联，未重新创建');
+    }
+    const result = await startBoundSession({ botId, requestId, title: bot.bot.name, kind: 'conversation' }, paseo);
+    await store.acknowledgeCreation(botId, result.requestId);
+    return { agentId: result.agentId };
+  });
   async function startBoundSession(input: SessionInput, paseo: PaseoApi) {
     currentPaseo = paseo;
     const state = await settings.read();
@@ -140,7 +172,7 @@ export default function contribute(server: PluginServerContext) {
     const { cwd, provider, modeId, thinkingOptionId } = state.values;
     return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
-        await tasks.ensure(botId, agentId, { title: input.title });
+        await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind === 'conversation' ? { conversation: true } : {}) });
         return mcp.mount(botId, agentId);
       },
     });
@@ -170,7 +202,7 @@ export default function contribute(server: PluginServerContext) {
       if (owner && await store.getBot(owner)) {
         try {
           await store.linkSession(owner, { sessionId: parentId, title: parent!.agent.title, workspaceId: parent!.agent.workspaceId });
-          await tasks.ensure(owner, parentId, { title: parent!.agent.title || parentId });
+          await tasks.ensure(owner, parentId, { title: parent!.agent.title || parentId, ...(parent?.agent.labels?.['paseo-guys.conversation'] === 'true' ? { conversation: true } : {}) });
           await tasks.observeSpecialist(owner, parentId, agent.id);
         } catch (error) { console.error(`Bot ${owner} 的原生专家关联未保存；仍记录原生观察`, error); }
         parentBotId = owner;
@@ -181,7 +213,7 @@ export default function contribute(server: PluginServerContext) {
     if (!botId || !await store.getBot(botId)) return parentBotId;
     try { await store.linkSession(botId, { sessionId: agent.id, title: agent.title, workspaceId: agent.workspaceId }); }
     catch (error) { console.error(`Bot ${botId} 会话关联未保存；仍记录原生观察`, error); }
-    try { await tasks.ensure(botId, agent.id, { title: agent.title || agent.id }); }
+    try { await tasks.ensure(botId, agent.id, { title: agent.title || agent.id, ...(snapshot?.agent.labels?.['paseo-guys.conversation'] === 'true' ? { conversation: true } : {}) }); }
     catch (error) { console.error(`Bot ${botId} 的事项关联未保存；仍记录原生观察`, error); }
     return botId;
   }

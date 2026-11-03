@@ -38,6 +38,8 @@ export interface TaskFollowup {
 /** 一个 Paseo 原生会话承载的 Bot 事项。 */
 export interface TaskRecord {
   agentId: string;
+  /** 用户持续聊天的控制记录；不作为可完成的事项。 */
+  conversation?: true;
   title: string;
   goal?: string;
   status: TaskStatus;
@@ -124,7 +126,7 @@ const evidenceSchema = z.array(text(500)).max(20);
 
 const titleSchema = z.string().trim().min(1);
 const routineSchema = z.object({ id: z.uuid(), runId: text(200), prompt: text(8000) });
-const ensureSchema = z.object({ title: titleSchema, goal: text(2000).optional(), routine: routineSchema.optional() });
+const ensureSchema = z.object({ title: titleSchema, goal: text(2000).optional(), routine: routineSchema.optional(), conversation: z.literal(true).optional() });
 const followSchema = z.object({
   name: text(120),
   prompt: text(8000),
@@ -154,6 +156,7 @@ const followupSchema = z.object({
 });
 const taskSchema = z.object({
   agentId: agentIdSchema,
+  conversation: z.literal(true).optional(),
   title: titleSchema,
   goal: text(2000).optional(),
   status: z.enum(TASK_STATUSES),
@@ -286,7 +289,7 @@ export class TaskTracker {
   }
 
   /** 幂等关联已存在的 Bot 会话（或创建意图）；不会创建会话，也不复制记忆。 */
-  async ensure(botId: string, agentId: string, input: { title: string; goal?: string; routine?: TaskRecord['routine'] }): Promise<TaskRecord> {
+  async ensure(botId: string, agentId: string, input: { title: string; goal?: string; routine?: TaskRecord['routine']; conversation?: true }): Promise<TaskRecord> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(agentIdSchema, agentId, 'agentId');
     const value = parseInput(ensureSchema, input, 'task');
@@ -303,6 +306,7 @@ export class TaskTracker {
         return view(existing);
       }
       const task: TaskRecord = { agentId: aid, title: value.title, status: 'active', followups: [], specialists: [] };
+      if (value.conversation) task.conversation = true;
       if (value.goal !== undefined) task.goal = value.goal;
       if (value.routine !== undefined) task.routine = value.routine;
       document.tasks.push(task);
@@ -391,6 +395,7 @@ export class TaskTracker {
       const planned = await this.withFileLock(id, async () => {
         const document = await this.readDocument(id);
         const task = adoptActiveTask(document, aid, id);
+        if (task.conversation) throw new TaskError('invalid_input', '持续聊天不绑定事项 heartbeat；请先用 start_task 建立独立事项');
         const existing = task.followups.find((item) => item.key === key);
         if (existing) {
           if (existing.cron !== value.cron || existing.timezone !== value.timezone || existing.prompt !== value.prompt) {
@@ -452,6 +457,7 @@ export class TaskTracker {
       const prepared = await this.withFileLock(id, async () => {
         const document = await this.readDocument(id);
         const task = requireTask(document, aid, id);
+        if (task.conversation) throw new TaskError('invalid_input', '持续聊天不能按事项完成或取消；请操作具体子事项');
         if (task.status === 'canceled' || task.status === 'completed') return task;
         if (task.routine && value.outcome === 'completed') {
           if (task.status !== 'active') throw new TaskError('task_not_active', '已停止的例程运行不能再报告完成');
@@ -477,23 +483,8 @@ export class TaskTracker {
       }
       if (prepared.status === 'canceled' || prepared.status === 'completed') return view(prepared);
 
-      if (value.outcome === 'completed') {
-        const paseo = this.getPaseo();
-        const child = await paseo.agents.ref(aid).refresh();
-        const parentId = child?.agent.labels?.['paseo.parent-agent-id'];
-        if (parentId) {
-          const parent = await paseo.agents.ref(parentId).refresh();
-          const parentBotId = parent?.agent.labels?.['paseo-guys.bot'] ?? await this.routineOwner?.(parentId);
-          const parentTask = parentBotId ? await this.get(parentBotId, parentId) : null;
-          if (parentTask?.status === 'active' && !parent?.agent.archivedAt && parentTask.specialists.includes(aid)) {
-            // SDK parent only sets ownership; report before archive interrupts the child turn.
-            await paseo.agents.ref(parentId).send(
-              `固定同事 ${id} 已保存子事项交付报告。请核对实际产物和主事项的完成条件，不把回报当成整个主事项完成。\n${JSON.stringify({ agentId: aid, title: prepared.title, summary: prepared.summary, evidence: prepared.evidence })}`,
-              { sourceAgentId: aid, activeTurnBehavior: 'steer', messageId: `paseo-guys:delivery:${aid}` },
-            );
-          }
-        }
-      }
+      // 当前子轮次会被归档中断，交付证据先回报；取消则在停止确认后回报。
+      if (value.outcome === 'completed') await this.reportToParent(id, prepared, 'completed');
 
       try {
         await this.getPaseo().agents.ref(aid).archive();
@@ -520,7 +511,7 @@ export class TaskTracker {
         }
       }
 
-      return this.withFileLock(id, async () => {
+      const stopped = await this.withFileLock(id, async () => {
         const document = await this.readDocument(id);
         const current = requireTask(document, aid, id);
         current.status = value.outcome;
@@ -545,7 +536,28 @@ export class TaskTracker {
         await this.writeDocument(id, document);
         return view(current);
       });
+      if (value.outcome === 'canceled') await this.reportToParent(id, stopped, 'canceled');
+      return stopped;
     });
+  }
+
+  /** SDK parent 只建立归属；通过原生通信回报实际登记且仍在进行的父事项或聊天。 */
+  private async reportToParent(botId: string, task: TaskRecord, outcome: 'completed' | 'canceled'): Promise<void> {
+    const paseo = this.getPaseo();
+    const child = await paseo.agents.ref(task.agentId).refresh();
+    const parentId = child?.agent.labels?.['paseo.parent-agent-id'];
+    if (!parentId) return;
+    const parent = await paseo.agents.ref(parentId).refresh();
+    const parentBotId = parent?.agent.labels?.['paseo-guys.bot'] ?? await this.routineOwner?.(parentId);
+    const parentTask = parentBotId ? await this.get(parentBotId, parentId) : null;
+    if (parentTask?.status !== 'active' || parent?.agent.archivedAt || !parentTask.specialists.includes(task.agentId)) return;
+    const message = outcome === 'completed'
+      ? `固定同事 ${botId} 已保存子事项交付报告。请核对实际产物和主事项的完成条件，不把回报当成整个主事项完成。`
+      : `固定同事 ${botId} 的子事项已取消，原生归档已确认停止。请向用户如实汇报；其他独立事项和持续聊天继续。`;
+    await paseo.agents.ref(parentId).send(
+      `${message}\n${JSON.stringify({ agentId: task.agentId, title: task.title, summary: task.summary, evidence: task.evidence })}`,
+      { sourceAgentId: task.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:${outcome === 'completed' ? 'delivery' : 'canceled'}:${task.agentId}` },
+    );
   }
 
   /** 原生父子归属由 root hook 验证后调用；这里只记录 id 关系。 */

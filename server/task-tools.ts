@@ -2,8 +2,10 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { TaskTracker } from './tasks.js';
 
+export type ExplicitTaskCancel = (botId: string, agentId: string, quote: string, targetAgentId?: string) => Promise<unknown>;
+
 /** 只关联原生能力：创建回执不等于执行，轮次结束不等于任务完成。 */
-export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: string, agentId: string, cancelExplicit?: (botId: string, agentId: string, quote: string) => Promise<unknown>) {
+export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: string, agentId: string, cancelExplicit?: ExplicitTaskCancel) {
   const run = async (action: () => Promise<unknown>) => {
     try { return { content: [{ type: 'text' as const, text: JSON.stringify(await action()) }] }; }
     catch (error) { return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : '原生事项操作未完成' }] }; }
@@ -17,7 +19,7 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     annotations: { readOnlyHint: true },
     inputSchema: { includeFinished: z.boolean().default(false) },
   }, ({ includeFinished }) => run(async () => (await tasks.list(botId))
-    .filter(task => includeFinished || task.status === 'active' || task.status === 'stopping' || task.status === 'awaiting_review')
+    .filter(task => !task.conversation && (includeFinished || task.status === 'active' || task.status === 'stopping' || task.status === 'awaiting_review'))
     .map(task => ({
       agentId: task.agentId,
       title: task.title,
@@ -39,11 +41,11 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     inputSchema: { name: z.string().min(1), prompt: z.string().min(1), cron: z.string().min(1), timezone: z.string().min(1) },
   }, input => run(() => tasks.follow(botId, agentId, input)));
   server.registerTool('complete_task', {
-    description: '仅当约定交付条件已满足时保存 summary 和 evidence。普通子事项先经原生通信向仍进行中的委派事项回报摘要与证据；普通事项随后停止跟进并归档。独立例程只保存本次报告，随后正常回复，让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据，不以费用或轮次数自动完成。',
+    description: '仅当约定交付条件已满足时保存 summary 和 evidence。持续聊天不能调用，请在独立执行事项中完成。普通子事项先经原生通信向仍进行中的委派事项或聊天回报摘要与证据，随后停止跟进并归档。独立例程只保存本次报告，随后正常回复让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据。',
     inputSchema: { summary: z.string().trim().min(1), evidence: z.array(z.string().trim().min(1)).min(1) },
   }, input => run(() => tasks.stop(botId, agentId, { ...input, outcome: 'completed' })));
   if (cancelExplicit) server.registerTool('cancel_task', {
-    description: '仅在用户本条消息明确要求取消本事项时使用；引用完整用户消息供服务端核对来源。资源告警、费用或暂时无进展都不是取消授权。解释自然语言意图仍由主 Bot 负责。',
-    inputSchema: { userQuote: z.string().trim().min(1).max(8000) },
-  }, ({ userQuote }) => run(() => cancelExplicit(botId, agentId, userQuote)));
+    description: '仅在用户本条消息明确取消具体事项时使用，引用完整用户消息供服务端核对。持续聊天必须提供 targetAgentId，且只能取消自己实际交办的子事项；不会关闭聊天。独立事项不填目标时取消自身。资源告警、费用或暂时无进展不是取消授权；自然语言意图由 Bot 判断。',
+    inputSchema: { userQuote: z.string().trim().min(1).max(8000), targetAgentId: z.string().trim().min(1).max(200).optional() },
+  }, ({ userQuote, targetAgentId }) => run(() => cancelExplicit(botId, agentId, userQuote, targetAgentId)));
 }

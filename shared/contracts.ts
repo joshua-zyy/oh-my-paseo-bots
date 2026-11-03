@@ -22,6 +22,7 @@ export const toolStatus = defineRpc({ name: 'bots.tools.status', input: z.object
 export const createBot = defineRpc({ name: 'bots.create', input: botView, output: z.object({ id }) });
 export const updateBot = defineRpc({ name: 'bots.update', input: z.object({ botId: id, patch: botPatchSchema }), output: savedBotView });
 export const startSession = defineRpc({ name: 'bots.start', input: z.object({ botId: id, requestId: z.string().uuid().optional(), title: z.string().min(1).max(200), prompt: z.string().min(1) }), output: z.object({ agentId: z.string(), requestId: z.string() }) });
+export const openConversation = defineRpc({ name: 'bots.conversation.open', input: z.object({ botId: id }), output: z.object({ agentId: z.string() }) });
 export const acknowledgeCreation = defineRpc({ name: 'bots.creation.acknowledge', input: z.object({ botId: id, requestId: z.string() }), output: z.object({}) });
 export const pendingCreations = defineRpc({ name: 'bots.creations.pending', input: z.object({ botId: id }), output: z.array(z.object({ requestId: z.string(), agentId: z.string(), status: z.enum(['pending', 'created']) })) });
 export const inspectCreation = defineRpc({ name: 'bots.creation.inspect', input: z.object({ botId: id, requestId: z.string() }), output: z.object({ agentId: z.string(), status: z.enum(['created', 'unknown']), detail: z.string().optional() }) });

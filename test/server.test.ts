@@ -13,6 +13,105 @@ import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
 import { TaskTracker } from '../server/tasks.js';
 
+test('同事页持续聊天复用原生会话，自身子事项完成和定向取消均不关闭聊天', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-conversation-'));
+  const previous = process.env.PASEO_GUYS_DATA_DIR;
+  process.env.PASEO_GUYS_DATA_DIR = directory;
+  const handlers = new Map<string, { contract: PluginRpcContract; handler: (input: unknown, context: unknown) => unknown }>();
+  const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
+  const created: PaseoAgentCreateOptions[] = [];
+  const archived = new Set<string>();
+  const messages: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
+  const userMessage = '取消刚刚交办的数字核对';
+  const paseo = { workspaces: { create: async (options: { background: boolean }) => {
+    assert.equal(options.background, true);
+    return { agents: { create: async (input: PaseoAgentCreateOptions) => { created.push(input); return { id: input.agentId!, workspaceId: 'ws-background' }; } } };
+  } }, agents: { ref: (agentId: string) => ({
+    refresh: async () => {
+      const input = created.find(item => item.agentId === agentId);
+      return input ? { agent: { id: agentId, title: input.title, workspaceId: 'ws-background', archivedAt: archived.has(agentId) ? 'now' : null, labels: { ...input.labels, ...(input.parent ? { 'paseo.parent-agent-id': input.parent } : {}) } } } : null;
+    },
+    archive: async () => {
+      archived.add(agentId);
+      await hooks.get('agent.archived')?.({ agent: { id: agentId } }, { paseo });
+      return { archivedAt: 'now' };
+    },
+    send: async (text: string, options?: PaseoAgentSendOptions) => { messages.push({ agentId, text, options }); },
+    timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, hasOlder: false, hasNewer: false, entries: [{ seqStart: 1, seqEnd: 1, item: { type: 'user_message', text: userMessage } }] }) },
+  }) } } as unknown as PaseoApi;
+  const server = {
+    registerSettings: (definition: { id: string }) => ({ read: async () => ({ status: 'ready', revision: 'ready', values: definition.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'synthetic/model' } }) }),
+    handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
+    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); }, before: () => () => {},
+  } as unknown as PluginServerContext;
+  async function invoke(name: string, input: unknown) {
+    const entry = handlers.get(name);
+    assert.ok(entry, `RPC ${name} must be registered`);
+    return entry.contract.output.parse(await entry.handler(entry.contract.input.parse(input), { paseo }));
+  }
+  const clients: Client[] = [];
+  async function connect(agentId: string) {
+    const config = created.find(item => item.agentId === agentId)!.config.mcpServers!['paseo-guys'];
+    assert.equal(config.type, 'http');
+    if (config.type !== 'http') throw new Error('expected HTTP');
+    const client = new Client({ name: 'conversation-lifecycle', version: '0' });
+    clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } }));
+    return client;
+  }
+  const payload = (result: unknown) => {
+    const value = result as { isError?: boolean; content: { text: string }[] };
+    assert.notEqual(value.isError, true, value.content[0].text);
+    return JSON.parse(value.content[0].text) as { agentId: string; status: string; conversation?: true };
+  };
+  const cleanup = contribute(server);
+  try {
+    await invoke('bots.list', {});
+    await invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    const conversation = await invoke('bots.conversation.open', { botId: 'chief' }) as { agentId: string };
+    const other = await invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'helper' }), other);
+    assert.equal(created.length, 2, '每位 Bot 复用自己持续的原生聊天');
+    assert.equal(created[0].prompt, undefined, '打开聊天不发起模型轮次');
+    assert.equal(created[0].labels?.['paseo-guys.conversation'], 'true');
+    assert.match(created[0].config.systemPrompt!, /持续聊天/);
+    assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), []);
+    const client = await connect(conversation.agentId);
+    assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).conversation, true);
+    assert.equal((await client.callTool({ name: 'complete_task', arguments: { summary: '结束回复', evidence: ['回复'] } })).isError, true);
+    const request = { requestId: 'check-1', title: '数字核对', prompt: '核对合成数字，交付 findings.md' };
+    const child = payload(await client.callTool({ name: 'start_task', arguments: request }));
+    assert.equal(created[2].parent, conversation.agentId);
+    assert.equal(created[2].labels?.['paseo-guys.bot'], 'chief');
+    assert.equal(created[2].labels?.['paseo-guys.conversation'], undefined);
+    const worker = await connect(child.agentId);
+    payload(await worker.callTool({ name: 'complete_task', arguments: { summary: '数字已核对', evidence: ['findings.md'] } }));
+    assert.equal(archived.has(child.agentId), true);
+    assert.equal(archived.has(conversation.agentId), false);
+    assert.equal(messages[0].agentId, conversation.agentId);
+    assert.match(messages[0].text, /数字已核对/);
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
+    const next = payload(await client.callTool({ name: 'start_task', arguments: { ...request, requestId: 'check-2' } }));
+    assert.equal((await client.callTool({ name: 'cancel_task', arguments: { userQuote: '伪造消息', targetAgentId: next.agentId } })).isError, true);
+    assert.equal((await client.callTool({ name: 'cancel_task', arguments: { userQuote: userMessage, targetAgentId: other.agentId } })).isError, true);
+    assert.equal((await client.callTool({ name: 'cancel_task', arguments: { userQuote: userMessage } })).isError, true, '取消事项不能关闭当前聊天');
+    payload(await client.callTool({ name: 'cancel_task', arguments: { userQuote: userMessage, targetAgentId: next.agentId } }));
+    assert.equal(archived.has(next.agentId), true);
+    assert.equal(archived.has(conversation.agentId), false);
+    assert.match(messages[1].text, /已取消/);
+    assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active');
+    assert.equal((await client.callTool({ name: 'update_colleague', arguments: { patch: { role: '继续核对工作' } } })).isError, undefined);
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
+    assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === conversation.agentId), false);
+  } finally {
+    for (const client of clients) await client.close();
+    await cleanup();
+    if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('插件离线接线：无配置不创建；原生创建参数挂载MCP且明确记忆工具可达', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-rpc-'));
   const previous = process.env.PASEO_GUYS_DATA_DIR;

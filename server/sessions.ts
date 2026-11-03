@@ -10,8 +10,9 @@ export interface SessionInput {
   botId: string;
   requestId: string;
   title: string;
-  prompt: string;
+  prompt?: string;
   parentAgentId?: string;
+  kind?: 'conversation';
 }
 
 /** 原生侧只需 id 与 workspaceId 即可关联；不复制会话状态。 */
@@ -37,7 +38,7 @@ export async function startBotSession(
   placement: { cwd: string; config: PaseoAgentConfig },
   tools: Pick<BotMcp, 'mount'>,
 ): Promise<StartedSession> {
-  const { cwd, config, systemPrompt } = await botSessionConfig(store, input.botId, placement);
+  const { cwd, config, systemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive');
   const fingerprint = createHash('sha256')
     .update(
       stable({
@@ -45,6 +46,7 @@ export async function startBotSession(
         title: input.title,
         prompt: input.prompt,
         parentAgentId: input.parentAgentId,
+        kind: input.kind,
         cwd,
         config,
         systemPrompt,
@@ -67,7 +69,7 @@ export async function startBotSession(
       config: { ...config, systemPrompt, mcpServers: { ...config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,
-      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId },
+      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.kind === 'conversation' ? { 'paseo-guys.conversation': 'true' } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
     const workspaceKey = createHash('sha256').update(stable({ bot: input.botId, cwd })).digest('hex');
@@ -89,7 +91,7 @@ export async function startBotSession(
 }
 
 /** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
-export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' = 'interactive') {
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive') {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
   const { skills, mcpServers } = data.bot.capabilities;

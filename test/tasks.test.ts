@@ -145,6 +145,50 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe('原生跟进关联', () => {
+  it('持续聊天标记跨重开保留，不能按事项完成、取消或建立 heartbeat', async () => {
+    const { tracker, restart, cli, paseo } = await setup();
+    const input = { title: '与主 Bot 的对话', conversation: true as const };
+    await tracker.ensure('chief', 'agent-chief', input);
+    assert.equal((await restart().get('chief', 'agent-chief') as { conversation?: true })?.conversation, true);
+    await expectTaskError(() => tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '回复结束', evidence: ['回复'] }), 'invalid_input');
+    await expectTaskError(() => tracker.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '取消一个工作' }), 'invalid_input');
+    await expectTaskError(() => tracker.follow('chief', 'agent-chief', followup), 'invalid_input');
+    assert.equal((await tracker.requireActive('chief', 'agent-chief')).status, 'active');
+    assert.deepEqual(paseo.archived, []);
+    assert.deepEqual(cli.calls, []);
+  });
+
+  it('不将旧终态事项转换成持续聊天或恢复 active', async () => {
+    const { tracker } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '旧事项' });
+    await tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '已交付', evidence: ['report.md'] });
+    const input = { title: '尝试复用聊天', conversation: true as const };
+    const result = await tracker.ensure('chief', 'agent-chief', input);
+    assert.equal(result.status, 'completed');
+    assert.equal((result as { conversation?: true }).conversation, undefined);
+  });
+
+  it('子事项取消在归档确认后回报持续聊天，归档失败不回报已取消', async () => {
+    const { tracker, paseo } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '持续聊天', ...{ conversation: true as const } });
+    await tracker.ensure('other', 'agent-other', { title: '核对资料' });
+    await tracker.observeSpecialist('chief', 'agent-chief', 'agent-other');
+    paseo.labels.set('agent-chief', { 'paseo-guys.bot': 'chief' });
+    paseo.labels.set('agent-other', { 'paseo.parent-agent-id': 'agent-chief' });
+    paseo.behavior.archive = async () => { throw new Error('offline'); };
+    await expectTaskError(() => tracker.stop('other', 'agent-other', { outcome: 'canceled', summary: '用户取消' }), 'archive_failed');
+    assert.equal(paseo.sent.length, 0);
+    paseo.behavior.archive = undefined;
+    const result = await tracker.stop('other', 'agent-other', { outcome: 'canceled', summary: '用户取消' });
+    assert.equal(result.status, 'canceled');
+    assert.equal(paseo.sent.length, 1);
+    assert.match(paseo.sent[0].text, /已取消/);
+    assert.deepEqual(paseo.sent[0].options, { sourceAgentId: 'agent-other', activeTurnBehavior: 'steer', messageId: 'paseo-guys:canceled:agent-other' });
+    assert.equal((await tracker.requireActive('chief', 'agent-chief')).status, 'active');
+    await tracker.stop('other', 'agent-other', { outcome: 'canceled', summary: '重复取消' });
+    assert.equal(paseo.sent.length, 1);
+  });
+
   it('保留原生长标题，重启后仍可读回', async () => {
     const { tracker, restart } = await setup();
     const title = '原生事项标题'.repeat(100);
