@@ -23,7 +23,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 | 入口 | 职责 |
 | --- | --- |
-| [index.client.tsx](index.client.tsx)、[client/](client/) | “固定同事”界面、宿主配置、记忆、办公与事项控件 |
+| [index.client.tsx](index.client.tsx)、[client/](client/) | “固定同事”界面、宿主配置、记忆、办公、事项与会话用量控件 |
 | [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
 | [server/sessions.ts](server/sessions.ts)、[server/store.ts](server/store.ts) | 原生创建意图、幂等键、Bot 身份与会话关联持久化 |
 | [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/history.ts](server/history.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、记忆来源核对、原生历史分页与轮次观察日志 |
@@ -45,6 +45,8 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 5. **办公写入**：邮件先登记完整内容，经单次确认或本事项完全一致的固定动作预授权后执行。创建草稿不等于发送；撤销不收回已准入或已发出的邮件。写后超时保留未知并回查，不换请求键重建或盲重发，不阻塞独立事项。
 
 `remember_explicit` 由服务端回查原生用户消息依据；`correct_memory`／`forget_memory` 还要求引用当前完整用户消息，并在存储锁内比较条目旧内容，陈旧选取拒绝写入。纠正内容须逐字来自当前用户消息；自然语言意图仍由 Bot 判断，来源核对不构成语义隔离。推断只作候选，确认前不注入新会话；MCP 记忆写入要求事项 active。纠正／遗忘不擦除原生历史或备份。工作日志记录实际轮次观察，不自动判定事项完成。固定同事的原生轮次失败还会向有效父事项发送最少失败状态，由父 Bot 查询原生错误及产物后决定恢复或升级；不自动重派、归档或改变双方事项状态，单轮 completed/canceled 不当作事项失败。临时原生专家继续使用宿主原有通知路径。
+
+`client/usage.tsx` 对已关联会话按需借用客户端 SDK 读取 `lastUsage`。仅展示原生最新上报值，缺失字段与真实零值分开；不把快照相加成 Bot 总量、不估算账单，也不查询 Provider 账户额度或新增资源停止规则。
 
 独立例程复用 `schedule create/inspect/pause/resume/run-once`，不另建调度器。创建意图先落盘，未知回执只回查唯一原生名称；首轮与重启恢复按 `paseo.schedule-id/run` 权威标签关联 Bot 和本次事项，再由打开钩子注入本次 HTTP MCP 与 Bot 选择的 MCP。动态 `get_bot_context` 给出当前身份、确认记忆、技能索引与本次目标，其结果不属于 system 层，也不构成宿主强制的开工屏障。
 

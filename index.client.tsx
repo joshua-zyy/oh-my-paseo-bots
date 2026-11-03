@@ -11,6 +11,7 @@ import { Tasks } from './client/tasks.js';
 import { BotConfiguration } from './client/bot-config.js';
 import { Routines } from './client/routines.js';
 import { History } from './client/history.js';
+import { Usage } from './client/usage.js';
 
 function Bots({ navigation }: PluginScreenProps) {
   const list = useRpc(rpc.listBots);
@@ -130,6 +131,7 @@ function Bots({ navigation }: PluginScreenProps) {
       {links.map(link => <SettingsSection key={link.sessionId} title={link.title || link.sessionId}>
         <SettingsAction label="原生会话" actionLabel="回到会话" disabled={busy || !navigation} onPress={() => navigation?.openAgent({ agentId: link.sessionId })} />
         <History botId={selected} agentId={link.sessionId} />
+        <Usage key={`${selected}:${link.sessionId}`} agentId={link.sessionId} />
       </SettingsSection>)}
     </SettingsSection>
     {currentBot && <BotConfiguration key={`${currentBot.id}:${currentBot.updatedAt}`} bot={currentBot} disabled={busy} save={patch => run(async () => { await updateBot({ botId: selected, patch }); await refreshBots(); })} />}
