@@ -132,4 +132,4 @@ npm test
 
 `AGENTS.md` 保存本项目实施规则；`docs/internal/` 保存产品约定、迁移依据、运行证据与历史交接，均按现有规则本地忽略。README 只保留工程上下文，不记录临时任务进度、账户正文、凭据或逐次验收流水账。
 
-[DS-Bot](https://github.com/Fei2411/DS-Bot)、[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 提供产品设计与功能参考；[paseo-bots](https://github.com/oliexe/paseo-bots) 提供插件接入参考，不默认整仓继承。目前未复制这些项目的实现源码，后续复用保留适用版权与许可证告知；SDK 按其发布包许可证使用。
+[DS-Bot](https://github.com/Fei2411/DS-Bot)、[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 提供产品设计与功能参考；[paseo-bots](https://github.com/oliexe/paseo-bots) 提供插件接入参考。聊天订阅、历史合并和问题回复按需适配自 paseo-bots，复用范围、版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；SDK 按其发布包许可证使用。
