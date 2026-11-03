@@ -39,7 +39,7 @@ const MAX_QUOTE_CHARS = 2000;
 const BOT_ID = /^[a-z0-9][a-z0-9_-]*$/;
 const AGENT_ID = /^[A-Za-z0-9._:@-]+$/;
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
-const SERVER_INFO = { name: 'paseo-guys', version: '0.1.0' } as const;
+const SERVER_INFO = { name: 'oh-my-paseo-bots', version: '0.1.0' } as const;
 
 /** 端点状态（端口 + 签名密钥）存放于 baseDir 子目录，避免被 BotStore 当成 Bot 存档。 */
 const ENDPOINT_DIRECTORY = 'mcp';

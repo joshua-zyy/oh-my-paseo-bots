@@ -1,5 +1,6 @@
 import type { PluginServerContext, PluginHookAgent, PluginHookContext } from '@getpaseo/plugin/server';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
@@ -20,7 +21,9 @@ import { BotRoutines } from './server/routines.js';
 import * as routineRpc from './shared/routines.js';
 
 export default function contribute(server: PluginServerContext) {
-  const baseDir = process.env.PASEO_GUYS_DATA_DIR ?? join(homedir(), '.paseo-guys');
+  const legacyDir = join(homedir(), '.paseo-guys');
+  const baseDir = process.env.OH_MY_PASEO_BOTS_DATA_DIR ?? process.env.PASEO_GUYS_DATA_DIR
+    ?? (existsSync(legacyDir) ? legacyDir : join(homedir(), '.oh-my-paseo-bots'));
   const store = new BotStore({ baseDir });
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
   let currentPaseo: PaseoApi | undefined;

@@ -1,7 +1,11 @@
 {
-  "name": "paseo-guys",
+  "name": "oh-my-paseo-bots",
   "version": "0.1.0",
   "description": "Persistent Bot teams on the native Paseo runtime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshua-zyy/oh-my-paseo-bots.git"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node scripts/build.mjs",

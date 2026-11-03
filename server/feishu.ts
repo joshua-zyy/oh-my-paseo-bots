@@ -20,7 +20,7 @@ export class FeishuReader {
     if (wikiToken && !this.config.wikiTokens.includes(wikiToken)) throw new Error('飞书知识库节点不在用户指定范围内');
     const secret = await this.resolveSecret();
     if (!this.transport && !secret) throw new Error(`飞书缺少宿主环境变量 ${this.config.secretEnv}，请完成现有连接器配置`);
-    const client = new Client({ name: 'paseo-guys-feishu', version: '0.1.0' });
+    const client = new Client({ name: 'oh-my-paseo-bots-feishu', version: '0.1.0' });
     const transport = this.transport?.() ?? new StdioClientTransport({
       command: this.config.command,
       // 与只读登录一致；lark-mcp 0.5.1 未指定 scope 时会选择旧 OIDC 续期端点。

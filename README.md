@@ -1,6 +1,6 @@
-# paseo-guys
+# oh-my-paseo-bots
 
-供维护 Agent 使用的工程上下文。实施规则和权限以本地 `AGENTS.md` 为准，本文不授予运行权限。
+供维护 Agent 使用的工程上下文。仓库为 [joshua-zyy/oh-my-paseo-bots](https://github.com/joshua-zyy/oh-my-paseo-bots)。实施规则和权限以本地 `AGENTS.md` 为准，本文不授予运行权限。
 
 ## 目标与概念
 
@@ -74,7 +74,7 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 | Bot 既有能力 | `capabilities.skills` 为 `{name, description, path}` 的已有 SKILL.md 索引，`path` 使用宿主绝对路径；`capabilities.mcpServers` 沿用宿主 stdio/http/sse 配置，不接管连接器生命周期或原生工具审批 |
 | Bot Gmail | `command`、现有登录目录 `configDir`、预期 `account`、固定允许 `query`；适配基线 `gws 0.22.5` |
 | Bot 飞书 | `command`／`args`、`appId`、`secretEnv` 或 `secretFile`、`documentIds`／`wikiTokens`；适配基线 `lark-mcp 0.5.1` |
-| 业务数据 | 默认 `~/.paseo-guys`，可由 `PASEO_GUYS_DATA_DIR` 指定；单 daemon、单插件实例写入，不复制原生聊天历史 |
+| 业务数据 | 新安装默认 `~/.oh-my-paseo-bots`；存在旧 `~/.paseo-guys` 时沿用。`OH_MY_PASEO_BOTS_DATA_DIR` 优先于兼容的 `PASEO_GUYS_DATA_DIR`；单 daemon、单插件实例写入，不复制原生聊天历史 |
 | MCP 端点 | 数据目录下 `mcp/endpoint.json` 保存稳定端口与密钥；冲突／损坏先排查或从备份恢复，重建会使旧会话工具配置失效 |
 
 `bots.update` 按字段修改身份和说明，提供 `execution` 时整体替换执行覆盖，空对象恢复宿主默认。修改只影响新会话，不重配已有原生执行；有效配置参与创建请求指纹。同一模型未指定的模式／思考选项继承宿主默认，改选不同模型时使用其原生默认；显式 `null` 清除对应宿主选项。
@@ -103,7 +103,9 @@ npm test
 
 插件清单 [paseo-plugin.json](paseo-plugin.json) 声明 `>=0.14.0 <0.15.0`；开发依赖为正式发布的 0.14.0 SDK。该发布包仍使用 `server.before('agent.session_open', ...)`，打开请求提供只读 Agent 标签与可编辑 MCP 配置；不能照抄主线文档的 `addHook` 注册名称。修改接缝前核对目标 daemon、app 和发布 SDK，不把最新文档当作已安装版本事实。
 
-宿主检查入口为 `paseo plugin ls`／`paseo plugin logs paseo-guys`；本地目录安装为 `paseo plugin install /absolute/path/to/paseo-guys`，源码更新使用 `paseo plugin reload paseo-guys`。先核目标 daemon 与全局插件开关，不为加载源码重启 daemon。公共契约参见 [Paseo 插件文档](https://paseo.sh/docs/plugins)。
+宿主检查入口为 `paseo plugin ls`／`paseo plugin logs oh-my-paseo-bots`；本地目录安装为 `paseo plugin install /absolute/path/to/oh-my-paseo-bots`，源码更新使用 `paseo plugin reload oh-my-paseo-bots`。先核目标 daemon 与全局插件开关，不为加载源码重启 daemon。公共契约参见 [Paseo 插件文档](https://paseo.sh/docs/plugins)。
+
+从 `paseo-guys` 改名时，停用旧实例，在移除旧插件前将 `plugin-settings/paseo-guys` 的设置复制到新 ID 目录，再安装同一源码；原生 remove 会删除旧设置。不能让两个实例同时写旧数据。既有 Agent 标签、MCP 配置名、签名与原生调度标识保留 `paseo-guys` 命名空间，保证旧会话、凭据和历史仍可关联。
 
 ## 证据边界与已知限制
 
