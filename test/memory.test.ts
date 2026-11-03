@@ -1,11 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PaseoApi } from '@getpaseo/client';
 import { BotStore } from '../server/store.js';
 import { rememberExplicit, correctExplicitMemory, forgetExplicitMemory } from '../server/memory.js';
+import ts from 'typescript';
+
+test('记忆页编辑保留确认状态，只有明确确认候选才进入上下文', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-memory-edit-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '负责交付' });
+    const source = ts.createSourceFile('memories.tsx', await readFile(new URL('../../client/memories.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const callbacks = new Map<string, string>();
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
+        const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+        const label = attributes.find(item => item.name.getText(source) === 'label')?.initializer;
+        const press = attributes.find(item => item.name.getText(source) === 'onPress')?.initializer;
+        if (label && ts.isStringLiteral(label) && press && ts.isJsxExpression(press) && press.expression) callbacks.set(label.text, press.expression.getText(source));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    for (const label of ['编辑', '保存记忆', '确认']) assert.ok(callbacks.has(label));
+    const correct = ({ memoryId, ...input }: { memoryId: string; content: string; kind: 'candidate' | 'confirmed' }) => store.updateMemory('chief', memoryId, input);
+    let pending: Promise<unknown> = Promise.resolve();
+    const run = (action: () => Promise<unknown>) => { pending = action(); return pending; };
+    for (const kind of ['candidate', 'confirmed'] as const) {
+      const entry = await store.addMemory('chief', { kind, content: `${kind} 旧内容` });
+      let editing: { id?: string; content: string; kind: 'candidate' | 'confirmed' } | undefined;
+      const setEditing = (value: typeof editing) => { editing = value; };
+      new Function('entry', 'setEditing', `return (${callbacks.get('编辑')});`)(entry, setEditing)();
+      assert.ok(editing);
+      editing.content = `${kind} 新内容`;
+      new Function('run', 'correct', 'save', 'setEditing', 'editing', 'botId', `return (${callbacks.get('保存记忆')});`)(run, correct, () => assert.fail('编辑不创建新记忆'), setEditing, editing, 'chief')();
+      await pending;
+      const saved = (await store.listMemories('chief')).find(item => item.id === entry.id)!;
+      assert.equal(saved.kind, kind);
+      assert.equal(saved.content, `${kind} 新内容`);
+      assert.equal((await store.getContextMemories('chief')).some(item => item.id === entry.id), kind === 'confirmed');
+      if (kind === 'candidate') {
+        new Function('run', 'correct', 'entry', 'botId', `return (${callbacks.get('确认')});`)(run, correct, saved, 'chief')();
+        await pending;
+        assert.ok((await store.getContextMemories('chief')).some(item => item.id === entry.id));
+      }
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('明确记忆回查跨页原生用户依据，伪造依据与跨Bot会话被拒绝', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-memory-'));

@@ -11,7 +11,7 @@ export function Memories({ botId }: { botId: string }) {
   const correct = useRpc(rpc.correctMemory);
   const { colors } = useUi();
   const [entries, setEntries] = useState<RpcOutput<typeof rpc.listMemories>>([]);
-  const [editing, setEditing] = useState<{ id?: string; content: string }>();
+  const [editing, setEditing] = useState<{ id?: string; content: string; kind: 'candidate' | 'confirmed' }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const guard = useRef(false);
@@ -29,11 +29,11 @@ export function Memories({ botId }: { botId: string }) {
   }, [botId, list]);
   return <>
     <Notice error={error} />
-    <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '' })} /></Actions>
+    <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '', kind: 'confirmed' })} /></Actions>
     {editing && <View style={{ padding: 16, marginVertical: 16, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Field label={editing.id ? '纠正记忆' : '记忆内容'} value={editing.content} maxLength={8000} multiline disabled={busy} onChangeText={content => setEditing({ ...editing, content })} />
       <Actions><Button label="取消" disabled={busy} onPress={() => setEditing(undefined)} /><Button label="保存记忆" primary disabled={busy || !editing.content.trim()} onPress={() => void run(async () => {
-        if (editing.id) await correct({ botId, memoryId: editing.id, kind: 'confirmed', content: editing.content });
+        if (editing.id) await correct({ botId, memoryId: editing.id, kind: editing.kind, content: editing.content });
         else await save({ botId, kind: 'confirmed', content: editing.content });
         setEditing(undefined);
       })} /></Actions>
@@ -44,7 +44,7 @@ export function Memories({ botId }: { botId: string }) {
       return (items.length > 0 || kind === 'confirmed') && <Section key={kind} title={kind === 'candidate' ? '待确认' : '已确认'}>
         {items.map(entry => <View key={entry.id} style={{ paddingVertical: 14, gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
           <Copy>{entry.content}</Copy>
-          <Actions>{kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}<Button label="编辑" disabled={busy} onPress={() => setEditing({ id: entry.id, content: entry.content })} /></Actions>
+          <Actions>{kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}<Button label="编辑" disabled={busy} onPress={() => setEditing({ id: entry.id, content: entry.content, kind: entry.kind })} /></Actions>
         </View>)}
         {!items.length && <Copy muted>暂无记忆</Copy>}
       </Section>;
