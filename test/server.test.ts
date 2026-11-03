@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,8 @@ import type { PaseoApi, PaseoAgentCreateOptions, PaseoAgentSendOptions } from '@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import contribute from '../index.server.js';
+import { BotStore } from '../server/store.js';
+import { TaskTracker } from '../server/tasks.js';
 
 test('插件离线接线：无配置不创建；原生创建参数挂载MCP且明确记忆工具可达', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-rpc-'));
@@ -376,9 +379,20 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
       assert.equal(created.length, 3, '回报沿用原生通信，不创建新执行 Agent');
     } finally { await deliveryClient.close(); }
     const pending = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'pending-during-parent-stop', title: '父事项取消时尚未交付' } }));
+    // Simulate a persisted native routine parent, which has schedule labels rather than a Bot label.
+    const routineId = randomUUID();
+    const persistedTasks = new TaskTracker({ baseDir: directory, store: new BotStore({ baseDir: directory }), cli: { command: '', cwd: directory }, getPaseo: () => paseo });
+    await persistedTasks.ensure('chief', root.agentId, { title: '例程主事项', routine: { id: routineId, runId: randomUUID(), prompt: '合成例程核对' } });
+    await mkdir(join(directory, 'routines'), { recursive: true });
+    await writeFile(join(directory, 'routines', 'state.json'), JSON.stringify({ schemaVersion: 1, routines: [{ id: routineId, botId: 'chief', name: '合成例程', prompt: '合成例程核对', cron: '* * * * *', timezone: 'UTC', continuity: false, execution: { provider: 'configured/model', cwd: directory }, state: 'ready', nativeId: 'synthetic-schedule' }] }));
+    delete created[0].labels!['paseo-guys.bot'];
+    created[0].labels!['paseo.schedule-id'] = 'synthetic-schedule';
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'routine-parent-failure' }, { paseo });
+    assert.equal(failureMessages.length, 3, '无 Bot 标签的例程父事项仍收到固定同事失败回报');
+    assert.equal(failureMessages[2].agentId, root.agentId);
     await invoke('bots.task.cancel', { botId: 'chief', agentId: root.agentId });
     await hooks.get('agent.turn_ended')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'failure-after-parent-stop' }, { paseo });
-    assert.equal(failureMessages.length, 2, '父事项已停止时不能被失败观察唤醒');
+    assert.equal(failureMessages.length, 3, '父事项已停止时不能被失败观察唤醒');
   } finally {
     await client.close(); await childClient.close(); await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;

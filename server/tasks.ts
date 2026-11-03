@@ -77,6 +77,8 @@ export interface TaskTrackerOptions {
   baseDir: string;
   store: BotStore;
   getPaseo: () => PaseoApi;
+  /** Native schedule agents have no Bot label; resolve their persisted routine ownership. */
+  routineOwner?: (agentId: string) => Promise<string | null>;
   /** 可直接给值，也可给回调：宿主设置可能晚于插件启动。 */
   cli: TaskCliProvider;
   /** 默认使用已发布的 execCommand（argv 数组，不拼 shell 字符串）。 */
@@ -265,6 +267,7 @@ export class TaskTracker {
   private readonly baseDir: string;
   private readonly store: BotStore;
   private readonly getPaseo: () => PaseoApi;
+  private readonly routineOwner: TaskTrackerOptions['routineOwner'];
   private readonly cliOption: TaskCliProvider;
   private readonly execute: TaskExecute;
   private readonly locks = new Map<string, Promise<void>>();
@@ -277,6 +280,7 @@ export class TaskTracker {
     this.baseDir = nodePath.resolve(baseDir);
     this.store = options.store;
     this.getPaseo = options.getPaseo;
+    this.routineOwner = options.routineOwner;
     this.cliOption = options.cli;
     this.execute = options.execute ?? execCommand;
   }
@@ -479,7 +483,7 @@ export class TaskTracker {
         const parentId = child?.agent.labels?.['paseo.parent-agent-id'];
         if (parentId) {
           const parent = await paseo.agents.ref(parentId).refresh();
-          const parentBotId = parent?.agent.labels?.['paseo-guys.bot'];
+          const parentBotId = parent?.agent.labels?.['paseo-guys.bot'] ?? await this.routineOwner?.(parentId);
           const parentTask = parentBotId ? await this.get(parentBotId, parentId) : null;
           if (parentTask?.status === 'active' && !parent?.agent.archivedAt && parentTask.specialists.includes(aid)) {
             // SDK parent only sets ownership; report before archive interrupts the child turn.

@@ -25,10 +25,10 @@ export default function contribute(server: PluginServerContext) {
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
   let currentPaseo: PaseoApi | undefined;
   const settings = server.registerSettings(rpc.settings);
-  const tasks = new TaskTracker({ baseDir, store, getPaseo: () => {
+  const tasks: TaskTracker = new TaskTracker({ baseDir, store, getPaseo: () => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
     return currentPaseo;
-  }, cli: async () => {
+  }, routineOwner: agentId => routines.owner(agentId), cli: async () => {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error('请先设置宿主原生 CLI 与目录');
     const { paseoCommand, paseoHome, cwd } = state.values;
@@ -231,7 +231,7 @@ export default function contribute(server: PluginServerContext) {
     const parentId = child.agent.labels['paseo.parent-agent-id'];
     if (!parentId) return;
     const parent = await context.paseo.agents.ref(parentId).refresh();
-    const parentBotId = parent?.agent.labels?.['paseo-guys.bot'];
+    const parentBotId = parent?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(parentId);
     const parentTask = parentBotId ? await tasks.get(parentBotId, parentId) : null;
     if (parentTask?.status !== 'active' || parent?.agent.archivedAt || !parentTask.specialists.includes(event.agent.id)) return;
     await context.paseo.agents.ref(parentId).send(

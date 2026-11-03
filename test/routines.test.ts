@@ -133,6 +133,7 @@ test('动态上下文读取最新本 Bot 确认记忆，有限上轮参考排除
   await f.store.addMemory('other', { content: '他人记忆', kind: 'confirmed' });
   const next = f.request(created.nativeId!); await f.reopen().bind(next);
   const context = await f.routines.context('chief', next.agentId);
+  assert.deepEqual(context.nativeCli, { command: 'synthetic-cli-only', home: f.dir }, '例程可用已配置的 CLI 在本轮等待同事，不自行选择另一个 daemon');
   assert.match(context.instructions, /更新后的长期说明/);
   assert.match(context.instructions, /新确认偏好/);
   assert.doesNotMatch(JSON.stringify(context), /未确认候选|他人记忆|TRANSPORT-SECRET/);

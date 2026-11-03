@@ -137,6 +137,7 @@ export class BotRoutines {
     const actualConfig = native?.target.type === 'new-agent' ? native.target.config : null;
     const actual = actualConfig ? { provider: `${actualConfig.provider}${actualConfig.model ? `/${actualConfig.model}` : ''}`, cwd: actualConfig.cwd, modeId: actualConfig.modeId, thinkingOptionId: actualConfig.thinkingOptionId } : null;
     const desired = { provider: mapped.config.provider, cwd: mapped.cwd, modeId: mapped.config.modeId, thinkingOptionId: mapped.config.thinkingOptionId };
+    const cli = await this.cli();
     let previousResult;
     if (record.continuity && native) {
       const tasks = await this.options.tasks.list(botId);
@@ -148,7 +149,7 @@ export class BotRoutines {
         break;
       }
     }
-    return { instructions: mapped.systemPrompt, task, previousResult, execution: { actual, botCurrent: desired, note: '原生 schedule 决定执行模型、目录、模式与思考选项。修改 Bot 执行配置后需新建例程并取消旧例程；动态上下文不会重配已启动执行。' } };
+    return { instructions: mapped.systemPrompt, task, previousResult, nativeCli: { command: cli.command, ...(cli.home ? { home: cli.home } : {}) }, execution: { actual, botCurrent: desired, note: '原生 schedule 决定执行模型、目录、模式与思考选项。修改 Bot 执行配置后需新建例程并取消旧例程；动态上下文不会重配已启动执行。' } };
   }
 
   async action(botId: string, id: string, action: 'pause' | 'resume' | 'run-once'): Promise<RoutineRecord> {

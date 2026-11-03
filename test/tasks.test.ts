@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -263,6 +264,29 @@ describe('原生跟进关联', () => {
       await tracker.stop('other', 'agent-other', { outcome: 'completed', summary: '子事项已交付', evidence: ['findings.md'] });
       assert.deepEqual(paseo.sent, []);
       assert.equal((await tracker.get('chief', 'agent-chief'))?.status, outcome);
+    }
+  });
+
+  it('原生例程父会话没有 Bot 标签时，按已登记归属回报；已收尾例程不唤醒', async () => {
+    for (const finished of [false, true]) {
+      const { tracker, store, paseo, dir, cli } = await setup();
+      await tracker.ensure('chief', 'agent-chief', { title: '例程主事项', routine: { id: randomUUID(), runId: 'run-1', prompt: '核对合成报告' } });
+      await tracker.ensure('other', 'agent-other', { title: '子事项' });
+      await tracker.observeSpecialist('chief', 'agent-chief', 'agent-other');
+      paseo.labels.set('agent-other', { 'paseo.parent-agent-id': 'agent-chief' });
+      paseo.labels.set('agent-chief', { 'paseo.schedule-id': 'native-schedule' });
+      if (finished) await tracker.observeArchived('chief', 'agent-chief');
+      const reporting = new TaskTracker({ baseDir: dir, store, cli: CLI, execute: cli.execute, getPaseo: () => paseo.api,
+        routineOwner: async (id: string) => id === 'agent-chief' ? 'chief' : null,
+      });
+      await reporting.stop('other', 'agent-other', { outcome: 'completed', summary: '数字已核对', evidence: ['findings.md'] });
+      assert.equal(paseo.sent.length, finished ? 0 : 1);
+      if (!finished) {
+        assert.equal(paseo.sent[0].agentId, 'agent-chief');
+        assert.match(paseo.sent[0].text, /数字已核对/);
+        assert.deepEqual(paseo.sent[0].options, { sourceAgentId: 'agent-other', activeTurnBehavior: 'steer', messageId: 'paseo-guys:delivery:agent-other' });
+      }
+      assert.equal((await tracker.get('chief', 'agent-chief'))?.status, finished ? 'awaiting_review' : 'active');
     }
   });
 
