@@ -180,6 +180,44 @@ test('read_memories 只返回本 Bot 的已确认记忆，不含候选或其他 
   });
 });
 
+test('read_memories 按关键词查回确认记忆，先匹配再分页且不传候选或他人记忆', async () => {
+  await withWorkspace(async ({ store, journal }) => {
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
+    await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
+    await store.addMemory('chief', { kind: 'confirmed', content: '发布规范：Release 保留 changelog' });
+    await store.addMemory('chief', { kind: 'confirmed', content: '发布规范：release 执行构建' });
+    await store.addMemory('chief', { kind: 'confirmed', content: '会议纪要用中文' });
+    await store.addMemory('chief', { kind: 'candidate', content: '发布规范 release 候选秘密' });
+    await store.addMemory('other', { kind: 'confirmed', content: '发布规范 release 其他 Bot 的机密' });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    type Page = { total: number; offset: number; nextOffset: number | null; memories: { content: string }[] };
+    try {
+      const query = ' 发布规范  ReLEASe ';
+      const first = parse<Page>(textOf(await client.callTool({ name: 'read_memories', arguments: { query, limit: 1 } })));
+      assert.equal(first.total, 2, 'total 计匹配的确认记忆，不计无关、候选或他人内容');
+      assert.deepEqual(first.memories.map(item => item.content), ['发布规范：release 执行构建']);
+      assert.equal(first.nextOffset, 1);
+      const older = parse<Page>(textOf(await client.callTool({ name: 'read_memories', arguments: { query, limit: 1, offset: first.nextOffset } })));
+      assert.deepEqual(older.memories.map(item => item.content), ['发布规范：Release 保留 changelog']);
+      assert.equal(older.offset, 1);
+      assert.equal(older.nextOffset, null);
+      const missing = parse<Page>(textOf(await client.callTool({ name: 'read_memories', arguments: { query: '发布规范 不存在的词' } })));
+      assert.deepEqual(missing.memories, [], '必须匹配全部关键词，不回退无关结果');
+      assert.equal(missing.total, 0);
+      assert.equal(missing.nextOffset, null);
+      const blank = parse<Page>(textOf(await client.callTool({ name: 'read_memories', arguments: { query: '  ' } })));
+      assert.equal(blank.total, 3, '空查询保留原有查看全部确认记忆的行为');
+      const forged = textOf(await client.callTool({ name: 'read_memories', arguments: { query: 'release', botId: 'other' } }));
+      assert.equal(forged.includes('候选秘密'), false);
+      assert.equal(forged.includes('其他 Bot 的机密'), false);
+      assert.equal(forged.includes('会议纪要'), false);
+      for (const query of [[], 'x'.repeat(501)]) {
+        assert.equal((await client.callTool({ name: 'read_memories', arguments: { query } })).isError, true);
+      }
+    } finally { await close(); }
+  });
+});
+
 test('read_journal 只读本 Bot 日志，默认返回最近若干条', async () => {
   await withWorkspace(async ({ store, journal }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });

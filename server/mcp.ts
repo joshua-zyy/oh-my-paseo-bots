@@ -164,30 +164,36 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     'read_memories',
     {
       title: '读取本 Bot 的明确记忆',
-      description: '读取当前 Bot 已被用户确认的长期记忆。候选记忆不会出现在这里，也不要把候选当成用户已确认的事实。',
+      description: '读取当前 Bot 已被用户确认的长期记忆，可按关键词查回。候选记忆不会出现在这里，也不要把候选当成用户已确认的事实。total 和 nextOffset 针对匹配结果；未提供 query 时读取全部确认记忆。',
       annotations: { readOnlyHint: true },
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_MEMORY_ITEMS).default(MAX_MEMORY_ITEMS),
         offset: z.number().int().min(0).default(0).describe('从最新记忆开始跳过的条数；用 nextOffset 继续读取更早记录'),
+        query: z.string().trim().max(500).optional().describe('空白分隔的关键词，忽略大小写；内容须包含全部词。中文短语按原文匹配，空查询不筛选。'),
       },
     },
-    async ({ limit, offset }) => {
+    async ({ limit, offset, query }) => {
       try {
         const memories = await store.getContextMemories(botId);
-        const end = Math.max(0, memories.length - offset);
-        const shown = memories.slice(Math.max(0, end - limit), end);
+        const terms = (query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+        const matched = terms.length ? memories.filter(memory => {
+          const content = memory.content.toLowerCase();
+          return terms.every(term => content.includes(term));
+        }) : memories;
+        const end = Math.max(0, matched.length - offset);
+        const shown = matched.slice(Math.max(0, end - limit), end);
         return toolResult({
           botId,
-          total: memories.length,
+          total: matched.length,
           offset,
-          nextOffset: offset + shown.length < memories.length ? offset + shown.length : null,
+          nextOffset: offset + shown.length < matched.length ? offset + shown.length : null,
           memories: shown.map((memory) => ({
             id: memory.id,
             content: memory.content,
             createdAt: memory.createdAt,
             confirmedAt: memory.confirmedAt,
           })),
-          truncated: shown.length < memories.length,
+          truncated: shown.length < matched.length,
         });
       } catch (error) {
         return toolFailure(error);
