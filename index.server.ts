@@ -1,6 +1,7 @@
 import type { PluginServerContext, PluginHookAgent, PluginHookContext } from '@getpaseo/plugin/server';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
@@ -12,6 +13,8 @@ import { readBotHistory } from './server/history.js';
 import { readHistory } from './shared/history.js';
 import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
+import * as filesRpc from './shared/files.js';
+import { readDirectory, readSkill, readMcp } from './server/files.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
@@ -25,6 +28,7 @@ export default function contribute(server: PluginServerContext) {
   const baseDir = process.env.OH_MY_PASEO_BOTS_DATA_DIR ?? process.env.PASEO_GUYS_DATA_DIR
     ?? (existsSync(legacyDir) ? legacyDir : join(homedir(), '.oh-my-paseo-bots'));
   const store = new BotStore({ baseDir });
+  const defaultCwd = join(baseDir, 'workspace');
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
   let currentPaseo: PaseoApi | undefined;
   const settings = server.registerSettings(rpc.settings);
@@ -114,8 +118,28 @@ export default function contribute(server: PluginServerContext) {
     if (!bots.some(bot => bot.id === CHIEF_BOT_ID) && !corrupt.includes(CHIEF_BOT_ID)) bots.unshift(await store.ensureChief());
     return { bots, corrupt };
   });
-  server.handle(rpc.createBot, async input => ({ id: (await store.createBot(input)).bot.id }));
-  server.handle(rpc.updateBot, input => store.updateBot(input.botId, input.patch));
+  server.handle(filesRpc.listDirectory, readDirectory);
+  server.handle(filesRpc.inspectSkill, input => readSkill(input.path));
+  server.handle(filesRpc.inspectMcp, async input => ({ names: Object.keys(await readMcp(input.path)) }));
+  server.handle(filesRpc.configurationDefaults, () => ({ cwd: defaultCwd }));
+  server.handle(rpc.createBot, async input => ({ id: (await store.createBot({ ...input, id: input.id ?? `bot-${randomUUID()}` })).bot.id }));
+  server.handle(rpc.updateBot, async input => {
+    const patch = { ...input.patch };
+    if (input.mcpImports?.length) {
+      const capabilities = patch.capabilities ?? (await store.getBot(input.botId))?.bot.capabilities;
+      if (!capabilities) throw new Error(`Bot 不存在：${input.botId}`);
+      const mcpServers = { ...capabilities.mcpServers };
+      for (const selection of input.mcpImports) {
+        const servers = await readMcp(selection.path);
+        for (const name of selection.names) {
+          if (!servers[name]) throw new Error(`MCP 配置中未找到 ${name}`);
+          mcpServers[name] = servers[name];
+        }
+      }
+      patch.capabilities = { ...capabilities, mcpServers };
+    }
+    return store.updateBot(input.botId, patch);
+  });
   server.handle(rpc.listMemories, input => store.listMemories(input.botId));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
@@ -177,6 +201,7 @@ export default function contribute(server: PluginServerContext) {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error(`Bot 设置无效：${state.error}`);
     const { cwd, provider, modeId, thinkingOptionId } = state.values;
+    if (cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
     return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind === 'conversation' ? { conversation: true } : {}) });
@@ -193,6 +218,7 @@ export default function contribute(server: PluginServerContext) {
   }, defaults: async () => {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error('Bot 执行设置无效');
+    if (state.values.cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
     return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId } };
   } });
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {

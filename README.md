@@ -28,7 +28,9 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [client/chat.tsx](client/chat.tsx)、[client/chat-state.ts](client/chat-state.ts)、[client/chat-timeline.tsx](client/chat-timeline.tsx) | 原生持续聊天、按 Agent 保存草稿、实时历史分页与订阅恢复，插件内打开事项 |
 | [client/chat-permission.tsx](client/chat-permission.tsx)、[client/chat-question.ts](client/chat-question.ts) | 原生权限动作与问题回应，保留原生 action 与 answers 协议 |
 | [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
-| [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/office.tsx](client/office.tsx) | 按需打开同事与插件宿主配置、办公连接和受控外发 |
+| [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/execution.tsx](client/execution.tsx)、[client/capabilities.tsx](client/capabilities.tsx) | 同事与默认配置；复用原生模型目录和设置控件，选择已有技能与 MCP |
+| [client/path-picker.tsx](client/path-picker.tsx)、[server/files.ts](server/files.ts)、[shared/files.ts](shared/files.ts) | 宿主目录浏览、读取技能索引及 MCP 配置名称，选中配置在服务端导入 |
+| [client/office.tsx](client/office.tsx) | 办公连接和受控外发 |
 | [client/journal.tsx](client/journal.tsx)、[client/history.tsx](client/history.tsx)、[client/usage.tsx](client/usage.tsx) | 工作日志与原生历史分页、按需读取会话用量 |
 | [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
 | [server/sessions.ts](server/sessions.ts)、[server/store.ts](server/store.ts) | 原生创建意图、幂等键、Bot 身份与会话关联持久化 |
@@ -89,6 +91,10 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 `bots.update` 按字段修改身份和说明，提供 `execution` 时整体替换执行覆盖，空对象恢复宿主默认。修改只影响新会话，不重配已有原生执行；有效配置参与创建请求指纹。同一模型未指定的模式／思考选项继承宿主默认，改选不同模型时使用其原生默认；显式 `null` 清除对应宿主选项。
 
 `bots.conversation.open` 返回本 Bot 最近的有效持续聊天；`bots.conversation.create` 在用户明确开新对话时读取最新配置和确认记忆。新对话仍使用后台原生工作区，不自行发起模型轮次，也不归档旧对话或停止既有事项。配置页的保存与保存后开新对话对应不同操作。
+
+`bots.create` 未给 `id` 时生成内部标识，显式标识仍兼容已有调用。配置模型选择使用当前宿主 `providers.snapshot`，模型标识只在第一个 `/` 分开 Provider；切换模型清除旧模式和思考选项。目录浏览只读目录及选定的 SKILL.md / MCP 配置；路径属于 daemon 机器。MCP 名称预览不返回连接环境或认证头，`bots.update.mcpImports` 在保存时现读文件、校验后仅合入选定名称，失败不部分保存其他字段。无需安装能力库或更改宿主工具权限。
+
+`bots.configuration.defaults` 返回插件数据目录内的 `workspace` 路径，首次执行或创建例程时按需建立；不会替换已保存的工作目录。部署用 CLI 与 daemon home 在默认设置的高级入口，仍沿用既有配置。
 
 `capabilities` 独立于 `execution`，由用户配置，提供时整体替换；旧存档读取为空技能与空 MCP，不改写旧文件。技能只在提示中列索引，使用时由原生 Agent 读取原文件，不复制正文、安装技能或修改工作树。MCP 配置交给原生创建，`paseo`／`paseo-guys` 为保留名称，传输环境和认证头不放进技能提示；配置会保存在本地 Bot 数据中，不应写入无关凭据。绑定叠加于宿主能力，不移除全局技能或 MCP，不代表沙箱或新增账户授权。
 

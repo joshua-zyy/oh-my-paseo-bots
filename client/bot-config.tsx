@@ -1,21 +1,24 @@
 import { useState } from 'react';
 import { View } from 'react-native';
+import { useSettings } from '@getpaseo/plugin/client';
 import { botDetailsSchema, type BotDetails, type BotDetailsInput } from '../shared/bot.js';
-import { botCapabilitiesSchema } from '../shared/capabilities.js';
+import type { McpImport } from '../shared/capabilities.js';
+import * as rpc from '../shared/contracts.js';
 import { OfficeConfiguration } from './office.js';
-import { Actions, Button, Copy, Field, Notice, Section } from './ui.js';
+import { ExecutionConfiguration } from './execution.js';
+import { Capabilities } from './capabilities.js';
+import { Actions, Button, Copy, Field } from './ui.js';
 
-export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetailsInput; botId: string; disabled: boolean; save(value: BotDetails, startNew?: boolean): Promise<unknown> }) {
+export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetailsInput; botId: string; disabled: boolean; save(value: BotDetails, startNew?: boolean, imports?: McpImport[]): Promise<unknown> }) {
+  const settings = useSettings(rpc.settings);
   const [value, setValue] = useState<BotDetails>(() => botDetailsSchema.parse(bot));
   const [tab, setTab] = useState('同事');
-  const [capabilitiesText, setCapabilitiesText] = useState(() => JSON.stringify(value.capabilities, null, 2));
-  let capabilities: BotDetails['capabilities'] | undefined;
-  try { capabilities = botCapabilitiesSchema.parse(JSON.parse(capabilitiesText)); } catch { /* 无效草稿保留，不能保存。 */ }
-  const edited = { ...value, ...(capabilities ? { capabilities } : {}) };
-  const execution = value.execution;
-  const setExecution = (patch: Partial<BotDetails['execution']>) => setValue(current => ({ ...current, execution: { ...current.execution, ...patch } }));
+  const [imports, setImports] = useState<McpImport[]>([]);
+  const [readingCapability, setReadingCapability] = useState(false);
+  const blocked = disabled || readingCapability;
+  const defaults = settings.status === 'ready' ? settings.values : undefined;
   return <>
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>{['同事', '模型', '能力', '连接'].map(item => <Button key={item} label={item} primary={tab === item} disabled={disabled} onPress={() => setTab(item)} />)}</View>
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>{['同事', '模型', '能力', '连接'].map(item => <Button key={item} label={item} primary={tab === item} disabled={blocked} onPress={() => setTab(item)} />)}</View>
     {tab === '连接' ? <OfficeConfiguration botId={botId} /> : <>
       {tab === '同事' && <>
         <Field label="名称" value={value.name} disabled={disabled} maxLength={200} onChangeText={name => setValue(current => ({ ...current, name }))} />
@@ -23,20 +26,11 @@ export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetai
         <Field label="长期工作说明" value={value.instructions} disabled={disabled} multiline onChangeText={instructions => setValue(current => ({ ...current, instructions }))} />
       </>}
       {tab === '模型' && <>
-        <Field label="模型（provider/model）" placeholder="留空继承宿主" value={execution.provider ?? ''} disabled={disabled} onChangeText={text => setExecution({ provider: text.trim() || undefined })} />
-        <Field label="宿主工作目录" placeholder="留空继承宿主" value={execution.cwd ?? ''} disabled={disabled} onChangeText={text => setExecution({ cwd: text.trim() || undefined })} />
-        {(['modeId', 'thinkingOptionId'] as const).map(field => <Section key={field} title={field === 'modeId' ? '执行模式' : '思考选项'}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>{([['inherit', '继承宿主'], ['native', '原生默认'], ['explicit', '指定标识']] as const).map(([choice, label]) => <Button key={choice} label={label} primary={(execution[field] === undefined ? 'inherit' : execution[field] === null ? 'native' : 'explicit') === choice} disabled={disabled} onPress={() => setExecution({ [field]: choice === 'inherit' ? undefined : choice === 'native' ? null : '' })} />)}</View>
-          {typeof execution[field] === 'string' && <Field label={field === 'modeId' ? '模式标识' : '思考选项标识'} value={execution[field]} disabled={disabled} onChangeText={text => setExecution({ [field]: text })} />}
-        </Section>)}
-        <Copy muted small>仅影响新会话。改选模型后，未指定选项使用该模型的原生默认。</Copy>
+        <ExecutionConfiguration value={value.execution} defaults={defaults} disabled={disabled} onChange={execution => setValue(current => ({ ...current, execution }))} />
+        <Copy muted small>新对话使用这些设置。</Copy>
       </>}
-      {tab === '能力' && <>
-        <Field label="技能与 MCP（JSON）" value={capabilitiesText} disabled={disabled} multiline onChangeText={setCapabilitiesText} />
-        <Notice error={capabilities ? '' : 'JSON 无效，请检查 skills / mcpServers；草稿未保存。'} />
-        <Copy muted small>技能填写已有 SKILL.md 的 name、description、宿主绝对 path。MCP 沿用宿主格式；配置不批准工具与账户，也不移除宿主全局能力。</Copy>
-      </>}
-      <Actions>{tab === '模型' && <Button label="恢复宿主默认" disabled={disabled || !capabilities} onPress={() => void save({ ...edited, execution: {} })} />}<Button label="保存" disabled={disabled || !capabilities || !botDetailsSchema.safeParse(edited).success} onPress={() => void save(edited)} /><Button label="保存并开始新对话" primary disabled={disabled || !capabilities || !botDetailsSchema.safeParse(edited).success} onPress={() => void save(edited, true)} /></Actions>
+      {tab === '能力' && <Capabilities value={value.capabilities} imports={imports} cwd={value.execution.cwd ?? defaults?.cwd} disabled={disabled} onChange={capabilities => setValue(current => ({ ...current, capabilities }))} onImports={setImports} onBusyChange={setReadingCapability} />}
+      <Actions>{tab === '模型' && <Button label="恢复默认" disabled={blocked} onPress={() => setValue(current => ({ ...current, execution: {} }))} />}<Button label="保存" disabled={blocked || !botDetailsSchema.safeParse(value).success} onPress={() => void save(value, false, imports)} /><Button label="保存并开始新对话" primary disabled={blocked || !botDetailsSchema.safeParse(value).success} onPress={() => void save(value, true, imports)} /></Actions>
     </>}
   </>;
 }

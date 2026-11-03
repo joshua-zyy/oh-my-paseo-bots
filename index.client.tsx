@@ -83,11 +83,11 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
         {current && <View style={{ flex: 1, minHeight: 0, display: !panel && tab === '聊天' ? 'flex' : 'none' }}><Chat key={host.id} botId={selected} hostId={host.id} sessionId={viewedSession} openAgent={openAgent} returnToChat={() => setViewedSession(undefined)} /></View>}
         <ScrollView key={`${host.id}:${selected}:${panel || tab}`} style={{ flex: 1, display: panel || tab !== '聊天' ? 'flex' : 'none' }} contentContainerStyle={{ paddingHorizontal: compact ? 16 : 28, paddingTop: 14, paddingBottom: 32 }} keyboardShouldPersistTaps="handled">
           <View style={{ maxWidth: 960, width: '100%', alignSelf: 'center' }}>
-            {panel === 'host' ? <HostSettings /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew) => {
+            {panel === 'host' ? <HostSettings /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew, mcpImports) => {
               if (guard.current) return;
               guard.current = true;
               setBusy(true); setError('');
-              try { await update({ botId: selected, patch }); if (startNew) openAgent((await createConversation({ botId: selected })).agentId); await refresh(); }
+              try { await update({ botId: selected, patch, mcpImports }); if (startNew) openAgent((await createConversation({ botId: selected })).agentId); await refresh(); }
               catch (failure) { setError(String(failure)); }
               finally { guard.current = false; setBusy(false); }
             }} /> : tab === '工作' ? <Work key={selected} botId={selected} openAgent={openAgent} /> : tab === '记忆' ? <Memories key={selected} botId={selected} /> : tab === '例程' ? <Routines key={selected} botId={selected} openAgent={openAgent} /> : null : <Copy muted>读取同事中…</Copy>}
@@ -100,18 +100,17 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       if (guard.current) return;
       guard.current = true;
       setBusy(true); setError('');
-      try { await create(values); await refresh(); choose(values.id); setCreating(false); }
-      catch (failure) { setError(String(failure).includes(`bot ${values.id} already exists`) ? '标识已存在，请换一个标识。' : String(failure)); }
+      try { const result = await create(values); await refresh(); choose(result.id); setCreating(false); }
+      catch (failure) { setError(String(failure)); }
       finally { guard.current = false; setBusy(false); }
     }} error={error} />}</Modal.Content></Modal>
   </UiProvider>;
 }
 
-function NewBot({ busy, submit, error }: { busy: boolean; submit(values: { id: string; name: string; role: string }): Promise<void>; error: string }) {
-  const [id, setId] = useState('');
+function NewBot({ busy, submit, error }: { busy: boolean; submit(values: { name: string; role: string }): Promise<void>; error: string }) {
   const [name, setName] = useState('');
   const [role, setRole] = useState('');
-  return <><Notice error={error} /><Field label="名称" value={name} onChangeText={setName} maxLength={200} disabled={busy} /><Field label="职责" value={role} onChangeText={setRole} maxLength={200} multiline disabled={busy} /><Field label="标识" value={id} onChangeText={setId} placeholder="colleague" maxLength={64} disabled={busy} /><Actions><Button label="添加同事" primary disabled={busy || !id.trim() || !name.trim() || !role.trim()} onPress={() => void submit({ id, name, role })} /></Actions></>;
+  return <><Notice error={error} /><Field label="名称" value={name} onChangeText={setName} maxLength={200} disabled={busy} /><Field label="职责" value={role} onChangeText={setRole} maxLength={200} multiline disabled={busy} /><Actions><Button label="添加同事" primary disabled={busy || !name.trim() || !role.trim()} onPress={() => void submit({ name: name.trim(), role: role.trim() })} /></Actions></>;
 }
 
 export default function contribute(client: PluginClientContext) {

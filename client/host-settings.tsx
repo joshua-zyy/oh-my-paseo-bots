@@ -1,9 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { z } from 'zod';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { useRpc, useSettings } from '@getpaseo/plugin/client';
 import * as rpc from '../shared/contracts.js';
-import { Actions, Button, Copy, Field, Notice, Section } from './ui.js';
+import { configurationDefaults } from '../shared/files.js';
+import type { BotDetails } from '../shared/bot.js';
+import { ExecutionConfiguration } from './execution.js';
+import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
 
 export function HostSettings() {
   const settings = useSettings(rpc.settings);
@@ -15,11 +18,20 @@ export function HostSettings() {
 
 function Configuration({ initial, save }: { initial?: z.output<typeof rpc.settings.schema>; save(values: z.output<typeof rpc.settings.schema>): Promise<void> }) {
   const check = useRpc(rpc.toolStatus);
-  const [values, setValues] = useState({ cwd: initial?.cwd ?? '', provider: initial?.provider ?? '', paseoCommand: initial?.paseoCommand ?? '', paseoHome: initial?.paseoHome ?? '' });
+  const readDefaults = useRpc(configurationDefaults);
+  const [execution, setExecution] = useState<BotDetails['execution']>(() => ({ cwd: initial?.cwd, provider: initial?.provider, modeId: initial?.modeId, thinkingOptionId: initial?.thinkingOptionId }));
+  const [values, setValues] = useState({ paseoCommand: initial?.paseoCommand ?? '', paseoHome: initial?.paseoHome ?? '' });
+  const [defaultCwd, setDefaultCwd] = useState('');
+  const [advanced, setAdvanced] = useState(false);
   const [tools, setTools] = useState<RpcOutput<typeof rpc.toolStatus>>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const guard = useRef(false);
+  useEffect(() => {
+    let active = true;
+    void readDefaults({}).then(({ cwd }) => { if (active) { setDefaultCwd(cwd); if (!initial?.cwd) setExecution(current => ({ ...current, cwd })); } }).catch(failure => { if (active) setError(String(failure)); });
+    return () => { active = false; };
+  }, [readDefaults]);
   async function run(action: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
@@ -28,12 +40,15 @@ function Configuration({ initial, save }: { initial?: z.output<typeof rpc.settin
   }
   return <>
     <Notice error={error} />
-    <Section title="默认执行配置">
-      {([['cwd', '宿主工作目录'], ['provider', '模型（provider/model）'], ['paseoCommand', 'Paseo CLI 路径'], ['paseoHome', '当前 daemon 的 home 目录']] as const).map(([key, label]) => <Field key={key} label={label} value={values[key]} onChangeText={value => setValues(current => ({ ...current, [key]: value }))} disabled={busy} />)}
-      <Actions><Button label="保存配置" primary disabled={busy || !values.cwd.trim() || !values.provider.trim()} onPress={() => void run(() => save({ ...initial, cwd: values.cwd, provider: values.provider, ...(values.paseoCommand ? { paseoCommand: values.paseoCommand } : { paseoCommand: undefined }), ...(values.paseoHome ? { paseoHome: values.paseoHome } : { paseoHome: undefined }) }))} /></Actions>
+    <Section title="默认执行">
+      <ExecutionConfiguration value={execution} inherit={false} disabled={busy} onChange={setExecution} />
+      <Actions><Button label="使用默认文件夹" disabled={busy || !defaultCwd} onPress={() => setExecution(current => ({ ...current, cwd: defaultCwd }))} /></Actions>
     </Section>
-    <Section title="Bot 工具" action={<Button label="检查连接" disabled={busy} onPress={() => void run(async () => { setTools(await check({})); })} />}>
+    <Disclosure title="高级" open={advanced} onPress={() => setAdvanced(value => !value)}>
+      {([['paseoCommand', 'Paseo CLI'], ['paseoHome', 'Daemon 目录']] as const).map(([key, label]) => <Field key={key} label={label} value={values[key]} onChangeText={value => setValues(current => ({ ...current, [key]: value }))} disabled={busy} />)}
+      <Button label="检查连接" disabled={busy} onPress={() => void run(async () => { setTools(await check({})); })} />
       {tools && <Copy>{tools.state === 'ready' ? '可连接' : tools.state === 'idle' ? '首次交办时创建' : '不可用'}</Copy>}{tools?.detail && <Copy muted>{tools.detail}</Copy>}
-    </Section>
+    </Disclosure>
+    <Actions><Button label="保存" primary disabled={busy || !execution.cwd || !execution.provider} onPress={() => void run(() => save({ cwd: execution.cwd!, provider: execution.provider!, modeId: execution.modeId ?? undefined, thinkingOptionId: execution.thinkingOptionId ?? undefined, paseoCommand: values.paseoCommand.trim() || undefined, paseoHome: values.paseoHome.trim() || undefined }))} /></Actions>
   </>;
 }

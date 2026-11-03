@@ -1,6 +1,7 @@
 import { defineRpc, defineSettings } from '@getpaseo/plugin';
 import { z } from 'zod';
 import { botDetailsSchema, botPatchSchema } from './bot.js';
+import { mcpImportSchema } from './capabilities.js';
 
 const id = z.string().min(1).max(64);
 const botView = botDetailsSchema.extend({ id });
@@ -19,8 +20,8 @@ export const settings = defineSettings({
 
 export const listBots = defineRpc({ name: 'bots.list', input: z.object({}), output: z.object({ bots: z.array(savedBotView), corrupt: z.array(z.string()) }) });
 export const toolStatus = defineRpc({ name: 'bots.tools.status', input: z.object({}), output: z.object({ state: z.enum(['idle', 'ready', 'unavailable']), detail: z.string().optional() }) });
-export const createBot = defineRpc({ name: 'bots.create', input: botView, output: z.object({ id }) });
-export const updateBot = defineRpc({ name: 'bots.update', input: z.object({ botId: id, patch: botPatchSchema }), output: savedBotView });
+export const createBot = defineRpc({ name: 'bots.create', input: botDetailsSchema.extend({ id: id.optional() }), output: z.object({ id }) });
+export const updateBot = defineRpc({ name: 'bots.update', input: z.object({ botId: id, patch: botPatchSchema, mcpImports: z.array(mcpImportSchema).optional() }), output: savedBotView });
 export const startSession = defineRpc({ name: 'bots.start', input: z.object({ botId: id, requestId: z.string().uuid().optional(), title: z.string().min(1).max(200), prompt: z.string().min(1) }), output: z.object({ agentId: z.string(), requestId: z.string() }) });
 export const openConversation = defineRpc({ name: 'bots.conversation.open', input: z.object({ botId: id }), output: z.object({ agentId: z.string() }) });
 export const createConversation = defineRpc({ name: 'bots.conversation.create', input: z.object({ botId: id }), output: z.object({ agentId: z.string() }) });
