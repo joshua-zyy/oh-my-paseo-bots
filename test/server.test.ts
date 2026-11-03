@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,6 +23,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
   const created: PaseoAgentCreateOptions[] = [];
   const archived = new Set<string>();
   const messages: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
+  let messageFailure = false;
   const userMessage = '取消刚刚交办的数字核对';
   const paseo = { workspaces: { create: async (options: { background: boolean }) => {
     assert.equal(options.background, true);
@@ -37,7 +38,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
       await hooks.get('agent.archived')?.({ agent: { id: agentId } }, { paseo });
       return { archivedAt: 'now' };
     },
-    send: async (text: string, options?: PaseoAgentSendOptions) => { messages.push({ agentId, text, options }); },
+    send: async (text: string, options?: PaseoAgentSendOptions) => { messages.push({ agentId, text, options }); if (messageFailure) throw new Error('原生通知未确认'); },
     timeline: { refetch: async () => ({ error: null, staleCursor: false, gap: false, hasOlder: false, hasNewer: false, entries: [{ seqStart: 1, seqEnd: 1, item: { type: 'user_message', text: userMessage } }] }) },
   }) } } as unknown as PaseoApi;
   const server = {
@@ -133,9 +134,17 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.equal(archived.has(conversation.agentId), false, '开新对话不关闭原对话或停止其工作');
     assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === fresh.agentId), false);
     const delegated = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { colleagueId: 'helper', requestId: 'chat-preview', title: '同事核对', prompt: '仅核对合成数据' } }));
+    let mailRaw = '';
+    let mailSends = 0;
+    let mailTimeout = false;
     const outbox = new MailOutbox({ baseDir: directory, store: new BotStore({ baseDir: directory }), getClient: async () => ({
       config: { command: 'synthetic', configDir: directory, account: 'sender@example.test', query: 'label:synthetic' },
       buildMail: value => Buffer.from(JSON.stringify(value)).toString('base64url'),
+      matchesDraft: async () => true,
+      createDraft: async raw => { mailRaw = raw; return { id: 'synthetic-draft' }; },
+      getDraft: async id => ({ id, message: { raw: mailRaw } }),
+      sendDraft: async () => { mailSends++; if (mailTimeout) throw new Error('合成发送超时'); return { id: 'synthetic-sent', labelIds: ['SENT'] }; },
+      findDrafts: async () => [], findSent: async () => [], getMessage: async id => ({ id }),
     } as GmailClient) });
     const proposal = { to: ['receiver@example.test'], subject: '合成确认', text: '仅用于离线显示测试' };
     const mainMail = await outbox.propose('chief', conversation.agentId, { ...proposal, requestId: 'main-mail' });
@@ -149,6 +158,49 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.deepEqual(preview.mail.map(({ id, botId }) => ({ id, botId })), [{ id: mainMail.id, botId: 'chief' }, { id: colleagueMail.id, botId: 'helper' }], '只展示本聊天及受托同事的邮件，保留实际批准归属');
     assert.deepEqual(await invoke('bots.conversation.work', { botId: 'chief', agentId: fresh.agentId }), { entries: [], mail: [] });
     await assert.rejects(() => invoke('bots.conversation.work', { botId: 'helper', agentId: conversation.agentId }), /持续聊天/);
+    await outbox.approve('helper', colleagueMail.id);
+    assert.equal((await outbox.send('helper', delegated.agentId, colleagueMail.id)).status, 'sent');
+    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'notified' });
+    const receipt = messages.at(-1)!;
+    assert.equal(receipt.agentId, delegated.agentId, '主聊天确认受托同事的邮件后，通知实际登记执行者');
+    assert.match(receipt.text, /synthetic-sent/);
+    assert.match(receipt.text, /"status":"sent"/);
+    assert.deepEqual(receipt.options, { sourceAgentId: delegated.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:mail:${colleagueMail.id}:${createHash('sha256').update(receipt.text).digest('hex')}` });
+    await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id });
+    assert.equal(messages.at(-1)!.options?.messageId, receipt.options?.messageId, '相同实际回执重复通知沿用原生幂等消息标识');
+    messageFailure = true;
+    await assert.rejects(() => invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), /原生通知未确认/);
+    messageFailure = false;
+    assert.equal((await outbox.list('helper')).find(action => action.id === colleagueMail.id)?.status, 'sent');
+    assert.equal(mailSends, 1, '通知失败不再次执行邮件发送');
+    const uncertain = await outbox.propose('helper', delegated.agentId, { ...proposal, requestId: 'uncertain-mail' });
+    await outbox.approve('helper', uncertain.id);
+    mailTimeout = true;
+    const unknown = await outbox.send('helper', delegated.agentId, uncertain.id);
+    mailTimeout = false;
+    assert.equal(unknown.status, 'send_unknown');
+    await invoke('bots.mail.notify', { botId: 'helper', actionId: uncertain.id });
+    const unknownNotice = messages.at(-1)!;
+    const rechecked = await outbox.reconcile('helper', delegated.agentId, uncertain.id);
+    assert.equal(rechecked.status, unknown.status);
+    assert.notEqual(rechecked.detail, unknown.detail);
+    await invoke('bots.mail.notify', { botId: 'helper', actionId: uncertain.id });
+    assert.notEqual(messages.at(-1)!.options?.messageId, unknownNotice.options?.messageId, '同状态但回查说明变化时使用新原生消息键，避免请求指纹冲突');
+    assert.equal(mailSends, 2, '回查和通知不重新发送未知邮件');
+    await assert.rejects(() => invoke('bots.mail.notify', { botId: 'chief', actionId: colleagueMail.id }), /未找到邮件登记/);
+    archived.add(delegated.agentId);
+    let before = messages.length;
+    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'inactive' });
+    assert.equal(messages.length, before, '原生已归档时不派发通知');
+    archived.delete(delegated.agentId);
+    await invoke('bots.task.cancel', { botId: 'helper', agentId: delegated.agentId });
+    before = messages.length;
+    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'inactive' });
+    assert.equal(messages.length, before, '事项取消后不唤醒 Bot');
+    await invoke('bots.mail.revoke', { botId: 'chief', actionId: mainMail.id });
+    await invoke('bots.mail.notify', { botId: 'chief', actionId: mainMail.id });
+    assert.equal(messages.at(-1)!.agentId, conversation.agentId);
+    assert.match(messages.at(-1)!.text, /"status":"revoked"/);
   } finally {
     for (const client of clients) await client.close();
     await cleanup();

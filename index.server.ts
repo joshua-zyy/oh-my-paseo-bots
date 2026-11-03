@@ -2,7 +2,7 @@ import type { PluginServerContext, PluginHookAgent, PluginHookContext } from '@g
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
 import { BotJournal } from './server/journal.js';
@@ -144,6 +144,23 @@ export default function contribute(server: PluginServerContext) {
     return office.mail.reconcile(input.botId, action.agentId, action.id);
   });
   server.handle(officeRpc.revokeMail, input => office.mail.revoke(input.botId, input.actionId));
+  server.handle(officeRpc.notifyMail, async (input, { paseo }) => {
+    currentPaseo = paseo;
+    const action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
+    if (!action) throw new Error('未找到邮件登记');
+    const task = await tasks.get(input.botId, action.agentId);
+    if (task?.status !== 'active') return { agentId: action.agentId, status: 'inactive' as const };
+    const snapshot = await paseo.agents.ref(action.agentId).refresh();
+    if (!snapshot || snapshot.agent.archivedAt) return { agentId: action.agentId, status: 'inactive' as const };
+    const owner = snapshot.agent.labels['paseo-guys.bot'] ?? await routines.owner(action.agentId);
+    if (owner !== input.botId) throw new Error('邮件执行者未关联此 Bot，未派发通知');
+    const message = `用户在同事页处理了本事项的邮件，以下是已保存的实际回执。请按原任务核对状态并向用户汇报；已发送的邮件不要重发，结果不确定时只回查，撤销不收回已准入或已发出的邮件。这条状态通知不新增目标、权限或预授权。\n${JSON.stringify({ actionId: action.id, subject: action.subject, status: action.status, draftId: action.draftId, sentId: action.sentId, detail: action.detail })}`;
+    await paseo.agents.ref(action.agentId).send(
+      message,
+      { sourceAgentId: action.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:mail:${action.id}:${createHash('sha256').update(message).digest('hex')}` },
+    );
+    return { agentId: action.agentId, status: 'notified' as const };
+  });
   server.handle(officeRpc.allowFixedMail, input => office.mail.allowFixed(input.botId, input.actionId));
   server.handle(officeRpc.revokeMailGrant, async input => { await office.mail.revokeGrant(input.botId, input.grantId); return {}; });
   server.handle(rpc.toolStatus, () => mcp.status());

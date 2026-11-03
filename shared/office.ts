@@ -45,6 +45,7 @@ export const listMail = defineRpc({ name: 'bots.mail.list', input: z.object({ bo
 export const sendMail = defineRpc({ name: 'bots.mail.confirm_send', input: actionInput, output: mailAction });
 export const reconcileMail = defineRpc({ name: 'bots.mail.reconcile', input: actionInput, output: mailAction });
 export const revokeMail = defineRpc({ name: 'bots.mail.revoke', input: actionInput, output: mailAction });
+export const notifyMail = defineRpc({ name: 'bots.mail.notify', input: actionInput, output: z.object({ agentId: z.string(), status: z.enum(['notified', 'inactive']) }) });
 const mailGrant = z.object({ id: z.string(), agentId: z.string(), account: z.string(), to: z.array(z.string()), subject: z.string(), text: z.string(), sourceIds: z.array(z.string()), revokedAt: z.string().optional() });
 export const listMailGrants = defineRpc({ name: 'bots.mail.grants', input: z.object({ botId: z.string() }), output: z.array(mailGrant) });
 export const allowFixedMail = defineRpc({ name: 'bots.mail.allow_fixed', input: actionInput, output: mailGrant });

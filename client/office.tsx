@@ -18,6 +18,7 @@ export function OfficeActions({ botId, revision = 0, inlineActions, onChanged }:
   const send = useRpc(rpc.sendMail);
   const reconcile = useRpc(rpc.reconcileMail);
   const revoke = useRpc(rpc.revokeMail);
+  const notify = useRpc(rpc.notifyMail);
   const allow = useRpc(rpc.allowFixedMail);
   const revokeGrant = useRpc(rpc.revokeMailGrant);
   const [actions, setActions] = useState<RpcOutput<typeof rpc.listMail>>([]);
@@ -48,6 +49,11 @@ export function OfficeActions({ botId, revision = 0, inlineActions, onChanged }:
     return () => { active = false; };
   }, [botId, list, grants, revision, inlineActions]);
   function row(action: RpcOutput<typeof rpc.listMail>[number]) {
+    async function receive(result: RpcOutput<typeof rpc.sendMail>) {
+      setActions(current => current.map(item => item.id === result.id ? result : item));
+      try { await notify({ botId, actionId: result.id }); }
+      catch (failure) { throw new Error(`邮件状态已保存，同事通知未确认：${String(failure)}`); }
+    }
     return <Disclosure key={action.id} title={action.subject} status={labels[action.status] ?? action.status} open={opened === action.id || (inline && !['sent', 'revoked'].includes(action.status))} onPress={() => setOpened(opened === action.id ? undefined : action.id)}>
       <Copy>{action.account} → {action.to.join('、')}</Copy>
       <Copy>{action.text}</Copy>
@@ -56,9 +62,9 @@ export function OfficeActions({ botId, revision = 0, inlineActions, onChanged }:
       {!inline && <Copy muted small>事项：{action.agentId}{'\n'}登记：{action.id}{action.sentId ? `\n已发送邮件：${action.sentId}` : action.draftId ? `\n草稿：${action.draftId}` : ''}{action.approvedAt ? `\n用户确认于 ${action.approvedAt}` : action.grantId ? `\n固定预授权：${action.grantId}` : ''}</Copy>}
       {!['sent', 'revoked'].includes(action.status) && <Copy muted small>按以上完整内容确认。未知结果先回查，撤销不收回已准入或已发出的邮件。</Copy>}
       <Actions>
-        {['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status) && <Button label={action.status === 'draft' ? '继续发送' : '确认并发送'} primary disabled={busy} onPress={() => void run(async () => { const result = await send({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
-        {['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status) && <Button label="回查" primary disabled={busy} onPress={() => void run(async () => { const result = await reconcile({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
-        {!['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status) && <Button label="撤销" disabled={busy} onPress={() => void run(async () => { const result = await revoke({ botId, actionId: action.id }); setActions(current => current.map(item => item.id === result.id ? result : item)); })} />}
+        {['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status) && <Button label={action.status === 'draft' ? '继续发送' : '确认并发送'} primary disabled={busy} onPress={() => void run(async () => receive(await send({ botId, actionId: action.id })))} />}
+        {['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status) && <Button label="回查" primary disabled={busy} onPress={() => void run(async () => receive(await reconcile({ botId, actionId: action.id })))} />}
+        {!['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status) && <Button label="撤销" disabled={busy} onPress={() => void run(async () => receive(await revoke({ botId, actionId: action.id })))} />}
       </Actions>
       {!inline && !['creating_draft', 'draft_unknown', 'sending', 'send_unknown', 'sent', 'revoked'].includes(action.status) && <>
         <Copy muted small>固定预授权只允许本事项以后发送完全相同的账户、查询、收件人、主题、正文与来源组合。</Copy>
