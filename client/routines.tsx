@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { useRpc } from '@getpaseo/plugin/client';
+import { SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import { View } from 'react-native';
 import * as rpc from '../shared/routines.js';
 import { listTasks } from '../shared/tasks.js';
@@ -8,6 +9,7 @@ import { History } from './history.js';
 import { Usage } from './usage.js';
 import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
 import { useBotUpdates } from './use-bot-updates.js';
+import { describeRoutineCron, WEEKDAYS } from './routine-time.js';
 
 export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
   const list = useRpc(rpc.listRoutines);
@@ -25,9 +27,14 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
   const [runOpened, setRunOpened] = useState<string>();
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [frequency, setFrequency] = useState<'daily' | 'weekdays' | 'weekly' | 'custom'>('daily');
+  const [hour, setHour] = useState('09');
+  const [minute, setMinute] = useState('00');
+  const [weekday, setWeekday] = useState('1');
   const [cron, setCron] = useState('0 9 * * *');
   const [timezone, setTimezone] = useState('Asia/Shanghai');
   const [continuity, setContinuity] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const guard = useRef(false);
@@ -52,19 +59,31 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
   }, [botId, list, tasks, updates.revision]);
   const statuses: Record<string, string> = { active: '已开启', paused: '已暂停', completed: '触发已结束' };
   const outcomes: Record<string, string> = { running: '运行中', succeeded: '原生成功', failed: '原生失败' };
+  const cadence = frequency === 'custom' ? cron : `${Number(minute)} ${Number(hour)} * * ${frequency === 'daily' ? '*' : frequency === 'weekdays' ? '1-5' : weekday}`;
+  const timezones = [...new Set(['Asia/Shanghai', 'UTC', Intl.DateTimeFormat().resolvedOptions().timeZone, timezone])].map(value => ({ value, label: value === 'Asia/Shanghai' ? '北京时间' : value }));
   return <>
     <Notice error={error || updates.error} />
     <Actions><Button label="刷新例程" disabled={busy} onPress={() => void run()} /><Button label="新建例程" icon="Plus" disabled={busy} onPress={() => setCreating(true)} /></Actions>
     {creating && <Section title="新建例程">
       <Field label="名称" value={name} onChangeText={setName} maxLength={120} disabled={busy} />
-      <Field label="每次目标与授权范围" value={prompt} onChangeText={setPrompt} multiline placeholder="交付物、完成条件和允许读取的资料" maxLength={1500} disabled={busy} />
-      <Field label="Cron" value={cron} onChangeText={setCron} maxLength={200} disabled={busy} />
-      <Field label="时区" value={timezone} onChangeText={setTimezone} maxLength={100} disabled={busy} />
-      <Actions><Button label={continuity ? '上轮参考：开启' : '上轮参考：关闭'} disabled={busy} onPress={() => setContinuity(value => !value)} /></Actions>
-      {continuity && <Copy muted small>仅参考同一例程原生成功且已报告完成的摘要，不新增授权。</Copy>}
-      <Copy muted small>创建不立即运行，也不批准外发等敏感动作。执行配置在创建时确定；修改模型后需新建并取消旧例程。</Copy>
-      <Actions><Button label="取消新建" disabled={busy} onPress={() => setCreating(false)} /><Button label="创建例程" primary disabled={busy || !name.trim() || !prompt.trim() || !cron.trim() || !timezone.trim()} onPress={() => void run(async () => {
-        const result = await create({ botId, name, prompt, cron, timezone, continuity });
+      <Field label="要做的事" value={prompt} onChangeText={setPrompt} multiline placeholder="交付物、完成条件和允许读取的资料" maxLength={1500} disabled={busy} />
+      <SettingsSelect label="重复" value={frequency} options={[{ label: '每天', value: 'daily' }, { label: '工作日', value: 'weekdays' }, { label: '每周', value: 'weekly' }, { label: '自定义 Cron', value: 'custom' }]} disabled={busy} onValueChange={value => { if (value === 'custom' && frequency !== 'custom') setCron(cadence); setFrequency(value); }} />
+      {frequency === 'custom' ? <Field label="Cron" value={cron} onChangeText={setCron} maxLength={200} disabled={busy} /> : <>
+        {frequency === 'weekly' && <SettingsSelect label="日期" value={weekday} options={[1, 2, 3, 4, 5, 6, 0].map(value => ({ value: String(value), label: WEEKDAYS[value] }))} disabled={busy} onValueChange={setWeekday} />}
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ flex: 1 }}><SettingsSelect label="时" value={hour} options={Array.from({ length: 24 }, (_, value) => ({ value: String(value).padStart(2, '0'), label: String(value).padStart(2, '0') }))} disabled={busy} onValueChange={setHour} /></View>
+          <View style={{ flex: 1 }}><SettingsSelect label="分" value={minute} options={Array.from({ length: 60 }, (_, value) => ({ value: String(value).padStart(2, '0'), label: String(value).padStart(2, '0') }))} disabled={busy} onValueChange={setMinute} /></View>
+        </View>
+      </>}
+      <SettingsSelect label="时区" value={timezone} options={timezones} disabled={busy} onValueChange={setTimezone} />
+      <Disclosure title="高级" open={advanced} onPress={() => setAdvanced(value => !value)}>
+        <Field label="其他时区" value={timezone} onChangeText={setTimezone} maxLength={100} disabled={busy} />
+        <SettingsSwitch label="参考上次结果" value={continuity} disabled={busy} onValueChange={setContinuity} />
+        {continuity && <Copy muted small>仅参考同一例程已完成报告的摘要。</Copy>}
+        <Copy muted small>执行配置在创建时确定；修改模型后需新建并取消旧例程。</Copy>
+      </Disclosure>
+      <Actions><Button label="取消新建" disabled={busy} onPress={() => setCreating(false)} /><Button label="创建例程" primary disabled={busy || !name.trim() || !prompt.trim() || !cadence.trim() || !timezone.trim()} onPress={() => void run(async () => {
+        const result = await create({ botId, name, prompt, cron: cadence, timezone, continuity });
         setCreating(false); setName(''); setPrompt(''); setOpened(result.id);
       })} /></Actions>
     </Section>}
@@ -72,7 +91,7 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
     {items?.length === 0 && !creating && <Copy muted>暂无例程</Copy>}
     {items?.map(({ routine, native, error: nativeError }) => <Disclosure key={routine.id} title={routine.name} status={routine.state === 'canceled' ? '已取消' : native ? statuses[native.status] : '原生状态待确认'} open={opened === routine.id} onPress={() => setOpened(opened === routine.id ? undefined : routine.id)}>
       <Copy>{routine.prompt}</Copy>
-      <Copy muted>{native?.cadence.type === 'cron' ? `${native.cadence.expression} · ${native.cadence.timezone || 'UTC'}` : `${routine.cron} · ${routine.timezone}`}</Copy>
+      <Copy muted>{native?.cadence.type === 'cron' ? `${describeRoutineCron(native.cadence.expression)} · ${native.cadence.timezone || 'UTC'}` : `${describeRoutineCron(routine.cron)} · ${routine.timezone}`}</Copy>
       <Notice error={nativeError || ''} />
       {routine.detail && <Copy muted small>{routine.detail}</Copy>}
       {native?.nextRunAt && <Copy muted small>下次：{new Date(native.nextRunAt).toLocaleString('zh-CN', { hour12: false })}</Copy>}

@@ -107,3 +107,47 @@ test('聊天显示完整邮件后才提供确认，未知发送只提供回查�
   reconcile.props.onPress(); await pending;
   assert.deepEqual(calls[1], { kind: 'reconcile', input: { botId: 'chief', actionId: 'registered-mail' } });
 });
+
+test('例程按选择的频率和时间提交，保留高级 Cron 与指定时区', async () => {
+  const source = await sourceFile('client/routines.tsx');
+  let cadence = 'cron';
+  let submit = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'cadence' && node.initializer) cadence = node.initializer.getText(source);
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+      if (attributes.find(attribute => attribute.name.getText(source) === 'label')?.initializer?.getText(source) === '"创建例程"') {
+        const action = attributes.find(attribute => attribute.name.getText(source) === 'onPress')?.initializer;
+        if (action && ts.isJsxExpression(action) && action.expression) submit = action.expression.getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(submit);
+  const body = ts.transpileModule(`const cadence = ${cadence}; return (${submit});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const createSubmit = new Function('frequency', 'hour', 'minute', 'weekday', 'cron', 'timezone', 'botId', 'name', 'prompt', 'continuity', 'run', 'create', 'setCreating', 'setName', 'setPrompt', 'setOpened', body);
+  for (const [frequency, hour, minute, weekday, expected] of [
+    ['daily', '17', '43', '1', '43 17 * * *'],
+    ['weekdays', '09', '07', '1', '7 9 * * 1-5'],
+    ['weekly', '00', '05', '0', '5 0 * * 0'],
+    ['custom', '09', '00', '1', '*/10 * * * *'],
+  ]) {
+    let pending = Promise.resolve();
+    const values: unknown[] = [];
+    const callback = createSubmit(frequency, hour, minute, weekday, '*/10 * * * *', 'America/New_York', 'chief', '合成例程', '仅整理本地合成文件', false,
+      (work: () => Promise<void>) => { pending = work(); return pending; },
+      async (input: unknown) => { values.push(input); return { id: 'registered-routine' }; }, () => {}, () => {}, () => {}, () => {},
+    );
+    callback(); await pending;
+    assert.deepEqual(values, [{ botId: 'chief', name: '合成例程', prompt: '仅整理本地合成文件', cron: expected, timezone: 'America/New_York', continuity: false }]);
+  }
+});
+
+test('例程列表显示普通时间，其他 Cron 保留原文', async () => {
+  const { describeRoutineCron } = await import(new URL('../client/routine-time.js', import.meta.url).href);
+  for (const [expression, expected] of [
+    ['43 17 * * *', '每天 17:43'], ['7 9 * * 1-5', '工作日 09:07'], ['5 0 * * 0', '每周日 00:05'],
+    ['0 9 1 * *', '0 9 1 * *'], ['*/10 * * * *', '*/10 * * * *'],
+  ]) assert.equal(describeRoutineCron(expression), expected);
+});

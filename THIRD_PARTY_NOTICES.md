@@ -1,4 +1,4 @@
-本项目的聊天订阅、历史合并、问题回复和技能 frontmatter 读取适配自 [oliexe/paseo-bots](https://github.com/oliexe/paseo-bots) 的 `client/useChat.ts`、`client/chat/stream/model.ts`、问题表单和 `shared/skills.ts`。修改包含 Paseo 0.14 的后台列表观察、订阅恢复、页面布局及原生权限接入。以下许可适用于这些复用部分。
+本项目的聊天订阅、历史合并、问题回复、技能 frontmatter 读取和常见 Cron 描述适配自 [oliexe/paseo-bots](https://github.com/oliexe/paseo-bots) 的 `client/useChat.ts`、`client/chat/stream/model.ts`、问题表单、`shared/skills.ts` 和 `shared/routines.ts`。修改包含 Paseo 0.14 的后台列表观察、订阅恢复、页面布局及原生权限接入。以下许可适用于这些复用部分。
 
 MIT License
 

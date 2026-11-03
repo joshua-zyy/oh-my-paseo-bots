@@ -41,6 +41,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [server/mcp.ts](server/mcp.ts) | 插件内回环 HTTP MCP、稳定端点、Bot／Agent 凭证绑定与工具挂载 |
 | [server/tasks.ts](server/tasks.ts)、[server/task-tools.ts](server/task-tools.ts)、[server/colleague-tools.ts](server/colleague-tools.ts) | 事项状态、跨会话查询、原生跟进、固定同事配置与委派 |
 | [server/routines.ts](server/routines.ts)、[shared/routines.ts](shared/routines.ts)、[client/routines.tsx](client/routines.tsx) | 独立例程创建意图、原生调度控制、运行关联与结果展示 |
+| [client/routine-time.ts](client/routine-time.ts) | 常见 Cron 的中文时间描述；普通频率与时分选择在例程页转换为原生 Cron |
 | [server/office.ts](server/office.ts)、[server/office-tools.ts](server/office-tools.ts) | 按 Bot／事项绑定办公范围；Gmail、飞书及外发登记接入 |
 | [server/mail.ts](server/mail.ts)、[server/gmail.ts](server/gmail.ts)、[server/feishu.ts](server/feishu.ts) | 邮件状态与批准／撤销、gws 适配、lark-mcp 只读适配 |
 | [test/](test/)、[scripts/build.mjs](scripts/build.mjs) | 本地单元与离线契约测试、类型编译与双端 bundle 构建 |
@@ -104,6 +105,8 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 `bots.configuration.defaults` 返回插件数据目录内的 `workspace` 路径，首次执行或创建例程时按需建立；不会替换已保存的工作目录。部署用 CLI 与 daemon home 在默认设置的高级入口，仍沿用既有配置。
 
 `bots.reply.stop` 沿用已配置 CLI 与当前 daemon home，以完整 Agent ID 调用原生 `agent stop`。只中断当前轮次，不归档聊天、不取消事项或同事；原生 CLI 的逐 Agent 失败可能仍以 0 退出，必须核对结构化回执或实际状态，不能据退出码报告停止。聊天状态继续由原生事件更新。
+
+例程创建使用原生选择控件提供每天、工作日与每周的时分设置，提交仍为既有 Cron／时区契约；自定义 Cron 保留完整表达式。常用时区可选择，其他时区和上轮摘要参考在高级入口；这些配置不授予外发权限。列表显示常见时间形态，其他表达式保留原文。
 
 `capabilities` 独立于 `execution`，由用户配置，提供时整体替换；旧存档读取为空技能与空 MCP，不改写旧文件。技能只在提示中列索引，使用时由原生 Agent 读取原文件，不复制正文、安装技能或修改工作树。MCP 配置交给原生创建，`paseo`／`paseo-guys` 为保留名称，传输环境和认证头不放进技能提示；配置会保存在本地 Bot 数据中，不应写入无关凭据。绑定叠加于宿主能力，不移除全局技能或 MCP，不代表沙箱或新增账户授权。
 
