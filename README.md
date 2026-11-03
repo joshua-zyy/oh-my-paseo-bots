@@ -27,6 +27,7 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，聊天／工作／记忆／例程导航，主题控件 |
 | [client/chat.tsx](client/chat.tsx)、[client/chat-state.ts](client/chat-state.ts)、[client/chat-timeline.tsx](client/chat-timeline.tsx) | 原生持续聊天、按 Agent 保存草稿、实时历史分页与订阅恢复，插件内打开事项 |
 | [client/chat-permission.tsx](client/chat-permission.tsx)、[client/chat-question.ts](client/chat-question.ts) | 原生权限动作与问题回应，保留原生 action 与 answers 协议 |
+| [server/reply.ts](server/reply.ts) | 按 Bot 会话／已登记专家绑定调用原生 `agent stop`，中断当前回复并核对回执 |
 | [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
 | [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/execution.tsx](client/execution.tsx)、[client/capabilities.tsx](client/capabilities.tsx) | 同事与默认配置；复用原生模型目录和设置控件，选择已有技能与 MCP |
 | [client/path-picker.tsx](client/path-picker.tsx)、[server/files.ts](server/files.ts)、[shared/files.ts](shared/files.ts) | 宿主目录浏览、读取技能索引及 MCP 配置名称，选中配置在服务端导入 |
@@ -95,6 +96,8 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 `bots.create` 未给 `id` 时生成内部标识，显式标识仍兼容已有调用。配置模型选择使用当前宿主 `providers.snapshot`，模型标识只在第一个 `/` 分开 Provider；切换模型清除旧模式和思考选项。目录浏览只读目录及选定的 SKILL.md / MCP 配置；路径属于 daemon 机器。MCP 名称预览不返回连接环境或认证头，`bots.update.mcpImports` 在保存时现读文件、校验后仅合入选定名称，失败不部分保存其他字段。无需安装能力库或更改宿主工具权限。
 
 `bots.configuration.defaults` 返回插件数据目录内的 `workspace` 路径，首次执行或创建例程时按需建立；不会替换已保存的工作目录。部署用 CLI 与 daemon home 在默认设置的高级入口，仍沿用既有配置。
+
+`bots.reply.stop` 沿用已配置 CLI 与当前 daemon home，以完整 Agent ID 调用原生 `agent stop`。只中断当前轮次，不归档聊天、不取消事项或同事；原生 CLI 的逐 Agent 失败可能仍以 0 退出，必须核对结构化回执或实际状态，不能据退出码报告停止。聊天状态继续由原生事件更新。
 
 `capabilities` 独立于 `execution`，由用户配置，提供时整体替换；旧存档读取为空技能与空 MCP，不改写旧文件。技能只在提示中列索引，使用时由原生 Agent 读取原文件，不复制正文、安装技能或修改工作树。MCP 配置交给原生创建，`paseo`／`paseo-guys` 为保留名称，传输环境和认证头不放进技能提示；配置会保存在本地 Bot 数据中，不应写入无关凭据。绑定叠加于宿主能力，不移除全局技能或 MCP，不代表沙箱或新增账户授权。
 

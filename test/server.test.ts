@@ -75,6 +75,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.equal(created.length, 2, '每位 Bot 复用自己持续的原生聊天');
     assert.equal(created[0].prompt, undefined, '打开聊天不发起模型轮次');
     assert.equal(created[0].labels?.['paseo-guys.conversation'], 'true');
+    assert.deepEqual(await invoke('bots.reply.stop', { botId: 'chief', agentId: conversation.agentId }), { agentId: conversation.agentId, status: 'idle' });
     assert.match(created[0].config.systemPrompt!, /持续聊天/);
     assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), []);
     const client = await connect(conversation.agentId);

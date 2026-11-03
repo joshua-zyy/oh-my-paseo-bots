@@ -8,12 +8,13 @@ import { ChatTimeline } from './chat-timeline.js';
 import { ChatPermission } from './chat-permission.js';
 import { Actions, Button, Copy, Notice, useUi } from './ui.js';
 
-interface Draft { text: string; messageId?: string; sending?: boolean; unknown?: boolean; error?: string }
+interface Draft { text: string; messageId?: string; sending?: boolean; unknown?: boolean; error?: string; stopping?: boolean; stopError?: string }
 
 export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { botId: string; hostId: string; sessionId?: string; openAgent(id: string): void; returnToChat(): void }) {
   const api = usePaseo();
   const hosts = useHosts();
   const open = useRpc(rpc.openConversation);
+  const stop = useRpc(rpc.stopReply);
   const { colors, compact } = useUi();
   const [opened, setOpened] = useState<{ key: string; agentId?: string; owner: string; error: string }>({ key: '', owner: botId, error: '' });
   const [state, setState] = useState<ChatState>(EMPTY_CHAT);
@@ -23,6 +24,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
   const scroll = useRef<NativeScrollView>(null);
   const nearBottom = useRef(true);
   const sends = useRef(new Set<string>());
+  const stops = useRef(new Set<string>());
   const key = `${botId}:${sessionId ?? 'conversation'}`;
   const agentId = opened.key === key ? opened.agentId : undefined;
   const chat = state.agentId === agentId ? state : EMPTY_CHAT;
@@ -53,7 +55,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
     setDrafts(current => ({ ...current, [agentId]: { text: '' } }));
   }, [agentId, chat.entries, draft.unknown, draft.messageId]);
   async function send() {
-    if (!agentId || sends.current.has(agentId) || !draft.text.trim() || offline || chat.loading || chat.agent?.archivedAt) return;
+    if (!agentId || sends.current.has(agentId) || stops.current.has(agentId) || !draft.text.trim() || offline || chat.loading || chat.agent?.archivedAt) return;
     const target = agentId;
     const current = observer.current;
     const text = draft.text;
@@ -68,8 +70,22 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
     } finally { sends.current.delete(target); }
     void current?.refresh();
   }
+  async function interruptReply() {
+    if (!agentId || stops.current.has(agentId) || sends.current.has(agentId) || offline || chat.agent?.status !== 'running') return;
+    const target = agentId;
+    const current = observer.current;
+    stops.current.add(target);
+    setDrafts(current => ({ ...current, [target]: { ...current[target], text: current[target]?.text ?? '', stopping: true, stopError: undefined } }));
+    try { await stop({ botId: opened.owner, agentId: target }); }
+    catch (failure) { setDrafts(current => ({ ...current, [target]: { ...current[target], stopError: String(failure) } })); }
+    finally {
+      stops.current.delete(target);
+      setDrafts(current => ({ ...current, [target]: { ...current[target], stopping: false } }));
+      void current?.refresh();
+    }
+  }
   const error = opened.key === key ? opened.error || chat.error : '';
-  const blocked = !agentId || offline || chat.loading || !!error || !!chat.agent?.archivedAt || !!draft.sending;
+  const blocked = !agentId || offline || chat.loading || !!error || !!chat.agent?.archivedAt || !!draft.sending || !!draft.stopping;
   return <View style={{ flex: 1, minHeight: 0 }}>
     {sessionId && chat.agent && chat.agent.labels['paseo-guys.conversation'] !== 'true' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: compact ? 16 : 28, paddingVertical: 8 }}><Button label="返回聊天" icon="ArrowLeft" onPress={returnToChat} /><View style={{ flex: 1 }}><Copy>{chat.agent.title}</Copy></View></View>}
     <ScrollView key={agentId} ref={scroll} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: compact ? 16 : 28, paddingVertical: 20 }} keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onScroll={event => {
@@ -87,15 +103,16 @@ export function Chat({ botId, hostId, sessionId, openAgent, returnToChat }: { bo
     {!chat.agent?.archivedAt && <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: compact ? 16 : 28, paddingTop: 12, paddingBottom: 16 }}>
       <View style={{ maxWidth: 800, width: '100%', alignSelf: 'center', gap: 8 }}>
         {draft.error && <><Notice error={draft.error} /><Actions><Button label="回查消息" disabled={draft.sending || offline} onPress={() => void observer.current?.refresh()} /></Actions></>}
+        {draft.stopError && <Notice error={draft.stopError} />}
         {offline && <Copy muted>{connection === 'connecting' ? '连接中…' : '连接已断开'}</Copy>}
         <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8, backgroundColor: colors.surface1 }}>
           <TextInput accessibilityLabel="消息" placeholder="消息" value={draft.text} multiline editable={!blocked && !draft.unknown} placeholderTextColor={colors.foregroundMuted} onChangeText={text => { if (agentId) setDrafts(current => ({ ...current, [agentId]: { text } })); }} onKeyPress={event => {
             const native = event.nativeEvent as { key: string; shiftKey?: boolean; isComposing?: boolean };
             if (!compact && native.key === 'Enter' && !native.shiftKey && !native.isComposing) { event.preventDefault(); void send(); }
           }} style={{ color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 24, minHeight: 48, maxHeight: 160, paddingHorizontal: 8, paddingVertical: 10, flex: 1, textAlignVertical: 'top' }} />
+          {running && <Button label="停止回复" icon="Square" iconOnly disabled={offline || draft.stopping || draft.sending || chat.agent?.status !== 'running'} onPress={() => void interruptReply()} />}
           <Button label={draft.unknown ? '重试发送' : '发送'} icon="ArrowUp" iconOnly={!draft.unknown} primary disabled={blocked || !draft.text.trim()} onPress={() => void send()} />
         </View>
-        {running && <Copy muted small>回复中…</Copy>}
       </View>
     </View>}
   </View>;

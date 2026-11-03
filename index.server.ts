@@ -15,6 +15,7 @@ import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
 import * as filesRpc from './shared/files.js';
 import { readDirectory, readSkill, readMcp } from './server/files.js';
+import { stopBotReply } from './server/reply.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
@@ -32,17 +33,18 @@ export default function contribute(server: PluginServerContext) {
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
   let currentPaseo: PaseoApi | undefined;
   const settings = server.registerSettings(rpc.settings);
-  const tasks: TaskTracker = new TaskTracker({ baseDir, store, getPaseo: () => {
-    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
-    return currentPaseo;
-  }, routineOwner: agentId => routines.owner(agentId), cli: async () => {
+  const readCli = async () => {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error('请先设置宿主原生 CLI 与目录');
     const { paseoCommand, paseoHome, cwd } = state.values;
     const home = paseoHome ?? process.env.PASEO_HOME;
-    if (!paseoCommand || !home || !isAbsolute(home) || !isAbsolute(cwd)) throw new Error('原生跟进需配置当前 daemon 的 CLI 命令及绝对 home、工作目录');
+    if (!paseoCommand || !home || !isAbsolute(home) || !isAbsolute(cwd)) throw new Error('停止回复与跟进需配置当前 daemon 的 CLI 命令及绝对 home、工作目录');
     return { command: paseoCommand, home, cwd };
-  } });
+  };
+  const tasks: TaskTracker = new TaskTracker({ baseDir, store, getPaseo: () => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
+    return currentPaseo;
+  }, routineOwner: agentId => routines.owner(agentId), cli: readCli });
   const officeSettings = server.registerSettings(officeRpc.officeSettings);
   const office = new BotOfficeAccess({ baseDir, store, requireActive: (botId, agentId) => tasks.requireActive(botId, agentId), readConfig: async botId => {
     const state = await officeSettings.read();
@@ -112,6 +114,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(officeRpc.allowFixedMail, input => office.mail.allowFixed(input.botId, input.actionId));
   server.handle(officeRpc.revokeMailGrant, async input => { await office.mail.revokeGrant(input.botId, input.grantId); return {}; });
   server.handle(rpc.toolStatus, () => mcp.status());
+  server.handle(rpc.stopReply, (input, { paseo }) => stopBotReply({ ...input, store, tasks, paseo, cli: readCli }));
   server.handle(rpc.listBots, async () => {
     const corrupt: string[] = [];
     const bots = await store.listBots(id => corrupt.push(id));
