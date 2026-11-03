@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { useRpc } from '@getpaseo/plugin/client';
-import { SettingsAction, SettingsInput, SettingsRow, SettingsSection } from '@getpaseo/plugin/client/ui';
+import { View } from 'react-native';
 import * as rpc from '../shared/routines.js';
 import { listTasks } from '../shared/tasks.js';
 import { History } from './history.js';
+import { Usage } from './usage.js';
+import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
 
 export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
   const list = useRpc(rpc.listRoutines);
@@ -14,9 +16,12 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
   const resume = useRpc(rpc.resumeRoutine);
   const trigger = useRpc(rpc.runRoutine);
   const cancel = useRpc(rpc.cancelRoutine);
-  const [items, setItems] = useState<RpcOutput<typeof rpc.listRoutines>>([]);
+  const [items, setItems] = useState<RpcOutput<typeof rpc.listRoutines>>();
   const [reports, setReports] = useState<RpcOutput<typeof listTasks>>([]);
-  const [name, setName] = useState('固定跟进');
+  const [creating, setCreating] = useState(false);
+  const [opened, setOpened] = useState<string>();
+  const [runOpened, setRunOpened] = useState<string>();
+  const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [cron, setCron] = useState('0 9 * * *');
   const [timezone, setTimezone] = useState('Asia/Shanghai');
@@ -31,45 +36,61 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
   async function run(action?: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
-    try { await action?.(); await refresh(); }
+    try { await action?.(); }
     catch (failure) { setError(String(failure)); }
-    finally { guard.current = false; setBusy(false); }
+    finally {
+      try { await refresh(); } catch (failure) { setError(current => `${current}${current ? '；' : ''}${String(failure)}`); }
+      guard.current = false; setBusy(false);
+    }
   }
   useEffect(() => {
     let active = true;
-    setItems([]); setReports([]); setError('');
-    void Promise.all([list({ botId }), tasks({ botId })]).then(([rows, records]) => {
-      if (active) { setItems(rows); setReports(records); }
-    }).catch(failure => { if (active) setError(String(failure)); });
+    void Promise.all([list({ botId }), tasks({ botId })]).then(([rows, records]) => { if (active) { setItems(rows); setReports(records); } }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
   }, [botId, list, tasks]);
-  const statuses: Record<string, string> = { active: '已开启', paused: '已暂停', completed: '原生触发已结束' };
-  const outcomes: Record<string, string> = { running: '正在运行', succeeded: '原生运行成功', failed: '原生运行失败' };
-  return <SettingsSection title={`独立例程：${botId}`}>
-    <SettingsRow label="每次触发使用新的原生会话。只在明确目标与数据范围内开工；创建例程不批准外发、破坏性操作、付款或新增权限。" error={error || null} />
-    <SettingsRow label="模型、目录、模式与思考选项在创建时确定。身份、记忆、技能和 MCP 在每次打开时读取；修改 Bot 执行设置后，请新建例程并取消旧例程。" />
-    <SettingsInput label="例程名称" initialValue={name} onChangeText={setName} disabled={busy} />
-    <SettingsInput label="每次目标、交付物、完成条件及已授权范围" initialValue={prompt} onChangeText={setPrompt} disabled={busy} />
-    <SettingsInput label="Cron 时间" initialValue={cron} onChangeText={setCron} disabled={busy} />
-    <SettingsInput label="时区" initialValue={timezone} onChangeText={setTimezone} disabled={busy} />
-    <SettingsAction label={`上轮结果参考：${continuity ? '开启' : '关闭'}；仅同一例程已报告完成且原生成功的摘要，按需核对产物，不新增授权`} actionLabel={continuity ? '关闭' : '开启'} disabled={busy} onPress={() => setContinuity(value => !value)} />
-    <SettingsAction label="按填写的目标与时间登记，不立即运行" actionLabel="创建例程" disabled={busy || !prompt.trim()} onPress={() => void run(() => create({ botId, name, prompt, cron, timezone, continuity }))} />
-    <SettingsAction label="读取原生状态与结果" actionLabel="刷新" disabled={busy} onPress={() => void run()} />
-    {items.map(({ routine, native, error: nativeError }) => <SettingsSection key={routine.id} title={`${routine.name} · ${routine.state === 'canceled' ? '已取消' : native ? statuses[native.status] : '尚未确认原生状态'}`}>
-      <SettingsRow label={routine.prompt} hint={`${native?.cadence.type === 'cron' ? `${native.cadence.expression} · ${native.cadence.timezone || 'UTC'}` : `${routine.cron} · ${routine.timezone}`}；${nativeError || routine.detail || native?.nextRunAt || '查看原生结果核对实际执行'}`} />
-      <SettingsAction label="暂停只停止以后触发；当前运行继续" actionLabel={native?.status === 'paused' ? '恢复' : '暂停'} disabled={busy || routine.state === 'canceled' || !native || native.status === 'completed'} onPress={() => void run(() => (native?.status === 'paused' ? resume : pause)({ botId, routineId: routine.id }))} />
-      <SettingsAction label="主动触发新的独立运行，不改变周期；未知回执需先查原生结果" actionLabel="新触发一次" disabled={busy || routine.state === 'canceled' || !native} onPress={() => void run(() => trigger({ botId, routineId: routine.id }))} />
-      <SettingsAction label="取消未来触发并停止当前关联执行，保留历史与产物" actionLabel={routine.state === 'canceled' ? '核对停止' : '取消例程'} disabled={busy} onPress={() => void run(() => cancel({ botId, routineId: routine.id }))} />
+  const statuses: Record<string, string> = { active: '已开启', paused: '已暂停', completed: '触发已结束' };
+  const outcomes: Record<string, string> = { running: '运行中', succeeded: '原生成功', failed: '原生失败' };
+  return <>
+    <Notice error={error} />
+    <Actions><Button label="刷新例程" disabled={busy} onPress={() => void run()} /><Button label="新建例程" icon="Plus" disabled={busy} onPress={() => setCreating(true)} /></Actions>
+    {creating && <Section title="新建例程">
+      <Field label="名称" value={name} onChangeText={setName} maxLength={120} disabled={busy} />
+      <Field label="每次目标与授权范围" value={prompt} onChangeText={setPrompt} multiline placeholder="交付物、完成条件和允许读取的资料" maxLength={1500} disabled={busy} />
+      <Field label="Cron" value={cron} onChangeText={setCron} maxLength={200} disabled={busy} />
+      <Field label="时区" value={timezone} onChangeText={setTimezone} maxLength={100} disabled={busy} />
+      <Actions><Button label={continuity ? '上轮参考：开启' : '上轮参考：关闭'} disabled={busy} onPress={() => setContinuity(value => !value)} /></Actions>
+      {continuity && <Copy muted small>仅参考同一例程原生成功且已报告完成的摘要，不新增授权。</Copy>}
+      <Copy muted small>创建不立即运行，也不批准外发等敏感动作。执行配置在创建时确定；修改模型后需新建并取消旧例程。</Copy>
+      <Actions><Button label="取消新建" disabled={busy} onPress={() => setCreating(false)} /><Button label="创建例程" primary disabled={busy || !name.trim() || !prompt.trim() || !cron.trim() || !timezone.trim()} onPress={() => void run(async () => {
+        const result = await create({ botId, name, prompt, cron, timezone, continuity });
+        setCreating(false); setName(''); setPrompt(''); setOpened(result.id);
+      })} /></Actions>
+    </Section>}
+    {!items && !error && <Copy muted>读取例程中…</Copy>}
+    {items?.length === 0 && !creating && <Copy muted>暂无例程</Copy>}
+    {items?.map(({ routine, native, error: nativeError }) => <Disclosure key={routine.id} title={routine.name} status={routine.state === 'canceled' ? '已取消' : native ? statuses[native.status] : '原生状态待确认'} open={opened === routine.id} onPress={() => setOpened(opened === routine.id ? undefined : routine.id)}>
+      <Copy>{routine.prompt}</Copy>
+      <Copy muted>{native?.cadence.type === 'cron' ? `${native.cadence.expression} · ${native.cadence.timezone || 'UTC'}` : `${routine.cron} · ${routine.timezone}`}</Copy>
+      <Notice error={nativeError || ''} />
+      {routine.detail && <Copy muted small>{routine.detail}</Copy>}
+      {native?.nextRunAt && <Copy muted small>下次：{new Date(native.nextRunAt).toLocaleString('zh-CN', { hour12: false })}</Copy>}
+      {routine.runRequest?.state !== undefined && routine.runRequest.state !== 'acknowledged' && <Copy muted>触发回执待核实，先刷新回查，不能将新触发当作安全重试。</Copy>}
+      <Actions>
+        <Button label={native?.status === 'paused' ? '恢复' : '暂停'} disabled={busy || routine.state === 'canceled' || !native || native.status === 'completed'} onPress={() => void run(() => (native?.status === 'paused' ? resume : pause)({ botId, routineId: routine.id }))} />
+        <Button label="新触发一次" disabled={busy || routine.state === 'canceled' || !native || (routine.runRequest !== undefined && routine.runRequest.state !== 'acknowledged')} onPress={() => void run(() => trigger({ botId, routineId: routine.id }))} />
+        <Button label={routine.state === 'canceled' ? '核对停止' : '取消例程'} disabled={busy} onPress={() => void run(() => cancel({ botId, routineId: routine.id }))} />
+      </Actions>
+      <Copy muted small>暂停只停止以后触发，当前运行继续。取消还停止关联执行，保留历史和产物。</Copy>
       {native?.runs.slice(-10).reverse().map(execution => {
         const report = reports.find(item => item.agentId === execution.agentId && item.routine?.runId === execution.id);
-        return <SettingsSection key={execution.id} title={`${outcomes[execution.status]} · ${execution.startedAt}`}>
-          <SettingsRow label={execution.error || execution.output || '尚无原生输出'} hint={report?.status === 'completed' ? '已报告满足交付条件，仍可核对具体产物' : '尚无已确认交付报告；原生成功不等于事项完成'} />
-          {report?.summary && <SettingsRow label={report.summary} />}
-          {report?.evidence?.map((evidence, index) => <SettingsRow key={index} label={`交付证据：${evidence}`} />)}
-          <SettingsAction label="原生会话与实际产物" actionLabel="打开会话" disabled={!openAgent || !execution.agentId || busy} onPress={() => execution.agentId && openAgent?.(execution.agentId)} />
-          {execution.agentId && <History key={execution.agentId} botId={botId} agentId={execution.agentId} />}
-        </SettingsSection>;
+        return <Disclosure key={execution.id} title={new Date(execution.startedAt).toLocaleString('zh-CN', { hour12: false })} status={report?.status === 'completed' ? '已报告完成' : `${outcomes[execution.status]} · 待核对交付`} open={runOpened === execution.id} onPress={() => setRunOpened(runOpened === execution.id ? undefined : execution.id)}>
+          <Copy>{execution.error || execution.output || '尚无原生输出'}</Copy>
+          <Copy muted small>{report?.status === 'completed' ? '按交付报告核对实际产物。' : '尚无完成报告；原生成功不等于事项完成。'}</Copy>
+          {report?.summary && <Copy>{report.summary}</Copy>}{report?.evidence?.map((evidence, index) => <Copy key={index}>{evidence}</Copy>)}
+          <Actions><Button label="打开会话" disabled={!openAgent || !execution.agentId || busy} onPress={() => execution.agentId && openAgent?.(execution.agentId)} /></Actions>
+          {execution.agentId && <View><History botId={botId} agentId={execution.agentId} /><Usage agentId={execution.agentId} /></View>}
+        </Disclosure>;
       })}
-    </SettingsSection>)}
-  </SettingsSection>;
+    </Disclosure>)}
+  </>;
 }

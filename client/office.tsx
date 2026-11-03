@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { useRpc, useSettings } from '@getpaseo/plugin/client';
-import { SettingsAction, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from '@getpaseo/plugin/client/ui';
+import { View } from 'react-native';
 import * as rpc from '../shared/office.js';
+import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
 
 const labels: Record<string, string> = {
-  pending_confirmation: '待用户确认', approved: '已确认，尚未外发', creating_draft: '草稿创建在途，需回查',
-  draft: '草稿已创建，尚未发送', draft_unknown: '草稿创建结果不确定', sending: '发送在途，需回查',
+  pending_confirmation: '待确认', approved: '已确认，尚未外发', creating_draft: '草稿创建在途，需回查',
+  draft: '草稿已创建，尚未发送', draft_unknown: '草稿结果不确定', sending: '发送在途，需回查',
   send_unknown: '发送结果不确定', sent: '已发送', revoked: '已撤销',
 };
 
-export function Office({ botId }: { botId: string }) {
-  const settings = useSettings(rpc.officeSettings);
+export function OfficeActions({ botId, revision }: { botId: string; revision: number }) {
   const list = useRpc(rpc.listMail);
   const grants = useRpc(rpc.listMailGrants);
   const send = useRpc(rpc.sendMail);
@@ -21,6 +21,9 @@ export function Office({ botId }: { botId: string }) {
   const revokeGrant = useRpc(rpc.revokeMailGrant);
   const [actions, setActions] = useState<RpcOutput<typeof rpc.listMail>>([]);
   const [allowed, setAllowed] = useState<RpcOutput<typeof rpc.listMailGrants>>([]);
+  const [opened, setOpened] = useState<string>();
+  const [pastOpen, setPastOpen] = useState(false);
+  const [grantsOpen, setGrantsOpen] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const guard = useRef(false);
@@ -31,39 +34,68 @@ export function Office({ botId }: { botId: string }) {
   async function run(work: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
-    try { await work(); } catch (e) { setError(String(e)); }
+    try { await work(); } catch (failure) { setError(String(failure)); }
     finally {
-      try { await refresh(); } catch (e) { setError(current => `${current}${current ? '；' : ''}${String(e)}`); }
+      try { await refresh(); } catch (failure) { setError(current => `${current}${current ? '；' : ''}${String(failure)}`); }
       guard.current = false; setBusy(false);
     }
   }
   useEffect(() => {
     let active = true;
-    void Promise.all([list({ botId }), grants({ botId })]).then(([a, g]) => { if (active) { setActions(a); setAllowed(g); } }).catch(e => { if (active) setError(String(e)); });
+    void Promise.all([list({ botId }), grants({ botId })]).then(([a, g]) => { if (active) { setActions(a); setAllowed(g); } }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, list, grants]);
-  return <SettingsSection title={`办公动作：${botId}`}>
-    <SettingsRow label="沿用已安装的 gws 与飞书官方连接器登录。保存配置仅声明允许范围，不代表连接和续期已验证。" error={error || null} />
-    {settings.status === 'ready' ? <Configuration key={`${botId}:${settings.revision}`} initial={settings.values.bots[botId] ?? {}} disabled={busy} save={value => run(async () => {
-      if (!await settings.save({ bots: { ...settings.values.bots, [botId]: rpc.botOffice.parse(value) } }, settings.revision)) throw new Error('办公配置保存失败，请检查设置状态');
-    })} /> : <SettingsRow label={`办公配置：${settings.status}`} />}
-    <SettingsAction label="外发事项与预授权" actionLabel="刷新" disabled={busy} onPress={() => void run(async () => {})} />
-    <SettingsRow label="确认只针对下方完整收件人、主题、正文和来源。未知结果先回查；新操作不等于安全重试。撤销不会收回已经准入或已发出的邮件。" />
-    {actions.map(action => <SettingsSection key={action.id} title={`${labels[action.status] ?? action.status} · ${action.subject}`}>
-      <SettingsRow label={`账户：${action.account}；收件人：${action.to.join('、')}`} hint={`事项会话：${action.agentId}；来源邮件：${action.sourceIds.join('、') || '无'}；批准查询：${action.query}`} />
-      <SettingsRow label={action.text} hint={action.detail} />
-      <SettingsRow label={`登记：${action.id}`} hint={action.sentId ? `已发送邮件：${action.sentId}` : action.draftId ? `草稿：${action.draftId}` : undefined} />
-      <SettingsRow label={action.approvedAt ? `用户确认于 ${action.approvedAt}` : action.grantId ? `使用固定预授权 ${action.grantId}` : '尚无用户确认或有效固定预授权'} />
-      <SettingsAction label="按显示内容确认外发" actionLabel={action.status === 'draft' ? '继续已确认的发送' : '确认并发送'} disabled={busy || !['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status)} onPress={() => void run(() => send({ botId, actionId: action.id }))} />
-      <SettingsAction label="结果不确定时核对实际状态" actionLabel="只回查" disabled={busy || !['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => reconcile({ botId, actionId: action.id }))} />
-      <SettingsAction label="撤销后续发送；不收回已准入或已发出的邮件" actionLabel="撤销" disabled={busy || ['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => revoke({ botId, actionId: action.id }))} />
-      <SettingsAction label="允许本事项以后发送完全相同的账户、查询范围、收件人、主题、正文和来源组合" actionLabel="批准固定动作" disabled={busy || ['creating_draft', 'draft_unknown', 'sending', 'send_unknown', 'sent', 'revoked'].includes(action.status)} onPress={() => void run(() => allow({ botId, actionId: action.id }))} />
-    </SettingsSection>)}
-    {allowed.map(grant => <SettingsAction key={grant.id} label={`${grant.revokedAt ? '已撤销' : '有效'}固定动作：${grant.subject}`} hint={`${grant.account} → ${grant.to.join('、')}；仅会话 ${grant.agentId}，正文和来源须与所批准内容完全一致`} actionLabel="撤销预授权" disabled={busy || Boolean(grant.revokedAt)} onPress={() => void run(() => revokeGrant({ botId, grantId: grant.id }))} />)}
-  </SettingsSection>;
+  }, [botId, list, grants, revision]);
+  function row(action: RpcOutput<typeof rpc.listMail>[number]) {
+    return <Disclosure key={action.id} title={action.subject} status={labels[action.status] ?? action.status} open={opened === action.id} onPress={() => setOpened(opened === action.id ? undefined : action.id)}>
+      <Copy>账户：{action.account}{'\n'}收件人：{action.to.join('、')}{'\n'}主题：{action.subject}</Copy>
+      <Copy>{action.text}</Copy>
+      <Copy muted small>事项：{action.agentId}{'\n'}来源邮件：{action.sourceIds.join('、') || '无'}{'\n'}批准查询：{action.query}</Copy>
+      {action.detail && <Copy muted>{action.detail}</Copy>}
+      <Copy muted small>登记：{action.id}{action.sentId ? `\n已发送邮件：${action.sentId}` : action.draftId ? `\n草稿：${action.draftId}` : ''}</Copy>
+      <Copy>{action.approvedAt ? `用户确认于 ${action.approvedAt}` : action.grantId ? `固定预授权：${action.grantId}` : '尚无用户确认或有效固定预授权'}</Copy>
+      {!['sent', 'revoked'].includes(action.status) && <Copy muted small>按以上完整内容确认。未知结果先回查，撤销不收回已准入或已发出的邮件。</Copy>}
+      <Actions>
+        <Button label={action.status === 'draft' ? '继续已确认的发送' : '确认并发送'} primary disabled={busy || !['pending_confirmation', 'approved', 'draft', 'revoked'].includes(action.status)} onPress={() => void run(() => send({ botId, actionId: action.id }))} />
+        <Button label="只回查" disabled={busy || !['creating_draft', 'draft_unknown', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => reconcile({ botId, actionId: action.id }))} />
+        <Button label="撤销" disabled={busy || ['sent', 'revoked', 'sending', 'send_unknown'].includes(action.status)} onPress={() => void run(() => revoke({ botId, actionId: action.id }))} />
+      </Actions>
+      {!['creating_draft', 'draft_unknown', 'sending', 'send_unknown', 'sent', 'revoked'].includes(action.status) && <>
+        <Copy muted small>固定预授权只允许本事项以后发送完全相同的账户、查询、收件人、主题、正文与来源组合。</Copy>
+        <Actions><Button label="批准固定动作" disabled={busy} onPress={() => void run(() => allow({ botId, actionId: action.id }))} /></Actions>
+      </>}
+    </Disclosure>;
+  }
+  const current = actions.filter(action => !['sent', 'revoked'].includes(action.status));
+  const past = actions.filter(action => ['sent', 'revoked'].includes(action.status));
+  return <>
+    <Notice error={error} />
+    {(actions.length > 0 || allowed.length > 0) && <Section title="办公动作" action={<Button label="刷新外发" disabled={busy} onPress={() => void run(async () => {})} />}>
+      {current.map(row)}
+      {past.length > 0 && <Disclosure title="外发历史" status={String(past.length)} open={pastOpen} onPress={() => setPastOpen(value => !value)}>{past.map(row)}</Disclosure>}
+      {allowed.length > 0 && <Disclosure title="固定预授权" status={String(allowed.length)} open={grantsOpen} onPress={() => setGrantsOpen(value => !value)}>{allowed.map(grant => <View key={grant.id} style={{ gap: 8 }}>
+        <Copy>{grant.subject} · {grant.revokedAt ? '已撤销' : '有效'}</Copy><Copy muted small>{grant.account} → {grant.to.join('、')}{'\n'}仅事项 {grant.agentId}，正文及来源必须完全一致。</Copy>
+        <Actions><Button label="撤销预授权" disabled={busy || Boolean(grant.revokedAt)} onPress={() => void run(() => revokeGrant({ botId, grantId: grant.id }))} /></Actions>
+      </View>)}</Disclosure>}
+    </Section>}
+  </>;
 }
 
-function Configuration({ initial, disabled, save }: { initial: rpc.BotOffice; disabled: boolean; save: (value: unknown) => Promise<void> }) {
+export function OfficeConfiguration({ botId }: { botId: string }) {
+  const settings = useSettings(rpc.officeSettings);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const guard = useRef(false);
+  return <><Notice error={error} />{settings.status === 'ready' ? <Configuration key={`${botId}:${settings.revision}`} initial={settings.values.bots[botId] ?? {}} disabled={busy} save={async value => {
+    if (guard.current) return;
+    guard.current = true; setBusy(true); setError('');
+    try {
+      if (!await settings.save({ bots: { ...settings.values.bots, [botId]: rpc.botOffice.parse(value) } }, settings.revision)) throw new Error('办公配置保存失败，请刷新并检查配置');
+    } catch (failure) { setError(String(failure)); }
+    finally { guard.current = false; setBusy(false); }
+  }} /> : <Copy muted>办公配置：{settings.status}</Copy>}</>;
+}
+
+function Configuration({ initial, disabled, save }: { initial: rpc.BotOffice; disabled: boolean; save(value: unknown): Promise<void> }) {
   const [gmail, setGmail] = useState(Boolean(initial.gmail));
   const [feishu, setFeishu] = useState(Boolean(initial.feishu));
   const [values, setValues] = useState({
@@ -71,18 +103,18 @@ function Configuration({ initial, disabled, save }: { initial: rpc.BotOffice; di
     feishuCommand: initial.feishu?.command ?? 'lark-mcp', appId: initial.feishu?.appId ?? '', secretEnv: initial.feishu?.secretEnv ?? 'APP_SECRET', secretFile: initial.feishu?.secretFile ?? '',
     documents: initial.feishu?.documentIds.join(',') ?? '', wiki: initial.feishu?.wikiTokens.join(',') ?? '',
   });
-  const fields = [
-    ['gmailCommand', 'gws 命令或宿主路径'], ['configDir', 'gws 现有登录目录（宿主绝对路径）'], ['account', '预期 Gmail 邮箱'], ['query', '允许读取的固定 Gmail 查询'],
-    ['feishuCommand', '飞书 lark-mcp 命令或宿主路径'], ['appId', '飞书应用标识'], ['secretEnv', '未指定密钥文件时使用的宿主环境变量名'], ['secretFile', '可选：宿主 App Secret 文件绝对路径（优先使用，失败不回退）'], ['documents', '允许读取的 docx 文档标识（逗号分隔）'], ['wiki', '允许读取的知识库节点（逗号分隔）'],
-  ] as const;
   const ids = (value: string) => value.split(/[\s,，]+/).filter(Boolean);
   return <>
-    <SettingsSwitch label="为本 Bot 配置 Gmail 范围" value={gmail} disabled={disabled} onValueChange={setGmail} />
-    <SettingsSwitch label="为本 Bot 配置飞书范围" value={feishu} disabled={disabled} onValueChange={setFeishu} />
-    {fields.filter((_, index) => index < 4 ? gmail : feishu).map(([key, label]) => <SettingsInput key={key} label={label} initialValue={values[key]} disabled={disabled} onChangeText={text => setValues(current => ({ ...current, [key]: text }))} />)}
-    <SettingsAction label="只保存账户、允许范围和密钥来源；密钥内容留在宿主环境或本机文件，插件不执行登录" actionLabel="保存办公配置" disabled={disabled} onPress={() => void save({
+    <Section title="Gmail" action={<Button label={gmail ? '关闭 Gmail' : '配置 Gmail'} disabled={disabled} onPress={() => setGmail(value => !value)} />}>
+      {gmail && ([['gmailCommand', 'gws 命令或宿主路径'], ['configDir', '现有登录目录（宿主绝对路径）'], ['account', 'Gmail 邮箱'], ['query', '允许读取的固定查询']] as const).map(([key, label]) => <Field key={key} label={label} value={values[key]} multiline={key === 'query'} disabled={disabled} onChangeText={text => setValues(current => ({ ...current, [key]: text }))} />)}
+    </Section>
+    <Section title="飞书" action={<Button label={feishu ? '关闭飞书' : '配置飞书'} disabled={disabled} onPress={() => setFeishu(value => !value)} />}>
+      {feishu && <>{([['feishuCommand', 'lark-mcp 命令或宿主路径'], ['appId', '应用标识'], ['secretEnv', '密钥环境变量名'], ['secretFile', '密钥文件（宿主绝对路径）'], ['documents', '允许读取的文档标识（逗号分隔）'], ['wiki', '允许读取的知识库节点（逗号分隔）']] as const).map(([key, label]) => <Field key={key} label={label} value={values[key]} multiline={key === 'documents' || key === 'wiki'} disabled={disabled} onChangeText={text => setValues(current => ({ ...current, [key]: text }))} />)}<Copy muted small>指定密钥文件时优先使用，失败不回退环境变量。密钥内容保留在宿主。</Copy></>}
+    </Section>
+    <Copy muted small>保存仅声明本同事的账户与资料范围。沿用既有登录，不验证连接或新增权限。</Copy>
+    <Actions><Button label="保存办公配置" primary disabled={disabled} onPress={() => void save({
       ...(gmail ? { gmail: { command: values.gmailCommand, configDir: values.configDir, account: values.account, query: values.query } } : {}),
       ...(feishu ? { feishu: { command: values.feishuCommand, args: initial.feishu?.args ?? [], appId: values.appId, secretEnv: values.secretEnv, ...(values.secretFile.trim() ? { secretFile: values.secretFile.trim() } : {}), documentIds: ids(values.documents), wikiTokens: ids(values.wiki) } } : {}),
-    })} />
+    })} /></Actions>
   </>;
 }

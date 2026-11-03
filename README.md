@@ -23,7 +23,10 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 | 入口 | 职责 |
 | --- | --- |
-| [index.client.tsx](index.client.tsx)、[client/](client/) | “固定同事”界面、宿主配置、记忆、办公、事项与会话用量控件 |
+| [index.client.tsx](index.client.tsx)、[client/ui.tsx](client/ui.tsx) | 同事侧栏与窄屏选择器，工作／记忆／例程导航，主题控件 |
+| [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 交办、未决创建回查、事项报告与逐条记忆编辑 |
+| [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/office.tsx](client/office.tsx) | 按需打开同事与插件宿主配置、办公连接和受控外发 |
+| [client/journal.tsx](client/journal.tsx)、[client/history.tsx](client/history.tsx)、[client/usage.tsx](client/usage.tsx) | 工作日志与原生历史分页、按需读取会话用量 |
 | [index.server.ts](index.server.ts)、[shared/](shared/) | 插件初始化、RPC／生命周期接线、共享配置和输入输出契约 |
 | [server/sessions.ts](server/sessions.ts)、[server/store.ts](server/store.ts) | 原生创建意图、幂等键、Bot 身份与会话关联持久化 |
 | [server/prompt.ts](server/prompt.ts)、[server/memory.ts](server/memory.ts)、[server/history.ts](server/history.ts)、[server/journal.ts](server/journal.ts) | Bot 行为提示、记忆来源核对、原生历史分页与轮次观察日志 |
