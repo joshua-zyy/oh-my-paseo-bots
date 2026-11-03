@@ -206,6 +206,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const created: PaseoAgentCreateOptions[] = [];
   const opened: string[] = [];
   const nativeEvents: { kind: 'send' | 'archive'; agentId: string; text?: string; options?: PaseoAgentSendOptions }[] = [];
+  const failureMessages: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
   const createNative = async (options: PaseoAgentCreateOptions, workspaceCwd?: string) => {
     // 实机已证实：未显式放置的子 Agent 会继承父 workspace，cwd 参数不改变归属。
     const parent = created.find(item => item.agentId === options.parent);
@@ -219,6 +220,10 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     create: createNative,
     ref: (id: string) => ({
       send: async (text: string, options?: PaseoAgentSendOptions) => {
+        if (text.includes('原生轮次失败')) {
+          failureMessages.push({ agentId: id, text, options });
+          return;
+        }
         nativeEvents.push({ kind: 'send', agentId: id, text, options });
         const tasks = await invoke('bots.tasks', { botId: 'researcher' }) as { agentId: string; status: string; evidence: string[] }[];
         const report = tasks.find(task => task.agentId === options?.sourceAgentId)!;
@@ -308,6 +313,23 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.deepEqual(rootTask.specialists, [child.agentId]);
     assert.equal(rootTask.status, 'active', '委派启动不等于主事项完成');
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'active');
+    const failedTurn = { agent: { id: child.agentId, parentAgentId: root.agentId, title: request.title, workspaceId: 'ws-team' }, turnId: 'failed-turn', outcome: { kind: 'failed', error: { message: 'synthetic provider failure' } }, timeline: [] };
+    await hooks.get('agent.turn_ended')!(failedTurn, { paseo });
+    assert.equal(failureMessages.length, 1, '同事原生轮次失败须回报 Chief，而非只记日志');
+    assert.equal(failureMessages[0].agentId, root.agentId);
+    assert.deepEqual(failureMessages[0].options, { sourceAgentId: child.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:failure:${child.agentId}:failed-turn` });
+    assert.match(failureMessages[0].text, new RegExp(child.agentId));
+    assert.match(failureMessages[0].text, /未完成|未保存.*交付/);
+    assert.doesNotMatch(failureMessages[0].text, /主 Bot 的无关记忆|TRANSPORT-SECRET|synthetic provider failure/);
+    assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active');
+    assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'active');
+    assert.equal(nativeEvents.length, 0, '失败回报不归档或重新执行');
+    assert.equal(created.length, 2, '失败回报不重新派发');
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, turnId: null }, { paseo });
+    assert.deepEqual(failureMessages[1].options, { sourceAgentId: child.agentId, activeTurnBehavior: 'steer' }, '宿主无 turnId 时不复用跨轮次的固定消息键');
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, outcome: { kind: 'completed' } }, { paseo });
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, outcome: { kind: 'canceled', reason: 'native turn interrupted' } }, { paseo });
+    assert.equal(failureMessages.length, 2, '单轮完成或取消不被当作事项失败回报');
     const rootSessions = await invoke('bots.sessions', { botId: 'chief' }) as { sessionId: string }[];
     assert.deepEqual(rootSessions.map(item => item.sessionId), [root.agentId]);
     const childSessions = await invoke('bots.sessions', { botId: 'researcher' }) as { sessionId: string }[];
@@ -315,6 +337,8 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(typeof hooks.get('agent.archived'), 'function');
     await hooks.get('agent.archived')!({ agent: { id: child.agentId }, archivedAt: new Date().toISOString() }, { paseo });
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'canceled', '同事被原生归档后不能继续显示进行中');
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, turnId: 'late-failure' }, { paseo });
+    assert.equal(failureMessages.length, 2, '已停止的子事项不因迟到失败观察重新推进 Chief');
     assert.equal((await childClient.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续', cron: '* * * * *', timezone: 'Asia/Shanghai' } })).isError, true);
     assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '单独归档同事不自动完成 Chief 的事项');
     const updated = await invoke('bots.update', { botId: 'researcher', patch: { instructions: '更新后的资料同事说明', execution: {} } }) as { updatedAt: string };
@@ -351,6 +375,10 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
       assert.equal(nativeEvents.length, 2, '重复完成不重复回报或归档');
       assert.equal(created.length, 3, '回报沿用原生通信，不创建新执行 Agent');
     } finally { await deliveryClient.close(); }
+    const pending = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'pending-during-parent-stop', title: '父事项取消时尚未交付' } }));
+    await invoke('bots.task.cancel', { botId: 'chief', agentId: root.agentId });
+    await hooks.get('agent.turn_ended')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'failure-after-parent-stop' }, { paseo });
+    assert.equal(failureMessages.length, 2, '父事项已停止时不能被失败观察唤醒');
   } finally {
     await client.close(); await childClient.close(); await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR; else process.env.PASEO_GUYS_DATA_DIR = previous;

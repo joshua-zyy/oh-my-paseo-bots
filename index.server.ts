@@ -223,6 +223,21 @@ export default function contribute(server: PluginServerContext) {
       agentId: event.agent.id, turnId: event.turnId, kind: 'turn_ended', outcome: event.outcome.kind,
       ...(event.outcome.kind === 'failed' ? { error: event.outcome.error.message.trim().slice(0, 4000) || '原生轮次失败（无详细信息）' } : {}),
     });
+    if (!botId || event.outcome.kind !== 'failed') return;
+    const child = await context.paseo.agents.ref(event.agent.id).refresh();
+    if (child?.agent.labels?.['paseo-guys.bot'] !== botId || child.agent.archivedAt) return;
+    const task = await tasks.get(botId, event.agent.id);
+    if (task?.status !== 'active') return;
+    const parentId = child.agent.labels['paseo.parent-agent-id'];
+    if (!parentId) return;
+    const parent = await context.paseo.agents.ref(parentId).refresh();
+    const parentBotId = parent?.agent.labels?.['paseo-guys.bot'];
+    const parentTask = parentBotId ? await tasks.get(parentBotId, parentId) : null;
+    if (parentTask?.status !== 'active' || parent?.agent.archivedAt || !parentTask.specialists.includes(event.agent.id)) return;
+    await context.paseo.agents.ref(parentId).send(
+      `固定同事 ${botId} 的原生轮次失败，尚未保存本事项交付报告。请查询原生状态、活动和已有产物，决定当前授权内的恢复或需要用户决定的事项；不要把失败通知当作完成，也不要自动重新委派。\n${JSON.stringify({ agentId: event.agent.id, title: task.title, turnId: event.turnId })}`,
+      { sourceAgentId: event.agent.id, activeTurnBehavior: 'steer', ...(event.turnId === null ? {} : { messageId: `paseo-guys:failure:${event.agent.id}:${event.turnId}` }) },
+    );
   });
   return async () => { started(); ended(); created(); archived(); opened(); await restoring.catch(() => {}); await mcp.close(); };
 }
