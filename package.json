@@ -1,6 +1,7 @@
 {
   "name": "oh-my-paseo-bots",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Persistent Bot teams on the native Paseo runtime",
   "repository": {
     "type": "git",

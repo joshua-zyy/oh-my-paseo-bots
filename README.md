@@ -2,6 +2,8 @@
 
 供维护 Agent 使用的工程上下文。仓库为 [joshua-zyy/oh-my-paseo-bots](https://github.com/joshua-zyy/oh-my-paseo-bots)。实施规则和权限以本地 `AGENTS.md` 为准，本文不授予运行权限。
 
+本项目采用 [MIT 许可证](LICENSE)，复用代码的版权与许可告知见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 目标与概念
 
 单用户本地／自托管的 Paseo 固定 Bot 团队插件。Bot 跨原生会话保留身份和明确记忆；主 Bot（Chief）负责澄清、分工、跟进、产物核对和最终交付。
