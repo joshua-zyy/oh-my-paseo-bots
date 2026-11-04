@@ -255,8 +255,10 @@ export default function contribute(server: PluginServerContext) {
     currentPaseo = paseo;
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error(`Bot 设置无效：${state.error}`);
+    const bot = await store.getBot(input.botId);
+    if (!bot) throw new Error(`Bot 不存在：${input.botId}`);
     const { provider, modeId, thinkingOptionId } = state.values;
-    const cwd = state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd;
+    const cwd = bot.bot.execution.cwd ?? (state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd);
     return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind === 'conversation' ? { conversation: true } : {}) });

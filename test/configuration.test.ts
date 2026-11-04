@@ -193,6 +193,9 @@ test('Bot 默认工作区自动创建在当前 Paseo home 下，显式工作目�
     await invoke('bots.update', { botId: 'helper', patch: { execution: { cwd: join(directory, 'chosen-project') } } });
     await invoke('bots.conversation.create', { botId: 'helper' });
     assert.equal(created[1].cwd, join(directory, 'chosen-project'));
+    delete process.env.PASEO_HOME;
+    await invoke('bots.conversation.create', { botId: 'helper' });
+    assert.equal(created[2].cwd, join(directory, 'chosen-project'), '显式 Bot 工作目录不依赖托管目录或 home 设置');
     assert.deepEqual(await invoke('bots.configuration.defaults', {}), { cwd: join(directory, 'workspace') });
     await assert.rejects(() => invoke('bots.configuration.defaults', { botId: '../escape' }), /botId|invalid/);
   } finally {
