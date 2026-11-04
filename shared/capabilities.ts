@@ -20,6 +20,7 @@ export const botSkillSchema = z.object({
 export const botCapabilitiesSchema = z.strictObject({
   skills: z.array(botSkillSchema).default([]),
   mcpServers: z.record(mcpNameSchema, mcpServerSchema).default({}),
+  disabledMcpServers: z.array(mcpNameSchema).optional(),
 });
 export type BotSkill = z.output<typeof botSkillSchema>;
 

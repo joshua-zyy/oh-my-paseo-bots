@@ -2,13 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { PaseoApi, PaseoAgentCreateOptions, PaseoWorkspaceCreateOptions } from '@getpaseo/client';
 import { BotStore, StoreError } from '../server/store.js';
 import { startBotSession } from '../server/sessions.js';
 
 const placement = (cwd: string) => ({ cwd, config: { provider: 'configured-provider/model' } });
 const tools = { mount: async (botId: string, agentId: string) => ({ type: 'http' as const, url: `http://127.0.0.1:1/bots/${botId}/${agentId}` }) };
+
+test('关闭连接保留配置，之后的新任务不挂载，重新启用后使用同一配置', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-connection-toggle-'));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '协调' });
+    const connection = { type: 'stdio' as const, command: 'synthetic-reader', args: ['--local-only'], env: { TOKEN: 'SYNTHETIC-SECRET' } };
+    await store.updateBot('chief', { capabilities: { skills: [], mcpServers: { reader: connection }, disabledMcpServers: ['reader'] } });
+    const { api, created } = fakePaseo();
+    await startBotSession(store, api, { botId: 'chief', requestId: 'off', title: '关闭连接' }, placement(directory), tools);
+    assert.equal(created[0].config.mcpServers!.reader, undefined);
+    assert.deepEqual((await store.getBot('chief'))!.bot.capabilities.mcpServers.reader, connection);
+    await store.updateBot('chief', { capabilities: { skills: [], mcpServers: { reader: connection }, disabledMcpServers: [] } });
+    await startBotSession(store, api, { botId: 'chief', requestId: 'on', title: '启用连接' }, placement(directory), tools);
+    assert.deepEqual(created[1].config.mcpServers!.reader, connection);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('技能文件在原生创建前校验；已有宿主MCP保留，能力修改进入幂等指纹', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-capabilities-'));

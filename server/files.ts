@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { z } from 'zod';
 import type { RpcInput } from '@getpaseo/plugin';
 import type { listDirectory } from '../shared/files.js';
@@ -16,7 +16,7 @@ export async function readDirectory(input: RpcInput<typeof listDirectory>) {
     const path = join(current, entry.name);
     const directory = entry.isDirectory() || (entry.isSymbolicLink() && (await stat(path)).isDirectory());
     if (directory) return { name: entry.name, path, kind: 'directory' as const };
-    if ((input.kind === 'skill' && entry.name === 'SKILL.md') || (input.kind === 'mcp' && ['.mcp.json', 'mcp.json'].includes(entry.name))) return { name: entry.name, path, kind: 'file' as const };
+    if ((input.kind === 'skill' && entry.name === 'SKILL.md') || (input.kind === 'mcp' && entry.name.endsWith('.json'))) return { name: entry.name, path, kind: 'file' as const };
     return null;
   }));
   return { path: current, parent: dirname(current) === current ? null : dirname(current), home: homedir(), entries: entries.filter(entry => entry !== null).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, 'zh-CN')) };
@@ -57,4 +57,28 @@ export async function readMcp(path: string) {
   const parsed = importedMcp.safeParse(value);
   if (!parsed.success) throw new Error('MCP 文件格式无效，需包含 mcpServers，且不能覆盖 Paseo 与 Bot 工具');
   return parsed.data.mcpServers;
+}
+
+/** Source locations adapted from oliexe/paseo-bots (MIT); credentials stay on the host. */
+export async function discoverMcpSources(options: { cwd?: string; home?: string; appData?: string; platform?: NodeJS.Platform } = {}) {
+  const home = options.home ?? homedir();
+  const os = options.platform ?? platform();
+  const desktop = os === 'darwin' ? join(home, 'Library', 'Application Support', 'Claude') : os === 'win32' ? join(options.appData ?? process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), 'Claude') : join(home, '.config', 'Claude');
+  if (options.cwd && !isAbsolute(options.cwd)) throw new Error('请选择项目的宿主绝对路径');
+  const locations = [
+    ...(options.cwd ? [{ label: '当前项目', path: join(options.cwd, '.mcp.json') }] : []),
+    { label: 'Claude Code', path: join(home, '.claude.json') },
+    { label: 'Claude Desktop', path: join(desktop, 'claude_desktop_config.json') },
+    { label: 'Cursor', path: join(home, '.cursor', 'mcp.json') },
+  ];
+  const sources: { label: string; path: string; names: string[]; error?: string }[] = [];
+  for (const location of locations) {
+    try {
+      const names = Object.keys(await readMcp(location.path));
+      if (names.length) sources.push({ ...location, names });
+    } catch (failure) {
+      if ((failure as NodeJS.ErrnoException).code !== 'ENOENT') sources.push({ ...location, names: [], error: failure instanceof Error ? failure.message : '配置不可读取' });
+    }
+  }
+  return { sources };
 }

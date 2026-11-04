@@ -14,7 +14,7 @@ import { readHistory } from './shared/history.js';
 import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
 import * as filesRpc from './shared/files.js';
-import { readDirectory, readSkill, readMcp } from './server/files.js';
+import { readDirectory, readSkill, readMcp, discoverMcpSources } from './server/files.js';
 import { stopBotReply } from './server/reply.js';
 import { conversationContext, conversationWork } from './shared/chat.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
@@ -174,6 +174,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(filesRpc.listDirectory, readDirectory);
   server.handle(filesRpc.inspectSkill, input => readSkill(input.path));
   server.handle(filesRpc.inspectMcp, async input => ({ names: Object.keys(await readMcp(input.path)) }));
+  server.handle(filesRpc.listMcpSources, input => discoverMcpSources(input));
   server.handle(filesRpc.configurationDefaults, () => ({ cwd: defaultCwd }));
   server.handle(rpc.createBot, async input => ({ id: (await store.createBot({ ...input, id: input.id ?? `bot-${randomUUID()}` })).bot.id }));
   server.handle(rpc.updateBot, async input => {
@@ -189,7 +190,8 @@ export default function contribute(server: PluginServerContext) {
           mcpServers[name] = servers[name];
         }
       }
-      patch.capabilities = { ...capabilities, mcpServers };
+      const imported = input.mcpImports.flatMap(selection => selection.names);
+      patch.capabilities = { ...capabilities, mcpServers, ...(capabilities.disabledMcpServers ? { disabledMcpServers: capabilities.disabledMcpServers.filter(name => !imported.includes(name)) } : {}) };
     }
     return store.updateBot(input.botId, patch);
   });

@@ -94,7 +94,8 @@ export async function startBotSession(
 export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive') {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
-  const { skills, mcpServers } = data.bot.capabilities;
+  const { skills, disabledMcpServers = [] } = data.bot.capabilities;
+  const mcpServers = Object.fromEntries(Object.entries(data.bot.capabilities.mcpServers).filter(([name]) => !disabledMcpServers.includes(name)));
   for (const skill of skills) {
     if (!isAbsolute(skill.path)) throw new Error(`技能必须使用宿主绝对路径：${skill.path}`);
     if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);

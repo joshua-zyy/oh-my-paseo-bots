@@ -33,7 +33,8 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 | [client/agent-changes.ts](client/agent-changes.ts)、[client/use-bot-updates.ts](client/use-bot-updates.ts) | 原生 owned 元数据订阅；初始及重连快照、增量状态和移除驱动业务面板刷新 |
 | [server/reply.ts](server/reply.ts) | 按 Bot 会话／已登记专家绑定调用原生 `agent stop`，中断当前回复并核对回执 |
 | [client/work.tsx](client/work.tsx)、[client/tasks.tsx](client/tasks.tsx)、[client/memories.tsx](client/memories.tsx) | 未决创建回查、事项报告与逐条记忆编辑 |
-| [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/execution.tsx](client/execution.tsx)、[client/capabilities.tsx](client/capabilities.tsx) | 同事与默认配置；复用原生模型目录和设置控件，选择已有技能与 MCP |
+| [client/bot-config.tsx](client/bot-config.tsx)、[client/host-settings.tsx](client/host-settings.tsx)、[client/execution.tsx](client/execution.tsx)、[client/capabilities.tsx](client/capabilities.tsx) | 同事与默认配置；复用原生模型目录和设置控件，选择已有技能 |
+| [client/connections.tsx](client/connections.tsx) | 每 Bot 的 MCP 连接选择、HTTP／SSE／stdio 配置，以及本机配置来源导入 |
 | [client/path-picker.tsx](client/path-picker.tsx)、[server/files.ts](server/files.ts)、[shared/files.ts](shared/files.ts) | 宿主目录浏览、读取技能索引及 MCP 配置名称，选中配置在服务端导入 |
 | [client/office.tsx](client/office.tsx) | 办公连接和受控外发 |
 | [client/journal.tsx](client/journal.tsx)、[client/history.tsx](client/history.tsx)、[client/usage.tsx](client/usage.tsx) | 工作日志与原生历史分页、按需读取会话用量 |
@@ -88,7 +89,7 @@ Gmail 创建草稿及发送均可能改写 Message-ID；成功草稿回执经完
 | --- | --- |
 | 宿主 `bots` | 默认 `cwd`／`provider`／模式与思考选项；跟进需 `paseoCommand` 和当前 daemon 的绝对 `paseoHome`（后者可由 `PASEO_HOME` 提供） |
 | Bot 身份与执行 | `instructions` 为长期说明；`execution` 可覆盖 `provider`、绝对 `cwd`、`modeId`、`thinkingOptionId`。旧存档默认空说明与空覆盖；普通开始与固定同事委派使用同一映射 |
-| Bot 既有能力 | `capabilities.skills` 为 `{name, description, path}` 的已有 SKILL.md 索引，`path` 使用宿主绝对路径；`capabilities.mcpServers` 沿用宿主 stdio/http/sse 配置，不接管连接器生命周期或原生工具审批 |
+| Bot 既有能力 | `capabilities.skills` 为 `{name, description, path}` 的已有 SKILL.md 索引，`path` 使用宿主绝对路径；`capabilities.mcpServers` 保存 stdio/http/sse 配置，`disabledMcpServers` 记录关闭的名称，之后新任务只挂载启用项；不接管连接器生命周期或原生工具审批 |
 | Bot Gmail | `command`、现有登录目录 `configDir`、预期 `account`、固定允许 `query`；适配基线 `gws 0.22.5` |
 | Bot 飞书 | `command`／`args`、`appId`、`secretEnv` 或 `secretFile`、`documentIds`／`wikiTokens`；适配基线 `lark-mcp 0.5.1` |
 | 业务数据 | 新安装默认 `~/.oh-my-paseo-bots`；存在旧 `~/.paseo-guys` 时沿用。`OH_MY_PASEO_BOTS_DATA_DIR` 优先于兼容的 `PASEO_GUYS_DATA_DIR`；单 daemon、单插件实例写入，不复制原生聊天历史 |

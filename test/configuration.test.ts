@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PluginServerContext } from '@getpaseo/plugin/server';
 import type { PluginRpcContract } from '@getpaseo/plugin';
@@ -9,6 +9,7 @@ import type { PaseoApi } from '@getpaseo/client';
 import ts from 'typescript';
 import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
+import { mcpNameSchema, mcpServerSchema } from '../shared/capabilities.js';
 
 test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，不向目录传递凭据', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-configuration-'));
@@ -51,10 +52,15 @@ test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，�
     assert.match(created.id, /^bot-[a-f0-9-]+$/);
     const store = new BotStore({ baseDir: directory });
     await store.updateBot(created.id, { capabilities: { skills: [], mcpServers: { existing: { type: 'stdio', command: 'existing' } } } });
-    await invoke('bots.update', { botId: created.id, patch: { capabilities: { skills: [{ name: '数字核对', description: '核对合成数字', path: skillPath }], mcpServers: { existing: { type: 'stdio', command: 'existing' } } } }, mcpImports: [{ path: mcpPath, names: ['chosen'] }] });
+    await writeFile(mcpPath, JSON.stringify({ mcpServers: {
+      chosen: { type: 'http', url: 'https://example.test/mcp', headers: { Authorization: 'SYNTHETIC-NEW-SECRET' } },
+      other: { command: 'synthetic-tool', args: ['--read-only'] },
+    } }));
+    await invoke('bots.update', { botId: created.id, patch: { capabilities: { skills: [{ name: '数字核对', description: '核对合成数字', path: skillPath }], mcpServers: { existing: { type: 'stdio', command: 'existing' } }, disabledMcpServers: ['chosen'] } }, mcpImports: [{ path: mcpPath, names: ['chosen'] }] });
     const saved = (await store.getBot(created.id))!.bot.capabilities;
     assert.deepEqual(Object.keys(saved.mcpServers), ['existing', 'chosen']);
-    assert.deepEqual(saved.mcpServers.chosen, { type: 'http', url: 'https://example.test/mcp', headers: { Authorization: 'SYNTHETIC-SECRET' } });
+    assert.deepEqual(saved.mcpServers.chosen, { type: 'http', url: 'https://example.test/mcp', headers: { Authorization: 'SYNTHETIC-NEW-SECRET' } }, '保存时读取当前配置，不沿用预览时的凭据');
+    assert.deepEqual(saved.disabledMcpServers, [], '明确导入启用所选名称');
     assert.equal(saved.skills[0].path, skillPath);
     await assert.rejects(() => invoke('bots.update', { botId: created.id, patch: { name: '修改' }, mcpImports: [{ path: mcpPath, names: ['missing'] }] }), /未找到/);
     assert.equal((await store.getBot(created.id))!.bot.name, '核对同事', '导入失败不能部分保存其他字段');
@@ -88,4 +94,65 @@ test('模型选择执行实际回调，换模型清除不兼容的模式和思�
   assert.deepEqual(changed, { provider: 'pi/vendor/new', cwd: 'D:/work', modeId: undefined, thinkingOptionId: undefined });
   select('');
   assert.deepEqual(changed, { provider: undefined, cwd: 'D:/work', modeId: undefined, thinkingOptionId: undefined });
+});
+
+test('连接导入发现本机常见配置和当前项目，只返回名称，单个损坏来源不遮住其他连接', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-connections-'));
+  assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+  const home = join(directory, 'home');
+  const appData = join(directory, 'roaming');
+  const cwd = join(directory, 'project');
+  try {
+    await mkdir(join(home, '.cursor'), { recursive: true });
+    await mkdir(join(appData, 'Claude'), { recursive: true });
+    await mkdir(cwd);
+    await writeFile(join(home, '.claude.json'), JSON.stringify({ mcpServers: {
+      github: { type: 'http', url: 'https://example.test/github', headers: { Authorization: 'SYNTHETIC-GITHUB-SECRET' } },
+      notion: { command: 'synthetic-notion', env: { NOTION_TOKEN: 'SYNTHETIC-NOTION-SECRET' } },
+    } }));
+    await writeFile(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { browser: { type: 'sse', url: 'http://127.0.0.1:1/sse' } } }));
+    await writeFile(join(appData, 'Claude', 'claude_desktop_config.json'), '{invalid');
+    await writeFile(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { calendar: { type: 'http', url: 'https://example.test/calendar' } } }));
+    const files = await import(new URL('../server/files.js', import.meta.url).href);
+    const { sources } = await files.discoverMcpSources({ home, appData, cwd, platform: 'win32' });
+    assert.deepEqual(sources.filter((source: { error?: string }) => !source.error).map((source: { label: string; names: string[] }) => [source.label, source.names]), [
+      ['当前项目', ['calendar']], ['Claude Code', ['github', 'notion']], ['Cursor', ['browser']],
+    ]);
+    assert.match(sources.find((source: { label: string }) => source.label === 'Claude Desktop').error, /JSON/);
+    assert.doesNotMatch(JSON.stringify(sources), /SYNTHETIC-|Authorization|NOTION_TOKEN|example\.test/);
+    assert.deepEqual(await files.discoverMcpSources({ home: join(directory, 'missing'), appData: join(directory, 'missing'), platform: 'win32' }), { sources: [] });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('添加连接提交三种原生 transport，命令参数不经 shell 解释，错误配置不进入选择列表', async () => {
+  const source = ts.createSourceFile('connections.tsx', await readFile(new URL('../../client/connections.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+      if (attributes.find(attribute => attribute.name.getText(source) === 'label')?.initializer?.getText(source) === '"添加"') {
+        const action = attributes.find(attribute => attribute.name.getText(source) === 'onPress')?.initializer;
+        if (action && ts.isJsxExpression(action) && action.expression) callback = action.expression.getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  const submit = new Function('name', 'type', 'url', 'command', 'args', 'variables', 'existing', 'setError', 'add', 'mcpNameSchema', 'mcpServerSchema', ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText);
+  let error = '';
+  const added: unknown[] = [];
+  for (const type of ['http', 'sse', 'stdio']) {
+    submit('synthetic', type, 'https://example.test/mcp', 'D:/tools/synthetic tool.exe', '--path\nD:/a folder\n$(not-executed)', [{ name: type === 'stdio' ? 'TOKEN' : 'Authorization', value: 'SYNTHETIC-SECRET' }], [],
+      (value: string) => { error = value; }, (name: string, config: unknown) => { added.push({ name, config }); }, mcpNameSchema, mcpServerSchema)();
+  }
+  assert.deepEqual(added, [
+    ...['http', 'sse'].map(type => ({ name: 'synthetic', config: { type, url: 'https://example.test/mcp', headers: { Authorization: 'SYNTHETIC-SECRET' } } })),
+    { name: 'synthetic', config: { type: 'stdio', command: 'D:/tools/synthetic tool.exe', args: ['--path', 'D:/a folder', '$(not-executed)'], env: { TOKEN: 'SYNTHETIC-SECRET' } } },
+  ]);
+  assert.equal(error, '');
+  for (const [name, url, existing] of [['paseo', 'https://example.test/mcp', []], ['same-name', 'https://example.test/mcp', ['same-name']], ['valid', 'not-a-url', []]] as const) {
+    submit(name, 'http', url, '', '', [], existing, (value: string) => { error = value; }, () => assert.fail('错误配置不能添加'), mcpNameSchema, mcpServerSchema)();
+    assert.ok(error);
+  }
 });

@@ -9,4 +9,9 @@ export const listDirectory = defineRpc({
 });
 export const inspectSkill = defineRpc({ name: 'bots.skill.inspect', input: z.object({ path: z.string().trim().min(1) }), output: botSkillSchema });
 export const inspectMcp = defineRpc({ name: 'bots.mcp.inspect', input: z.object({ path: z.string().trim().min(1) }), output: z.object({ names: z.array(z.string()) }) });
+export const listMcpSources = defineRpc({
+  name: 'bots.mcp.sources',
+  input: z.object({ cwd: z.string().trim().min(1).optional() }),
+  output: z.object({ sources: z.array(z.object({ label: z.string(), path: z.string(), names: z.array(z.string()), error: z.string().optional() })) }),
+});
 export const configurationDefaults = defineRpc({ name: 'bots.configuration.defaults', input: z.object({}), output: z.object({ cwd: z.string() }) });
