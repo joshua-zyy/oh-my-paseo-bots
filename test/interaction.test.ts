@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { observeAgentChanges } from '../client/agent-changes.js';
+import type { PaseoApi } from '@getpaseo/client';
 
 async function sourceFile(path: string) {
   const root = process.env.BOT_UI_SOURCE_DIR ?? fileURLToPath(new URL('../../', import.meta.url));
@@ -181,7 +183,7 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   visit(source);
   assert.ok(callback);
   const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const createSend = new Function('agentId', 'sends', 'stops', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', body);
+  const createSend = new Function('agentId', 'sends', 'stops', 'changing', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', body);
   const text = '请记住：后续报告使用英文。\n本条原话不能附加或删改。';
   const attachment = { type: 'text', mimeType: 'text/plain', title: '最新确认记忆', text: '["使用英文"]' };
   let preparations = 0;
@@ -190,7 +192,8 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   let sendFails = true;
   let contextFails = false;
   let conversation = true;
-  const invoke = () => createSend('helper-chat', { current: new Set() }, { current: new Set() }, drafts['helper-chat'], false,
+  const changing = { current: new Set<string>() };
+  const invoke = () => createSend('helper-chat', { current: new Set() }, { current: new Set() }, changing, drafts['helper-chat'], false,
     { loading: false, agent: { archivedAt: null, labels: conversation ? { 'paseo-guys.conversation': 'true' } : {} } }, { current: { refresh() {} } },
     (update: (value: typeof drafts) => typeof drafts) => { drafts = update(drafts); },
     { agents: { ref: () => ({ send: async (text: string, options: unknown) => { requests.push({ text, options }); if (sendFails) throw new Error('回执丢失'); } }) } },
@@ -216,4 +219,153 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   await invoke();
   assert.equal(preparations, 2, '原生专家详情不自动取得固定 Bot 的全部记忆');
   assert.deepEqual(requests[2], { text, options: { messageId: 'expert-message', activeTurnBehavior: 'steer' } });
+  drafts['helper-chat'] = { text };
+  changing.current.add('helper-chat');
+  await invoke();
+  assert.equal(requests.length, 3, '配置切换期间不把未发送消息发给旧会话');
+});
+
+test('消息框切换保留草稿并沿原请求重试，异步完成后仍只更新所属 Bot', async () => {
+  const source = await sourceFile('client/chat.tsx');
+  let callback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'changeSettings') callback = `${node.getText(source)}\nreturn changeSettings;`;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const createChange = new Function('agentId', 'changing', 'sends', 'stops', 'draft', 'offline', 'chat', 'running', 'opened', 'observer', 'settingsChanges', 'setSettingsChanges', 'setDrafts', 'switchConversation', 'onConversationChange', 'setOpened', 'key', body);
+  const text = '继续完成原来的目标。\n这段草稿不能丢失。';
+  let drafts: Record<string, any> = { old: { text, messageId: 'unsent-message', error: '尚未派发' }, helper: { text: '另一位同事的草稿' } };
+  let changes: Record<string, any> = {};
+  let opened = { key: 'chief:old', owner: 'chief', agentId: 'old', error: '' };
+  const requests: Record<string, any>[] = [];
+  const remembered: string[][] = [];
+  const changing = { current: new Set<string>() };
+  const sends = { current: new Set<string>() };
+  let fail = true;
+  let resolveSwitch: (() => void) | undefined;
+  let wait: Promise<void> | undefined;
+  let nextId = 'new';
+  const invoke = (execution?: Record<string, string>) => createChange('old', changing, sends, { current: new Set() }, drafts.old, false,
+    { loading: false, agent: { archivedAt: null, pendingPermissions: [] } }, false, { owner: 'chief' }, { current: { refresh() {} } }, changes,
+    (update: (value: typeof changes) => typeof changes) => { changes = update(changes); },
+    (update: (value: typeof drafts) => typeof drafts) => { drafts = update(drafts); },
+    async (input: Record<string, any>) => { requests.push(input); await wait; if (fail) throw new Error('创建回执丢失'); return { agentId: nextId }; },
+    (...ids: string[]) => remembered.push(ids),
+    (update: (value: typeof opened) => typeof opened) => { opened = update(opened); }, 'chief:old',
+  )(execution);
+  await invoke({ provider: 'pi/vendor/model' });
+  assert.match(requests[0].requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(drafts.old.text, text);
+  assert.equal(remembered.length, 0);
+  assert.equal(changes.old.pending, false);
+  fail = false;
+  await invoke();
+  assert.deepEqual(requests[1], requests[0], '回执未确认时沿原请求及配置重试');
+  assert.deepEqual(drafts.new, { text });
+  assert.equal(drafts.old.text, '');
+  assert.equal(drafts.helper.text, '另一位同事的草稿');
+  assert.deepEqual(remembered, [['chief', 'old', 'new']]);
+  assert.equal(opened.agentId, 'new');
+  assert.equal(opened.key, 'chief:new');
+  drafts.old = { text, unknown: true };
+  await invoke({ cwd: 'D:/selected-project' });
+  assert.equal(requests.length, 2, '发送回执未知时不能切换到其他原生会话');
+  drafts.old = { text };
+  sends.current.add('old');
+  await invoke({ cwd: 'D:/selected-project' });
+  assert.equal(requests.length, 2, '正在发送时不能切换');
+  sends.current.clear();
+  nextId = 'later';
+  wait = new Promise<void>(resolve => { resolveSwitch = resolve; });
+  const pending = invoke({ cwd: 'D:/selected-project' });
+  assert.equal(changing.current.has('old'), true);
+  opened = { key: 'helper:helper', owner: 'helper', agentId: 'helper', error: '' };
+  resolveSwitch!();
+  await pending;
+  assert.equal(opened.agentId, 'helper', '切换 Bot 后不把异步创建结果打开到其他同事');
+  assert.deepEqual(remembered.at(-1), ['chief', 'old', 'later']);
+  assert.equal(drafts.later.text, text);
+  assert.equal(drafts.helper.text, '另一位同事的草稿');
+  assert.equal(changing.current.size, 0);
+});
+
+test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接入消息框切换', async () => {
+  const source = await sourceFile('index.client.tsx');
+  let callback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'rememberConversation' && node.initializer && ts.isCallExpression(node.initializer)) callback = node.initializer.arguments[0].getText(source);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  let conversations: Record<string, string> = { chief: 'old', helper: 'helper-chat' };
+  const remember = new Function('setConversations', ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)((update: (value: typeof conversations) => typeof conversations) => { conversations = update(conversations); });
+  remember('chief', 'old', 'new');
+  assert.deepEqual(conversations, { chief: 'new', helper: 'helper-chat' });
+  remember('chief', 'old', 'late');
+  assert.equal(conversations.chief, 'new', '不覆盖用户已打开的其他对话');
+  const settings = await sourceFile('client/chat-settings.tsx');
+  let chooseModel = '';
+  let choosePath = '';
+  const find = (node: ts.Node) => {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(settings) === 'PathPicker') {
+      const attribute = node.attributes.properties.filter(ts.isJsxAttribute).find(item => item.name.getText(settings) === 'onChange');
+      if (attribute?.initializer && ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) choosePath = attribute.initializer.expression.getText(settings);
+    }
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(settings) === 'Pressable') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+      if (attributes.find(item => item.name.getText(settings) === 'key')?.initializer?.getText(settings) === '{model.value}') {
+        const attribute = attributes.find(item => item.name.getText(settings) === 'onPress');
+        if (attribute?.initializer && ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) chooseModel = attribute.initializer.expression.getText(settings);
+      }
+    }
+    ts.forEachChild(node, find);
+  };
+  find(settings);
+  assert.ok(chooseModel && choosePath);
+  const values: unknown[] = [];
+  let open = true;
+  const pickModel = new Function('model', 'onChange', 'setOpen', ts.transpileModule(`return (${chooseModel});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)({ value: 'pi/vendor/model' }, (value: unknown) => values.push(value), (value: boolean) => { open = value; });
+  pickModel();
+  assert.equal(open, false);
+  const pickPath = new Function('onChange', ts.transpileModule(`return (${choosePath});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)((value: unknown) => values.push(value));
+  pickPath('C:/Users/example/.paseo/oh-my-paseo-bots/workspaces/chief');
+  assert.deepEqual(values, [{ provider: 'pi/vendor/model' }, { cwd: 'C:/Users/example/.paseo/oh-my-paseo-bots/workspaces/chief' }]);
+});
+
+test('当前聊天订阅旧父会话的跨 Bot 子任务，旧任务报告变化仍触发工作刷新', async () => {
+  const source = await sourceFile('client/chat-work.tsx');
+  let callback = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect' && node.arguments[0]?.getText(source).includes('observeAgentChanges')) callback = node.arguments[0].getText(source);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(callback);
+  let revision = 0;
+  let released = 0;
+  const child = { id: 'old-helper-task', status: 'running', pendingPermissions: [], labels: { 'paseo-guys.bot': 'helper', 'paseo.parent-agent-id': 'old' }, updatedAt: 'one' };
+  const observers: { matches: boolean; observer: any }[] = [];
+  const api = { agents: { list: async (input: { filter: { labels: Record<string, string> } }) => {
+    const matches = Object.entries(input.filter.labels).every(([key, value]) => child.labels[key as keyof typeof child.labels] === value);
+    return { subscription: {
+      subscribe: (observer: any) => { observers.push({ matches, observer }); observer.snapshot({ subscriptionId: `subscription:${observers.length}`, entries: matches ? [{ agent: child }] : [] }); return () => {}; },
+      release: async () => { released++; },
+    } };
+  } } } as unknown as PaseoApi;
+  const subscribe = new Function('api', 'botId', 'agentId', 'previousAgentIds', 'observeAgentChanges', 'setRevision', 'setError', ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(api, 'chief', 'new', ['old'], observeAgentChanges,
+    (update: (value: number) => number) => { revision = update(revision); }, (error: unknown) => assert.fail(String(error)));
+  const cleanup = subscribe();
+  await new Promise<void>(done => setImmediate(done));
+  const previous = revision;
+  const matched = observers.filter(entry => entry.matches);
+  assert.equal(matched.length, 1, '旧跨 Bot 子任务仍有其原父 ID 的订阅');
+  matched[0].observer.update({ type: 'agent_update', payload: { kind: 'upsert', agent: { ...child, status: 'closed', updatedAt: 'two' } } });
+  assert.equal(revision, previous + 1);
+  cleanup();
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(released, observers.length);
 });

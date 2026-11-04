@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { usePaseo, useRpc } from '@getpaseo/plugin/client';
-import { Modal, SettingsRow, SettingsSelect } from '@getpaseo/plugin/client/ui';
-import { View } from 'react-native';
+import { Icon, Modal, SettingsRow, SettingsSelect } from '@getpaseo/plugin/client/ui';
+import { Pressable, Text, View } from 'react-native';
 import * as rpc from '../shared/files.js';
-import { Actions, Button, Copy, Field, Notice } from './ui.js';
+import { Actions, Button, Copy, Field, Notice, useUi } from './ui.js';
 
-export function PathPicker({ label, value, initialPath, kind = 'directory', inherit = false, disabled = false, onChange }: {
-  label: string; value?: string; initialPath?: string; kind?: 'directory' | 'skill' | 'mcp'; inherit?: boolean; disabled?: boolean; onChange(path: string | undefined): void;
+export function PathPicker({ label, value, initialPath, kind = 'directory', inherit = false, disabled = false, inline = false, defaultLocation, onChange }: {
+  label: string; value?: string; initialPath?: string; kind?: 'directory' | 'skill' | 'mcp'; inherit?: boolean; disabled?: boolean; inline?: boolean; defaultLocation?: { path: string; label: string }; onChange(path: string | undefined): void;
 }) {
   const list = useRpc(rpc.listDirectory);
   const api = usePaseo();
+  const { colors, compact } = useUi();
   const [open, setOpen] = useState(false);
   const [listing, setListing] = useState<RpcOutput<typeof rpc.listDirectory>>();
   const [known, setKnown] = useState<{ label: string; value: string }[]>([]);
@@ -32,16 +33,22 @@ export function PathPicker({ label, value, initialPath, kind = 'directory', inhe
       if (active) setKnown(result.entries.map(workspace => ({ label: workspace.title || workspace.name, value: workspace.workspaceDirectory ?? workspace.projectRootPath })));
     }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [open, api, list]);
+  }, [open, api, list, value, initialPath, kind]);
   function choose(path?: string) { onChange(path); setOpen(false); }
-  const name = value?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || value;
+  const name = defaultLocation && value === defaultLocation.path ? defaultLocation.label : value?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || value;
   const options = listing ? [{ label: listing.path, value: listing.path }, { label: '主目录', value: listing.home }, ...known].filter((option, i, rows) => rows.findIndex(row => row.value === option.value) === i) : [];
+  function show() { setListing(undefined); setTyping(false); setOpen(true); }
   return <>
-    <SettingsRow label={label}><Button label={name || (inherit ? '默认文件夹' : '选择…')} icon={kind === 'directory' ? 'Folder' : 'Plus'} disabled={disabled} onPress={() => { setListing(undefined); setTyping(false); setOpen(true); }} /></SettingsRow>
-    <Modal title={kind === 'skill' ? '选择技能' : kind === 'mcp' ? '选择 MCP 配置' : '选择文件夹'} open={open} onOpenChange={setOpen}>
+    {inline ? <Pressable accessibilityRole="button" accessibilityLabel={`${label}：${value ?? ''}`} disabled={disabled} onPress={show} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: compact ? 44 : 36, paddingHorizontal: 8, borderRadius: 6, backgroundColor: pressed ? colors.surface2 : 'transparent', opacity: disabled ? 0.4 : 1 })}>
+      <Icon name="Folder" size={16} color={colors.foregroundMuted} />
+      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 13, flexShrink: 1 }}>{name || label}</Text>
+      <Icon name="ChevronDown" size={12} color={colors.foregroundMuted} />
+    </Pressable> : <SettingsRow label={label}><Button label={name || (inherit ? '默认文件夹' : '选择…')} icon={kind === 'directory' ? 'Folder' : 'Plus'} disabled={disabled} onPress={show} /></SettingsRow>}
+    <Modal title={kind === 'skill' ? '选择技能' : kind === 'mcp' ? '选择 MCP 配置' : inline ? '选择工作区' : '选择文件夹'} open={open} onOpenChange={setOpen}>
       <Modal.Content>
         <Notice error={error} />
         {inherit && <Button label="默认文件夹" disabled={busy} onPress={() => choose()} />}
+        {defaultLocation && <Button label={defaultLocation.label} icon="Folder" disabled={busy} onPress={() => choose(defaultLocation.path)} />}
         {listing && <>
           <SettingsSelect label="位置" value={listing.path} options={options} disabled={busy} onValueChange={path => void browse(path)} />
           {listing.parent && <Button label="上一级" icon="ArrowUp" disabled={busy} onPress={() => void browse(listing.parent!)} />}

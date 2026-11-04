@@ -73,10 +73,14 @@ export function observeChat(api: PaseoApi, botId: string, agentId: string, chang
   }
 
   const refreshAgent = () => {
-    void handle.refresh().then(snapshot => { if (snapshot) publish({ agent: snapshot.agent }); }).catch(fail);
+    void handle.refresh().then(snapshot => {
+      if (snapshot) publish({ agent: snapshot.agent });
+      else publish({ agent: null, error: '原生会话已移除' });
+    }).catch(fail);
   };
   const unsubscribeAgent = handle.subscribe(update => {
-    if (update.kind === 'remove') publish({ agent: null, error: '原生会话已移除' });
+    // A query can evict an agent without deleting its native conversation.
+    if (update.kind === 'remove') refreshAgent();
     else publish({ agent: handle.current() });
   });
   const timeline = handle.timeline.subscribe(({ event }) => {

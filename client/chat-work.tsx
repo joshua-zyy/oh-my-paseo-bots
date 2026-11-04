@@ -9,7 +9,7 @@ import { observeAgentChanges } from './agent-changes.js';
 import { OfficeActions } from './office.js';
 import { Actions, Button, Copy, Notice, useUi } from './ui.js';
 
-export function ChatWork({ botId, agentId, signal, openAgent }: { botId: string; agentId: string; signal: string; openAgent(id: string): void }) {
+export function ChatWork({ botId, agentId, previousAgentIds, signal, openAgent }: { botId: string; agentId: string; previousAgentIds: readonly string[]; signal: string; openAgent(id: string): void }) {
   const api = usePaseo();
   const read = useRpc(conversationWork);
   const cancel = useRpc(cancelTask);
@@ -26,9 +26,9 @@ export function ChatWork({ botId, agentId, signal, openAgent }: { botId: string;
     return () => { active = false; };
   }, [botId, agentId, read, revision, signal]);
   useEffect(() => {
-    const observer = observeAgentChanges(api, [{ 'paseo-guys.bot': botId }, { 'paseo.parent-agent-id': agentId }], () => setRevision(value => value + 1), failure => setError(String(failure)));
+    const observer = observeAgentChanges(api, [{ 'paseo-guys.bot': botId }, ...[...previousAgentIds, agentId].map(id => ({ 'paseo.parent-agent-id': id }))], () => setRevision(value => value + 1), failure => setError(String(failure)));
     return () => { void observer.release().catch(error => console.error('工作状态订阅清理失败', error)); };
-  }, [api, botId, agentId]);
+  }, [api, botId, agentId, previousAgentIds]);
   const mail = useMemo(() => {
     const pending = value.mail.filter(action => !['sent', 'revoked'].includes(action.status));
     const recent = value.mail.filter(action => ['sent', 'revoked'].includes(action.status)).slice(-2);

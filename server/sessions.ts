@@ -5,6 +5,8 @@ import type { PaseoApi, PaseoAgentConfig } from '@getpaseo/client';
 import type { BotStore } from './store.js';
 import { botPrompt } from './prompt.js';
 import type { BotMcp } from './mcp.js';
+import type { BotDetails } from '../shared/bot.js';
+import { CONVERSATION_PREVIOUS_LABEL } from '../shared/chat.js';
 
 export interface SessionInput {
   botId: string;
@@ -13,6 +15,8 @@ export interface SessionInput {
   prompt?: string;
   parentAgentId?: string;
   kind?: 'conversation';
+  execution?: BotDetails['execution'];
+  previousAgentId?: string;
 }
 
 /** 原生侧只需 id 与 workspaceId 即可关联；不复制会话状态。 */
@@ -38,7 +42,10 @@ export async function startBotSession(
   placement: { cwd: string; config: PaseoAgentConfig },
   tools: Pick<BotMcp, 'mount'>,
 ): Promise<StartedSession> {
-  const { cwd, config, systemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive');
+  const { cwd, config, systemPrompt: botSystemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive', input.execution);
+  const systemPrompt = input.previousAgentId
+    ? `${botSystemPrompt}\n\n当前是同一 Bot 持续聊天切换模型或工作区后的原生会话。上一段原生会话标识：${input.previousAgentId}。首次回复前先用 read_bot_history 读取上一段末页，理解用户已交办的目标、决定与上下文；更早来源见本轮附件。此前事项保留原父会话及其回报，不因配置切换重新派发或扩大授权。`
+    : botSystemPrompt;
   const fingerprint = createHash('sha256')
     .update(
       stable({
@@ -47,6 +54,7 @@ export async function startBotSession(
         prompt: input.prompt,
         parentAgentId: input.parentAgentId,
         kind: input.kind,
+        previousAgentId: input.previousAgentId,
         cwd,
         config,
         systemPrompt,
@@ -69,7 +77,7 @@ export async function startBotSession(
       config: { ...config, systemPrompt, mcpServers: { ...config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,
-      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.kind === 'conversation' ? { 'paseo-guys.conversation': 'true' } : {}) },
+      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.kind === 'conversation' ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
     const workspaceKey = createHash('sha256').update(stable({ bot: input.botId, cwd })).digest('hex');
@@ -91,7 +99,7 @@ export async function startBotSession(
 }
 
 /** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
-export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive') {
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive', overrides?: BotDetails['execution']) {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
   const { skills, disabledMcpServers = [] } = data.bot.capabilities;
@@ -102,7 +110,7 @@ export async function botSessionConfig(store: BotStore, botId: string, placement
   }
   const memories = await store.getContextMemories(botId);
   const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
-  const execution = data.bot.execution;
+  const execution = { ...data.bot.execution, ...overrides };
   const cwd = execution.cwd ?? placement.cwd;
   if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');
   const inheritOptions = execution.provider === undefined || execution.provider === placement.config.provider;

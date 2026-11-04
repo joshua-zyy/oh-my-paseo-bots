@@ -1,6 +1,18 @@
 import { defineRpc } from '@getpaseo/plugin';
 import { z } from 'zod';
 import { mailAction } from './office.js';
+import { botExecutionSchema } from './bot.js';
+
+export const CONVERSATION_PREVIOUS_LABEL = 'paseo-guys.conversation.previous';
+export const conversationConfiguration = defineRpc({
+  name: 'bots.conversation.configuration', input: z.object({ botId: z.string().min(1), agentId: z.string().min(1) }),
+  output: z.object({ execution: botExecutionSchema, defaultCwd: z.string().optional(), previousAgentIds: z.array(z.string()) }),
+});
+export const changeConversation = defineRpc({
+  name: 'bots.conversation.change',
+  input: z.object({ botId: z.string().min(1), agentId: z.string().min(1), requestId: z.uuid(), execution: botExecutionSchema.pick({ provider: true, cwd: true }).refine(value => value.provider !== undefined || value.cwd !== undefined, '请选择模型或工作区') }),
+  output: z.object({ agentId: z.string() }),
+});
 
 export const conversationContext = defineRpc({
   name: 'bots.conversation.context', input: z.object({ botId: z.string(), agentId: z.string() }),

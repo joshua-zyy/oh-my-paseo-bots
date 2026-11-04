@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import type { PluginClientContext, PluginScreenProps } from '@getpaseo/plugin/client';
 import { usePaseo, useRpc } from '@getpaseo/plugin/client';
@@ -34,6 +34,12 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
   const [selected, select] = useState(CHIEF_BOT_ID);
   const updates = useBotUpdates(selected);
   const [conversations, setConversations] = useState<Record<string, string>>({});
+  const rememberConversation = useCallback((owner: string, previousId: string, agentId: string) => {
+    setConversations(current => {
+      if (current[owner] === agentId || (current[owner] && current[owner] !== previousId)) return current;
+      return { ...current, [owner]: agentId };
+    });
+  }, []);
   const [detail, setDetail] = useState<{ agentId: string; owner: string; title: string; executor: string }>();
   const [panel, setPanel] = useState<Panel | null>(null);
   const [picker, setPicker] = useState(false);
@@ -94,7 +100,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
           <Button label="同事菜单" icon="Ellipsis" iconOnly disabled={!current || busy} onPress={() => setPanel('menu')} />
         </View>
         {!creating && !panel && (error || updates.error) && <View style={{ paddingHorizontal: compact ? 16 : 28, paddingTop: 12 }}><Notice error={error || updates.error} /></View>}
-        {current ? <Chat key={host.id} botId={selected} hostId={host.id} sessionId={conversations[selected]} openAgent={openAgent} /> : <View style={{ padding: 24 }}><Copy muted>读取同事中…</Copy></View>}
+        {current ? <Chat key={host.id} botId={selected} hostId={host.id} sessionId={conversations[selected]} onConversationChange={rememberConversation} openAgent={openAgent} /> : <View style={{ padding: 24 }}><Copy muted>读取同事中…</Copy></View>}
       </View>
     </View>
     <Modal title="选择同事" open={picker} onOpenChange={setPicker}><Modal.Content>{roster}<Actions><Button label="默认设置" icon="Settings2" onPress={() => { setPicker(false); setPanel('host'); }} /><Button label="添加同事" icon="Plus" onPress={() => { setPicker(false); setCreating(true); }} /></Actions></Modal.Content></Modal>
