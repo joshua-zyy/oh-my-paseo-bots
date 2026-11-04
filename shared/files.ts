@@ -14,4 +14,4 @@ export const listMcpSources = defineRpc({
   input: z.object({ cwd: z.string().trim().min(1).optional() }),
   output: z.object({ sources: z.array(z.object({ label: z.string(), path: z.string(), names: z.array(z.string()), error: z.string().optional() })) }),
 });
-export const configurationDefaults = defineRpc({ name: 'bots.configuration.defaults', input: z.object({}), output: z.object({ cwd: z.string() }) });
+export const configurationDefaults = defineRpc({ name: 'bots.configuration.defaults', input: z.object({ botId: z.string().min(1).optional() }), output: z.object({ cwd: z.string() }) });

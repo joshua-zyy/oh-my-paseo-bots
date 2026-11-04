@@ -175,7 +175,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(filesRpc.inspectSkill, input => readSkill(input.path));
   server.handle(filesRpc.inspectMcp, async input => ({ names: Object.keys(await readMcp(input.path)) }));
   server.handle(filesRpc.listMcpSources, input => discoverMcpSources(input));
-  server.handle(filesRpc.configurationDefaults, () => ({ cwd: defaultCwd }));
+  server.handle(filesRpc.configurationDefaults, async ({ botId }) => ({ cwd: botId ? await managedWorkspace(botId) : defaultCwd }));
   server.handle(rpc.createBot, async input => ({ id: (await store.createBot({ ...input, id: input.id ?? `bot-${randomUUID()}` })).bot.id }));
   server.handle(rpc.updateBot, async input => {
     const patch = { ...input.patch };
@@ -255,14 +255,24 @@ export default function contribute(server: PluginServerContext) {
     currentPaseo = paseo;
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error(`Bot 设置无效：${state.error}`);
-    const { cwd, provider, modeId, thinkingOptionId } = state.values;
-    if (cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
+    const { provider, modeId, thinkingOptionId } = state.values;
+    const cwd = state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd;
     return startBotSession(store, paseo, input, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind === 'conversation' ? { conversation: true } : {}) });
         return mcp.mount(botId, agentId);
       },
     });
+  }
+  async function managedWorkspace(botId: string) {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error(`Bot 不存在：${botId}`);
+    const state = await settings.read();
+    const home = process.env.PASEO_HOME ?? (state.status === 'ready' ? state.values.paseoHome : undefined);
+    if (!home || !isAbsolute(home)) throw new Error('当前 Paseo 配置目录不可用，请在默认设置中配置 Daemon 目录');
+    const cwd = join(home, 'oh-my-paseo-bots', 'workspaces', bot.bot.id);
+    await mkdir(cwd, { recursive: true });
+    return cwd;
   }
   const routines = new BotRoutines({ baseDir, store, tasks, cli: async () => {
     const state = await settings.read();
