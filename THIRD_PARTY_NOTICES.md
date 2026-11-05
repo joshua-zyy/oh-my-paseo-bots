@@ -4,6 +4,8 @@
 
 `client/ui.tsx` 的按钮和选择行，以及 `client/chat.tsx` 的输入框布局，按 [Paseo v0.14.0](https://github.com/getpaseo/paseo/tree/v0.14.0) 的 `components/ui/control-geometry.ts`、`composer/agent-controls/control.tsx` 和 `composer/input/input.tsx` 适配。修改使用插件公开的 React Native、主题颜色和图标接口，保留本项目会话逻辑；不包含宿主私有模块或完整 Composer。
 
+`client/model-selector.tsx` 适配同版本的 `components/combined-model-selector.tsx`、`components/model-browser.tsx` 和 `components/ui/combobox.tsx`：保留 Provider 浏览、搜索、模型名与标识、选中态和锚定桌面弹层；用公开 SDK 目录、图标和主题，以及 React Native Modal 测量定位替换宿主状态和 Portal，窄屏使用公开 Modal。不包含收藏、Profile 编辑或 Provider 设置入口。`client/provider-icons.ts` 将该版本 `components/icons/{pi,codex,claude}-icon.tsx` 的 SVG 路径转换为公开 Icon 可渲染的 SVG 字符串；其他 Provider 使用目录提供的 SVG，缺失时显示 Bot 图标。
+
 这些上游适配部分遵循 Apache License 2.0，许可证原文见 [licenses/Paseo-Apache-2.0.txt](licenses/Paseo-Apache-2.0.txt)。其余项目原创部分的 MIT 许可不改变。
 
 ## paseo-bots 许可原文

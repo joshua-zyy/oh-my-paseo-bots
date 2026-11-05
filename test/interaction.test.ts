@@ -388,40 +388,28 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   const settings = await sourceFile('client/chat-settings.tsx');
   const component = settings.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'ConversationSettings')!;
   const body = ts.transpileModule(`${component.getText(settings)}\nreturn ConversationSettings;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
-  let open = false;
-  let search = '';
   const values: unknown[] = [];
-  const catalog = { entries: [{ provider: 'pi', label: 'Pi' }, { provider: 'codex', label: 'Codex' }], models: [{ value: 'pi/vendor/model', label: '模型 Alpha', providerLabel: 'Pi' }, { value: 'codex/model', label: '模型 Beta', providerLabel: 'Codex' }], error: '', loading: false, reload() {} };
-  const render = new Function('h', 'Fragment', 'View', 'Modal', 'Button', 'PathPicker', 'TextInput', 'Notice', 'Copy', 'PickerRow', 'Section', 'useUi', 'useState', 'useModelCatalog', body)(
+  const catalog = { entries: [], models: [], error: '', loading: false, reload() {} };
+  const render = new Function('h', 'Fragment', 'View', 'PathPicker', 'ModelSelector', 'useModelCatalog', body)(
     (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }),
-    'Fragment', 'View', { Content: 'Modal.Content' }, 'Button', 'PathPicker', 'TextInput', 'Notice', 'Copy', 'PickerRow', 'Section',
-    () => ({ colors: {}, compact: false }), (initial: unknown) => typeof initial === 'boolean' ? [open, (value: boolean) => { open = value; }] : [search, (value: string) => { search = value; }], () => catalog,
+    'Fragment', 'View', 'PathPicker', 'ModelSelector', () => catalog,
   );
   const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
   const props = { execution: { provider: 'pi/vendor/model', cwd: 'D:/project' }, defaultCwd: 'D:/bot', disabled: false, onChange: (value: unknown) => values.push(value) };
   const view = () => elements(render(props));
-  const trigger = view().find(node => node.type === 'Button' && node.props.label === '模型 Alpha')!;
-  trigger.props.onPress();
-  assert.equal(open, true);
-  const row = view().find(node => node.type === 'PickerRow' && node.props.label === '模型 Alpha')!;
-  assert.equal(row.props.selected, true);
-  row.props.onPress();
-  assert.equal(open, false);
+  const selector = view().find(node => node.type === 'ModelSelector')!;
+  assert.equal(selector.props.catalog, catalog);
+  assert.equal(selector.props.value, 'pi/vendor/model');
+  selector.props.onSelect('pi/vendor/model');
   const path = view().find(node => node.type === 'PathPicker')!;
   assert.equal(path.props.inline, true);
   assert.deepEqual(path.props.defaultLocation, { path: 'D:/bot', label: 'Bot 工作区' });
   path.props.onChange(undefined);
   path.props.onChange('D:/selected-project');
   assert.deepEqual(values, [{ provider: 'pi/vendor/model' }, { cwd: 'D:/selected-project' }]);
-  view().find(node => node.type === 'TextInput')!.props.onChangeText('codex');
-  assert.deepEqual(view().filter(node => node.type === 'Section').map(node => node.props.title), ['Codex']);
-  assert.deepEqual(view().filter(node => node.type === 'PickerRow').map(node => node.props.label), ['模型 Beta']);
-  search = 'not-found';
-  assert.equal(view().filter(node => node.type === 'PickerRow').length, 0);
-  assert.ok(JSON.stringify(view()).includes('没有匹配的模型'));
-  search = '';
+  assert.ok(!view().some(node => node.type === 'Modal'), '消息框不再自带简化居中模型列表');
   props.disabled = true;
-  assert.ok(view().filter(node => ['Button', 'PathPicker', 'PickerRow'].includes(node.type)).every(node => node.props.disabled));
+  assert.ok(view().filter(node => ['ModelSelector', 'PathPicker'].includes(node.type)).every(node => node.props.disabled));
 });
 
 test('当前聊天订阅旧父会话的跨 Bot 子任务，旧任务报告变化仍触发工作刷新', async () => {
