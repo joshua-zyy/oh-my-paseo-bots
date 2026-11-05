@@ -3,6 +3,8 @@ import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
+import { memoryContentSchema, memoryEntrySchema, memoryKindSchema, memoryOriginSchema, type MemoryEntry, type MemoryKind, type MemoryOrigin, type MemorySource } from '../shared/memory.js';
+export type { MemoryEntry, MemoryKind, MemorySource } from '../shared/memory.js';
 
 /**
  * Bot 业务元数据存储。
@@ -17,15 +19,11 @@ import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type B
  */
 
 const SCHEMA_VERSION = 1;
-const MEMORY_CONTENT_MAX = 8000;
 const BOT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:@-]+$/;
 
 /** 小写标识避免 Windows 大小写文件别名；不允许点号与设备名。 */
 export const botIdPattern = BOT_ID_PATTERN;
-
-export type MemoryKind = 'confirmed' | 'candidate';
-export type MemorySource = 'user' | 'inferred' | 'agent';
 
 /** 固定 Bot 身份，独立于任何一次执行会话。 */
 export interface BotIdentity extends BotDetails {
@@ -41,21 +39,6 @@ export interface SessionLink {
   title: string | null;
   workspaceId: string | null;
   linkedAt: string;
-}
-
-/**
- * 一条记忆。
- * `kind: 'candidate'` 是未被用户确认的推断，任何上下文注入都必须排除。
- */
-export interface MemoryEntry {
-  id: string;
-  kind: MemoryKind;
-  content: string;
-  source: MemorySource;
-  createdAt: string;
-  updatedAt: string;
-  /** 仅在成为明确记忆时存在；降级回候选会清空。 */
-  confirmedAt: string | null;
 }
 
 /**
@@ -114,15 +97,18 @@ export interface AddMemoryInput {
   content: string;
   /** 缺省为 `confirmed` → `user`，`candidate` → `inferred`。 */
   source?: MemorySource;
+  origin?: MemoryOrigin;
 }
 
 export interface UpdateMemoryInput {
   content?: string;
   kind?: MemoryKind;
+  origin?: MemoryOrigin;
 }
 
 export interface ListMemoriesFilter {
   kind?: MemoryKind;
+  includeArchived?: boolean;
 }
 
 export interface BotStoreOptions {
@@ -164,14 +150,6 @@ export const botIdSchema = z
   .refine((value) => !WINDOWS_RESERVED_NAME.test(value), { message: 'must not be a Windows device name' });
 const sessionIdSchema = z.string().max(200).regex(SESSION_ID_PATTERN, 'must use only [A-Za-z0-9._:@-]');
 const labelSchema = z.string().min(1).max(200);
-const memoryContentSchema = z
-  .string()
-  .min(1)
-  .max(MEMORY_CONTENT_MAX)
-  .refine((value) => value.trim().length > 0, { message: 'must not be blank' })
-  .transform((value) => value.trim());
-const memoryKindSchema = z.enum(['confirmed', 'candidate']);
-const memorySourceSchema = z.enum(['user', 'inferred', 'agent']);
 const timestampSchema = z.string().min(1).max(64);
 const fingerprintSchema = z.string().min(16).max(128).regex(/^[a-f0-9]+$/);
 const requestIdSchema = z.string().min(1).max(200);
@@ -188,16 +166,6 @@ const sessionLinkSchema = z.object({
   title: z.string().nullable(),
   workspaceId: labelSchema.nullable(),
   linkedAt: timestampSchema,
-});
-
-const memoryEntrySchema = z.object({
-  id: z.string().min(1).max(64),
-  kind: memoryKindSchema,
-  content: memoryContentSchema,
-  source: memorySourceSchema,
-  createdAt: timestampSchema,
-  updatedAt: timestampSchema,
-  confirmedAt: timestampSchema.nullable(),
 });
 
 const creationIntentSchema = z.object({
@@ -232,13 +200,15 @@ const prepareCreationSchema = z.object({
 const addMemorySchema = z.object({
   kind: memoryKindSchema,
   content: memoryContentSchema,
-  source: memorySourceSchema.optional(),
+  source: memoryEntrySchema.shape.source.optional(),
+  origin: memoryOriginSchema.optional(),
 });
 
 const updateMemorySchema = z
   .object({
     content: memoryContentSchema.optional(),
     kind: memoryKindSchema.optional(),
+    origin: memoryOriginSchema.optional(),
   })
   .refine((value) => value.content !== undefined || value.kind !== undefined, {
     message: 'at least one of content or kind is required',
@@ -255,7 +225,7 @@ function parseInput<S extends z.ZodType>(schema: S, value: unknown, field: strin
 
 /** 从一组记忆中筛出允许注入上下文的条目：只保留用户已确认的记忆。 */
 export function selectInjectableMemories(memories: readonly MemoryEntry[]): MemoryEntry[] {
-  return memories.filter((memory) => memory.kind === 'confirmed');
+  return memories.filter((memory) => memory.kind === 'confirmed' && !memory.archivedAt);
 }
 
 function propose(intent: CreationIntent): CreationProposal {
@@ -430,6 +400,8 @@ export class BotStore {
     const value = parseInput(addMemorySchema, input, 'memory');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
+      const existing = document.memories.find(memory => !memory.archivedAt && memory.kind === value.kind && memory.content === value.content);
+      if (existing) return existing;
       const now = new Date().toISOString();
       const entry: MemoryEntry = {
         id: `mem_${randomUUID()}`,
@@ -439,6 +411,8 @@ export class BotStore {
         createdAt: now,
         updatedAt: now,
         confirmedAt: value.kind === 'confirmed' ? now : null,
+        origin: value.origin,
+        history: [],
       };
       document.memories.push(entry);
       await this.writeDocument(id, document);
@@ -456,11 +430,21 @@ export class BotStore {
     const value = parseInput(updateMemorySchema, input, 'memory');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      const entry = document.memories.find((memory) => memory.id === mid);
-      if (!entry) throw new StoreError('memory_not_found', `memory ${mid} not found on bot ${id}`);
+      const entry = document.memories.find((memory) => memory.id === mid && !memory.archivedAt);
+      if (!entry) throw new StoreError('memory_not_found', `active memory ${mid} not found on bot ${id}`);
       if (expectedContent !== undefined && entry.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变，请重新读取后按当前内容操作');
 
+      if ((value.content === undefined || value.content === entry.content) && (value.kind === undefined || value.kind === entry.kind)) return entry;
       const now = new Date().toISOString();
+      const duplicate = document.memories.find(memory => memory.id !== mid && !memory.archivedAt && memory.content === (value.content ?? entry.content) && memory.kind === (value.kind ?? entry.kind));
+      if (duplicate) {
+        entry.archivedAt = now;
+        entry.updatedAt = now;
+        entry.history.push({ at: now, action: 'merged', targetId: duplicate.id, origin: value.origin });
+        await this.writeDocument(id, document);
+        return duplicate;
+      }
+      entry.history.push({ at: now, action: 'updated', before: { content: entry.content, kind: entry.kind }, origin: value.origin });
       if (value.content !== undefined) entry.content = value.content;
       if (value.kind !== undefined && value.kind !== entry.kind) {
         entry.kind = value.kind;
@@ -472,20 +456,43 @@ export class BotStore {
     });
   }
 
-  /** 删除记忆条目；返回是否真的删除过。 */
-  async removeMemory(botId: string, memoryId: string, expectedContent?: string): Promise<boolean> {
+  /** 遗忘／拒绝以可恢复归档实现；默认读取及上下文不再包含该条目。 */
+  async removeMemory(botId: string, memoryId: string, expectedContent?: string, origin?: MemoryOrigin): Promise<boolean> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    const mid = parseInput(z.string().min(1).max(64), memoryId, 'memoryId');
+    const actor = parseInput(memoryOriginSchema.optional(), origin, 'origin');
+    return this.withLock(id, async () => {
+      const document = await this.requireDocument(id);
+      const entry = document.memories.find(memory => memory.id === mid);
+      if (expectedContent !== undefined && entry?.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变或移除，请重新读取后按当前内容操作');
+      if (!entry || entry.archivedAt) return false;
+      const now = new Date().toISOString();
+      entry.archivedAt = now;
+      entry.updatedAt = now;
+      entry.history.push({ at: now, action: 'archived', origin: actor });
+      await this.writeDocument(id, document);
+      return true;
+    });
+  }
+
+  /** 只恢复原确认状态，不把被拒绝的候选隐式确认为事实。 */
+  async restoreMemory(botId: string, memoryId: string): Promise<MemoryEntry> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const mid = parseInput(z.string().min(1).max(64), memoryId, 'memoryId');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
       const entry = document.memories.find(memory => memory.id === mid);
-      if (expectedContent !== undefined && entry?.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变或移除，请重新读取后按当前内容操作');
-      const remaining = document.memories.filter((memory) => memory.id !== mid);
-      if (remaining.length === document.memories.length) return false;
-      document.memories = remaining;
-      document.bot.updatedAt = new Date().toISOString();
+      if (!entry) throw new StoreError('memory_not_found', `memory ${mid} not found on bot ${id}`);
+      if (!entry.archivedAt) return entry;
+      if (document.memories.some(memory => !memory.archivedAt && memory.kind === entry.kind && memory.content === entry.content)) {
+        throw new StoreError('memory_conflict', '已存在相同的活跃记忆，无需重复恢复');
+      }
+      const now = new Date().toISOString();
+      delete entry.archivedAt;
+      entry.updatedAt = now;
+      entry.history.push({ at: now, action: 'restored', origin: { type: 'manual' } });
       await this.writeDocument(id, document);
-      return true;
+      return entry;
     });
   }
 
@@ -493,9 +500,10 @@ export class BotStore {
   async listMemories(botId: string, filter: ListMemoriesFilter = {}): Promise<MemoryEntry[]> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const kind = filter.kind === undefined ? undefined : parseInput(memoryKindSchema, filter.kind, 'kind');
+    const includeArchived = parseInput(z.boolean().optional(), filter.includeArchived, 'includeArchived');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      return kind === undefined ? document.memories : document.memories.filter((memory) => memory.kind === kind);
+      return document.memories.filter(memory => (includeArchived || !memory.archivedAt) && (kind === undefined || memory.kind === kind));
     });
   }
 

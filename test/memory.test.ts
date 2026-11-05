@@ -51,6 +51,51 @@ test('记忆页编辑保留确认状态，只有明确确认候选才进入上�
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('记忆页遗忘、拒绝、恢复和来源按钮调用实际条目，归档分组不混入活跃记忆', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-memory-actions-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.ensureChief();
+    const source = ts.createSourceFile('memories.tsx', await readFile(new URL('../../client/memories.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const callbacks = new Map<string, string>();
+    let groups = '';
+    const visit = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'groups') groups = node.initializer!.getText(source);
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
+        const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+        const label = attributes.find(item => item.name.getText(source) === 'label')?.initializer;
+        const press = attributes.find(item => item.name.getText(source) === 'onPress')?.initializer;
+        if (label && press && ts.isJsxExpression(press) && press.expression) callbacks.set(ts.isStringLiteral(label) ? label.text : '归档操作', press.expression.getText(source));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    for (const label of ['归档操作', '恢复', '打开来源会话']) assert.ok(callbacks.has(label));
+    let pending: Promise<unknown> = Promise.resolve();
+    const run = (action: () => Promise<unknown>) => { pending = action(); return pending; };
+    const forget = ({ botId, memoryId }: { botId: string; memoryId: string }) => store.removeMemory(botId, memoryId);
+    const restore = ({ botId, memoryId }: { botId: string; memoryId: string }) => store.restoreMemory(botId, memoryId);
+    for (const kind of ['confirmed', 'candidate'] as const) {
+      const entry = await store.addMemory('chief', { content: `合成 ${kind}`, kind });
+      new Function('run', 'forget', 'botId', 'entry', `return (${callbacks.get('归档操作')});`)(run, forget, 'chief', entry)();
+      await pending;
+      assert.deepEqual(await store.getContextMemories('chief'), []);
+      const entries = await store.listMemories('chief', { includeArchived: true });
+      const select = new Function('entries', 'showArchived', `return (${groups});`);
+      assert.ok(select(entries, false).every((group: { items: unknown[] }) => group.items.length === 0));
+      assert.ok(select(entries, true).find((group: { key: string }) => group.key === 'archived').items.some((item: { id: string }) => item.id === entry.id));
+      new Function('run', 'restore', 'botId', 'entry', `return (${callbacks.get('恢复')});`)(run, restore, 'chief', entry)();
+      await pending;
+      assert.equal((await store.listMemories('chief'))[0].kind, kind);
+      assert.equal((await store.getContextMemories('chief')).length, kind === 'confirmed' ? 1 : 0);
+      await store.removeMemory('chief', entry.id);
+    }
+    const opened: string[] = [];
+    new Function('origin', 'openAgent', `return (${callbacks.get('打开来源会话')});`)({ type: 'message', agentId: 'source-agent' }, (id: string) => opened.push(id))();
+    assert.deepEqual(opened, ['source-agent']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('明确记忆回查跨页原生用户依据，伪造依据与跨Bot会话被拒绝', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-memory-'));
   try {

@@ -208,7 +208,7 @@ export default function contribute(server: PluginServerContext) {
     }
     return store.updateBot(input.botId, patch);
   });
-  server.handle(rpc.listMemories, input => store.listMemories(input.botId));
+  server.handle(rpc.listMemories, input => store.listMemories(input.botId, { includeArchived: input.includeArchived }));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
   server.handle(rpc.acknowledgeCreation, async input => { await store.acknowledgeCreation(input.botId, input.requestId); return {}; });
@@ -227,8 +227,10 @@ export default function contribute(server: PluginServerContext) {
     return journal.inspect(input.botId, { limit: input.limit, offset: input.offset });
   });
   // These RPCs are user-facing controls, never a tool automatically granted to Agents.
-  server.handle(rpc.saveMemory, input => store.addMemory(input.botId, input));
-  server.handle(rpc.correctMemory, input => store.updateMemory(input.botId, input.memoryId, input));
+  server.handle(rpc.saveMemory, input => store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.correctMemory, input => store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.forgetMemory, async input => ({ removed: await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
+  server.handle(rpc.restoreMemory, input => store.restoreMemory(input.botId, input.memoryId));
   server.handle(rpc.startSession, async (input, { paseo }) => {
     return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
   });

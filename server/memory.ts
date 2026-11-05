@@ -39,7 +39,7 @@ export async function rememberExplicit(
   if (!input.content.trim() || !userMessage.includes(input.content.trim())) {
     throw new Error('记忆内容不在原生用户消息中；请逐字保存用户明确声明，推断使用候选工具');
   }
-  const memory = await store.addMemory(botId, { content: input.content, kind: 'confirmed', source: 'user' });
+  const memory = await store.addMemory(botId, { content: input.content, kind: 'confirmed', source: 'user', origin: { type: 'message', agentId, userQuote: input.userQuote.trim() } });
   return { id: memory.id, content: memory.content, kind: 'confirmed' as const };
 }
 
@@ -68,10 +68,10 @@ async function correctionSource(store: BotStore, paseo: PaseoApi, botId: string,
 export async function correctExplicitMemory(store: BotStore, paseo: PaseoApi, botId: string, agentId: string, input: MemoryCorrection) {
   const userMessage = await correctionSource(store, paseo, botId, agentId, input);
   if (!input.content.trim() || !userMessage.includes(input.content.trim())) throw new Error('纠正内容须逐字来自用户当前消息；推断先存候选');
-  return store.updateMemory(botId, input.memoryId, { content: input.content, kind: 'confirmed' }, input.currentContent);
+  return store.updateMemory(botId, input.memoryId, { content: input.content, kind: 'confirmed', origin: { type: 'message', agentId, userQuote: input.userQuote.trim() } }, input.currentContent);
 }
 export async function forgetExplicitMemory(store: BotStore, paseo: PaseoApi, botId: string, agentId: string, input: MemoryForget) {
   await correctionSource(store, paseo, botId, agentId, input);
-  const removed = await store.removeMemory(botId, input.memoryId, input.currentContent);
-  return { memoryId: input.memoryId, removed, note: '仅移除本 Bot 记忆条目，不擦除原生历史或备份。' };
+  const removed = await store.removeMemory(botId, input.memoryId, input.currentContent, { type: 'message', agentId, userQuote: input.userQuote.trim() });
+  return { memoryId: input.memoryId, removed, note: '仅归档本 Bot 记忆条目，不再参与默认读取；可从记忆页恢复，不擦除原生历史或备份。' };
 }

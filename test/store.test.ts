@@ -467,6 +467,7 @@ describe('持久化形态', () => {
       'confirmedAt',
       'content',
       'createdAt',
+      'history',
       'id',
       'kind',
       'source',

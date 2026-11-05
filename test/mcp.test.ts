@@ -127,17 +127,19 @@ test('propose_memory 只写候选，Agent 无法自填 confirmed 或 source', as
       assert.equal(stored?.kind, 'candidate');
       assert.equal(stored?.source, 'agent');
       assert.equal(stored?.confirmedAt, null);
+      assert.deepEqual(stored?.origin, { type: 'agent', agentId: 'agent-1' });
       // 候选绝不注入上下文。
       assert.deepEqual(await store.getContextMemories('chief'), []);
 
       // 额外参数不能绕过绑定：kind/source/confirmed/botId 都会被丢弃。
       const forged = await client.callTool({
         name: 'propose_memory',
-        arguments: { content: '自填确认的假记忆', kind: 'confirmed', source: 'user', confirmed: true, botId: 'other' },
+        arguments: { content: '自填确认的假记忆', kind: 'confirmed', source: 'user', confirmed: true, botId: 'other', origin: { type: 'manual' } },
       });
       assert.notEqual(forged.isError, true);
       const memories = await store.listMemories('chief');
       assert.equal(memories.length, 2);
+      assert.deepEqual(memories[1].origin, { type: 'agent', agentId: 'agent-1' }, '来源来自服务端绑定，而非工具参数');
       assert.deepEqual(
         memories.map((memory) => [memory.kind, memory.source]),
         [

@@ -192,6 +192,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
             content: memory.content,
             createdAt: memory.createdAt,
             confirmedAt: memory.confirmedAt,
+            ...(memory.origin ? { origin: memory.origin } : {}),
           })),
           truncated: shown.length < matched.length,
         });
@@ -212,7 +213,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     async ({ content }) => {
       try {
         await scope.tasks?.requireActive(botId, agentId);
-        const memory = await store.addMemory(botId, { kind: 'candidate', content, source: 'agent' });
+        const memory = await store.addMemory(botId, { kind: 'candidate', content, source: 'agent', origin: { type: 'agent', agentId } });
         return toolResult({
           memoryId: memory.id,
           status: 'candidate',

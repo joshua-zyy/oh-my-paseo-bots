@@ -3,14 +3,19 @@ import { View } from 'react-native';
 import { useRpc } from '@getpaseo/plugin/client';
 import type { RpcOutput } from '@getpaseo/plugin';
 import * as rpc from '../shared/contracts.js';
-import { Actions, Button, Copy, Field, Notice, Section, useUi } from './ui.js';
+import type { MemoryOrigin } from '../shared/memory.js';
+import { Actions, Button, Copy, Disclosure, Field, Notice, Section, useUi } from './ui.js';
 import { useBotUpdates } from './use-bot-updates.js';
 
-export function Memories({ botId }: { botId: string }) {
+export function Memories({ botId, openAgent }: { botId: string; openAgent?: (agentId: string) => void }) {
   const updates = useBotUpdates(botId);
   const list = useRpc(rpc.listMemories);
   const save = useRpc(rpc.saveMemory);
   const correct = useRpc(rpc.correctMemory);
+  const forget = useRpc(rpc.forgetMemory);
+  const restore = useRpc(rpc.restoreMemory);
+  const [showArchived, setShowArchived] = useState(false);
+  const [opened, setOpened] = useState<string>();
   const { colors } = useUi();
   const [entries, setEntries] = useState<RpcOutput<typeof rpc.listMemories>>([]);
   const [editing, setEditing] = useState<{ id?: string; content: string; kind: 'candidate' | 'confirmed' }>();
@@ -20,18 +25,25 @@ export function Memories({ botId }: { botId: string }) {
   async function run(action?: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
-    try { await action?.(); setEntries(await list({ botId })); }
+    try { await action?.(); setEntries(await list({ botId, includeArchived: true })); }
     catch (failure) { setError(String(failure)); }
     finally { guard.current = false; setBusy(false); }
   }
   useEffect(() => {
     let active = true;
-    void list({ botId }).then(value => { if (active) setEntries(value); }).catch(failure => { if (active) setError(String(failure)); });
+    void list({ botId, includeArchived: true }).then(value => { if (active) setEntries(value); }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
   }, [botId, list, updates.revision]);
+  const groups = [
+    { key: 'candidate', title: '待确认', items: entries.filter(item => !item.archivedAt && item.kind === 'candidate') },
+    { key: 'confirmed', title: '已确认', items: entries.filter(item => !item.archivedAt && item.kind === 'confirmed') },
+    ...(showArchived ? [{ key: 'archived', title: '已归档', items: entries.filter(item => item.archivedAt) }] : []),
+  ];
+  const actions = { updated: '修改／确认', archived: '遗忘／拒绝', restored: '恢复', merged: '合并重复' };
   return <>
     <Notice error={error || updates.error} />
-    <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '', kind: 'confirmed' })} /></Actions>
+    <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '', kind: 'confirmed' })} /><Button label="已归档" selected={showArchived} disabled={busy} onPress={() => setShowArchived(value => !value)} /></Actions>
+    <Copy muted small>遗忘或拒绝后不再提供给 Bot，可在已归档中恢复；不会擦除会话历史和备份。</Copy>
     {editing && <View style={{ padding: 16, marginVertical: 16, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Field label={editing.id ? '纠正记忆' : '记忆内容'} value={editing.content} maxLength={8000} multiline disabled={busy} onChangeText={content => setEditing({ ...editing, content })} />
       <Actions><Button label="取消" disabled={busy} onPress={() => setEditing(undefined)} /><Button label="保存记忆" primary disabled={busy || !editing.content.trim()} onPress={() => void run(async () => {
@@ -41,15 +53,38 @@ export function Memories({ botId }: { botId: string }) {
       })} /></Actions>
       {editing.id && <Copy muted small>只修改当前记忆，历史和备份保留。</Copy>}
     </View>}
-    {(['candidate', 'confirmed'] as const).map(kind => {
-      const items = entries.filter(item => item.kind === kind);
-      return (items.length > 0 || kind === 'confirmed') && <Section key={kind} title={kind === 'candidate' ? '待确认' : '已确认'}>
-        {items.map(entry => <View key={entry.id} style={{ paddingVertical: 14, gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          <Copy>{entry.content}</Copy>
-          <Actions>{kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}<Button label="编辑" disabled={busy} onPress={() => setEditing({ id: entry.id, content: entry.content, kind: entry.kind })} /></Actions>
-        </View>)}
-        {!items.length && <Copy muted>暂无记忆</Copy>}
-      </Section>;
-    })}
+    {groups.map(group => (group.items.length > 0 || group.key !== 'candidate') && <Section key={group.key} title={group.title}>
+      {group.items.map(entry => <View key={entry.id} style={{ paddingVertical: 14, gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+        <Copy>{entry.content}</Copy>
+        <Actions>{entry.archivedAt ? <Button label="恢复" disabled={busy} onPress={() => void run(() => restore({ botId, memoryId: entry.id }))} /> : <>
+          {entry.kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}
+          <Button label="编辑" disabled={busy} onPress={() => setEditing({ id: entry.id, content: entry.content, kind: entry.kind })} />
+          <Button label={entry.kind === 'candidate' ? '拒绝' : '遗忘'} disabled={busy} onPress={() => void run(() => forget({ botId, memoryId: entry.id }))} />
+        </>}</Actions>
+        <Disclosure title="来源与变更记录" open={opened === entry.id} onPress={() => setOpened(opened === entry.id ? undefined : entry.id)}>
+          <Copy muted small>创建时间：{entry.createdAt}</Copy>
+          <MemoryOriginView label="创建来源" origin={entry.origin} openAgent={openAgent} />
+          {entry.history.map((change, index) => <View key={index} style={{ gap: 6, paddingTop: 10 }}>
+            <Copy muted small>{change.at} · {actions[change.action]}</Copy>
+            {change.action === 'updated' && <Copy muted small>修改前（{change.before.kind === 'candidate' ? '候选' : '已确认'}）：{change.before.content}</Copy>}
+            {change.action === 'merged' && <Copy muted small>合并到：{change.targetId}</Copy>}
+            <MemoryOriginView label="操作来源" origin={change.origin} openAgent={openAgent} />
+          </View>)}
+          {!entry.history.length && <Copy muted small>暂无变更记录</Copy>}
+        </Disclosure>
+      </View>)}
+      {!group.items.length && <Copy muted>暂无记忆</Copy>}
+    </Section>)}
+  </>;
+}
+
+function MemoryOriginView({ label, origin, openAgent }: { label: string; origin?: MemoryOrigin; openAgent?: (agentId: string) => void }) {
+  return <>
+    <Copy muted small>{label}：{!origin ? '未记录' : origin.type === 'manual' ? '用户在记忆页操作' : origin.type === 'message' ? '核对过的用户消息' : 'Agent 提出的候选'}</Copy>
+    {origin && origin.type !== 'manual' && <>
+      <Copy muted small>会话：{origin.agentId}</Copy>
+      {origin.type === 'message' && <Copy muted small>用户原话：{origin.userQuote}</Copy>}
+      <Button label="打开来源会话" disabled={!openAgent} onPress={() => openAgent?.(origin.agentId)} />
+    </>}
   </>;
 }

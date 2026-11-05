@@ -132,7 +132,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
             setPanel(null);
           } catch (failure) { setError(`${saved ? '设置已保存；后续操作失败：' : ''}${String(failure)}`); }
           finally { guard.current = false; setBusy(false); }
-        }} /> : panel === 'work' ? <Work key={selected} botId={selected} openAgent={openAgent} /> : panel === 'memories' ? <Memories key={selected} botId={selected} /> : panel === 'routines' ? <Routines key={selected} botId={selected} openAgent={openAgent} /> : null : null}
+        }} /> : panel === 'work' ? <Work key={selected} botId={selected} openAgent={openAgent} /> : panel === 'memories' ? <Memories key={selected} botId={selected} openAgent={openAgent} /> : panel === 'routines' ? <Routines key={selected} botId={selected} openAgent={openAgent} /> : null : null}
     </Modal.Content></Modal>
     <Modal title={detail?.title || '执行详情'} open={detail !== undefined} onOpenChange={open => { if (!open) setDetail(undefined); }}><Modal.Content scrollable={false} style={{ height: Math.max(300, Math.min(640, size.height - 80)), backgroundColor: colors.surface0 }} contentContainerStyle={{ flex: 1, padding: 0, gap: 0 }}>
       {detail && <><View style={{ paddingHorizontal: 24, paddingTop: 12 }}><Copy muted>{detail.executor}</Copy></View><Chat key={`${host.id}:${detail.agentId}`} botId={detail.owner} hostId={host.id} sessionId={detail.agentId} openAgent={id => openAgent(id, detail.owner)} /></>}
