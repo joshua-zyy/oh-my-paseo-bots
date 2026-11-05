@@ -140,4 +140,3 @@ export function ModelSelector({ catalog, value, disabled, onSelect }: { catalog:
     </NativeModal> : <Modal title={entry?.label ?? entry?.provider ?? '选择模型'} open={open} onOpenChange={setOpen}><Modal.Content scrollable={false} style={{ minHeight: 300 }} contentContainerStyle={{ padding: 0, gap: 0 }}>{content}</Modal.Content></Modal>}
   </>;
 }
-
