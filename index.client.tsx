@@ -13,7 +13,7 @@ import { Chat } from './client/chat.js';
 import { BotConfiguration } from './client/bot-config.js';
 import { HostSettings } from './client/host-settings.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
-import { Actions, Button, Copy, Field, Notice, UiProvider } from './client/ui.js';
+import { Actions, Button, Copy, Field, Notice, PickerRow, UiProvider } from './client/ui.js';
 
 type Panel = 'menu' | 'settings' | 'host' | 'work' | 'memories' | 'routines';
 const panels = { menu: '同事', settings: '同事设置', host: '默认设置', work: '工作记录', memories: '记忆', routines: '例程' };
@@ -80,24 +80,21 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
   }
   const roster = <>
     <TextInput accessibilityLabel="搜索同事" placeholder="搜索同事" value={search} onChangeText={setSearch} placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, backgroundColor: colors.surface2, borderRadius: 6, padding: 10, fontSize: compact ? 16 : 14, marginBottom: 12 }} />
-    {shown.map(bot => <Pressable key={bot.id} accessibilityRole="button" accessibilityLabel={bot.name} accessibilityState={{ selected: selected === bot.id }} disabled={busy} onPress={() => choose(bot.id)} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, minHeight: compact ? 44 : 40, borderRadius: 6, backgroundColor: selected === bot.id ? colors.surface2 : pressed ? colors.surface1 : 'transparent' })}>
-      <Icon name={bot.id === CHIEF_BOT_ID ? 'Users' : 'UserRound'} size={16} color={colors.foregroundMuted} />
-      <Text style={{ color: colors.foreground, fontSize: 14, flex: 1 }}>{bot.name}</Text>
-    </Pressable>)}
+    {shown.map(bot => <PickerRow key={bot.id} label={bot.name} icon={bot.id === CHIEF_BOT_ID ? 'Users' : 'UserRound'} selected={selected === bot.id} disabled={busy} onPress={() => choose(bot.id)} />)}
     {!shown.length && <Copy muted>没有匹配的同事</Copy>}
   </>;
   return <UiProvider value={{ colors, compact }}>
     <View onLayout={event => setSize(event.nativeEvent.layout)} style={{ flex: 1, flexDirection: compact ? 'column' : 'row', backgroundColor: colors.surface0 }}>
       {!compact && <View style={{ width: 220, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.surface1 }}>
-        <View style={{ padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Copy>同事</Copy><Button label="添加同事" icon="Plus" iconOnly disabled={busy} onPress={() => setCreating(true)} /></View>
+        <View style={{ padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Copy>同事</Copy><Button label="添加同事" icon="Plus" iconOnly size="xs" disabled={busy} onPress={() => setCreating(true)} /></View>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 20 }} keyboardShouldPersistTaps="handled">{roster}</ScrollView>
         <View style={{ padding: 10, borderTopWidth: 1, borderTopColor: colors.border }}><Button label="默认设置" icon="Settings2" disabled={busy} onPress={() => setPanel('host')} /></View>
       </View>}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={{ paddingHorizontal: compact ? 16 : 28, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 18, fontWeight: '500', flex: 1 }}>{current?.name || '同事'}</Text>}
-          <Button label="新对话" icon="SquarePen" iconOnly disabled={!current || busy} onPress={() => void newConversation()} />
-          <Button label="同事菜单" icon="Ellipsis" iconOnly disabled={!current || busy} onPress={() => setPanel('menu')} />
+        <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+          {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: '300', flex: 1 }}>{current?.name || '同事'}</Text>}
+          <Button label="新对话" icon="SquarePen" iconOnly size="xs" disabled={!current || busy} onPress={() => void newConversation()} />
+          <Button label="同事菜单" icon="Ellipsis" iconOnly size="xs" disabled={!current || busy} onPress={() => setPanel('menu')} />
         </View>
         {!creating && !panel && (error || updates.error) && <View style={{ paddingHorizontal: compact ? 16 : 28, paddingTop: 12 }}><Notice error={error || updates.error} /></View>}
         {current ? <Chat key={host.id} botId={selected} hostId={host.id} sessionId={conversations[selected]} onConversationChange={rememberConversation} openAgent={openAgent} /> : <View style={{ padding: 24 }}><Copy muted>读取同事中…</Copy></View>}

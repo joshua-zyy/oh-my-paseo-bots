@@ -57,6 +57,39 @@ test('表单复用原生设置组件，保留外部值同步、多行内容和�
   assert.equal(section.props.trailing, action);
 });
 
+test('聊天控件沿用宿主尺寸与主题，选中态不冒充主要操作', async () => {
+  const source = await sourceFile('client/ui.tsx');
+  const functions = source.statements.filter(ts.isFunctionDeclaration).filter(node => ['Button', 'PickerRow'].includes(node.name?.text ?? '')).map(node => node.getText(source)).join('\n');
+  const body = ts.transpileModule(`${functions}\nreturn { Button, PickerRow };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h' } }).outputText.replace(/export /g, '');
+  let compact = false;
+  const colors = { accent: 'accent', accentForeground: 'accentForeground', surface2: 'surface2', foreground: 'foreground', foregroundMuted: 'foregroundMuted' };
+  const render = new Function('h', 'useUi', 'Pressable', 'Text', 'View', 'Icon', body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }),
+    () => ({ colors, compact }), 'Pressable', 'Text', 'View', 'Icon',
+  );
+  let pressed = 0;
+  const action = render.Button({ label: '发送', primary: true, icon: 'ArrowUp', iconOnly: true, size: 'xs', disabled: true, onPress: () => pressed++ });
+  assert.equal(action.props.disabled, true);
+  assert.equal(action.props.accessibilityLabel, '发送');
+  assert.equal(action.props.style({ pressed: false }).backgroundColor, colors.accent);
+  assert.equal(action.props.style({ pressed: false }).minHeight, 28);
+  assert.equal(action.props.style({ pressed: false }).width, 28);
+  assert.equal(action.children[0].props.color, colors.accentForeground);
+  const selected = render.Button({ label: '同事', selected: true, onPress: () => pressed++ });
+  assert.equal(selected.props.accessibilityState.selected, true);
+  assert.equal(selected.props.style({ pressed: false }).backgroundColor, colors.surface2);
+  assert.equal(selected.props.style({ pressed: false }).minHeight, 32);
+  assert.equal(selected.props.style({ pressed: false, hovered: true }).opacity, 1);
+  compact = true;
+  assert.equal(render.Button({ label: '发送', size: 'xs', onPress() {} }).props.style({ pressed: false }).minHeight, 44);
+  const row = render.PickerRow({ label: '模型', selected: true, onPress: () => pressed++ });
+  assert.equal(row.props.accessibilityState.selected, true);
+  assert.equal(row.props.style({ pressed: false }).minHeight, 44);
+  row.props.onPress();
+  assert.equal(pressed, 1);
+  assert.ok(row.children.some((child: any) => child?.type === 'Icon' && child.props.name === 'Check'));
+});
+
 test('执行详情保留主聊天及草稿归属，只有打开同事聊天才切换固定身份', async () => {
   const source = await sourceFile('index.client.tsx');
   let callback = '';
@@ -353,32 +386,42 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   remember('chief', 'old', 'late');
   assert.equal(conversations.chief, 'new', '不覆盖用户已打开的其他对话');
   const settings = await sourceFile('client/chat-settings.tsx');
-  let chooseModel = '';
-  let choosePath = '';
-  const find = (node: ts.Node) => {
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(settings) === 'PathPicker') {
-      const attribute = node.attributes.properties.filter(ts.isJsxAttribute).find(item => item.name.getText(settings) === 'onChange');
-      if (attribute?.initializer && ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) choosePath = attribute.initializer.expression.getText(settings);
-    }
-    if (ts.isJsxOpeningElement(node) && node.tagName.getText(settings) === 'Pressable') {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-      if (attributes.find(item => item.name.getText(settings) === 'key')?.initializer?.getText(settings) === '{model.value}') {
-        const attribute = attributes.find(item => item.name.getText(settings) === 'onPress');
-        if (attribute?.initializer && ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) chooseModel = attribute.initializer.expression.getText(settings);
-      }
-    }
-    ts.forEachChild(node, find);
-  };
-  find(settings);
-  assert.ok(chooseModel && choosePath);
+  const component = settings.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'ConversationSettings')!;
+  const body = ts.transpileModule(`${component.getText(settings)}\nreturn ConversationSettings;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
+  let open = false;
+  let search = '';
   const values: unknown[] = [];
-  let open = true;
-  const pickModel = new Function('model', 'onChange', 'setOpen', ts.transpileModule(`return (${chooseModel});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)({ value: 'pi/vendor/model' }, (value: unknown) => values.push(value), (value: boolean) => { open = value; });
-  pickModel();
+  const catalog = { entries: [{ provider: 'pi', label: 'Pi' }, { provider: 'codex', label: 'Codex' }], models: [{ value: 'pi/vendor/model', label: '模型 Alpha', providerLabel: 'Pi' }, { value: 'codex/model', label: '模型 Beta', providerLabel: 'Codex' }], error: '', loading: false, reload() {} };
+  const render = new Function('h', 'Fragment', 'View', 'Modal', 'Button', 'PathPicker', 'TextInput', 'Notice', 'Copy', 'PickerRow', 'Section', 'useUi', 'useState', 'useModelCatalog', body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }),
+    'Fragment', 'View', { Content: 'Modal.Content' }, 'Button', 'PathPicker', 'TextInput', 'Notice', 'Copy', 'PickerRow', 'Section',
+    () => ({ colors: {}, compact: false }), (initial: unknown) => typeof initial === 'boolean' ? [open, (value: boolean) => { open = value; }] : [search, (value: string) => { search = value; }], () => catalog,
+  );
+  const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
+  const props = { execution: { provider: 'pi/vendor/model', cwd: 'D:/project' }, defaultCwd: 'D:/bot', disabled: false, onChange: (value: unknown) => values.push(value) };
+  const view = () => elements(render(props));
+  const trigger = view().find(node => node.type === 'Button' && node.props.label === '模型 Alpha')!;
+  trigger.props.onPress();
+  assert.equal(open, true);
+  const row = view().find(node => node.type === 'PickerRow' && node.props.label === '模型 Alpha')!;
+  assert.equal(row.props.selected, true);
+  row.props.onPress();
   assert.equal(open, false);
-  const pickPath = new Function('onChange', ts.transpileModule(`return (${choosePath});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)((value: unknown) => values.push(value));
-  pickPath('C:/Users/example/.paseo/oh-my-paseo-bots/workspaces/chief');
-  assert.deepEqual(values, [{ provider: 'pi/vendor/model' }, { cwd: 'C:/Users/example/.paseo/oh-my-paseo-bots/workspaces/chief' }]);
+  const path = view().find(node => node.type === 'PathPicker')!;
+  assert.equal(path.props.inline, true);
+  assert.deepEqual(path.props.defaultLocation, { path: 'D:/bot', label: 'Bot 工作区' });
+  path.props.onChange(undefined);
+  path.props.onChange('D:/selected-project');
+  assert.deepEqual(values, [{ provider: 'pi/vendor/model' }, { cwd: 'D:/selected-project' }]);
+  view().find(node => node.type === 'TextInput')!.props.onChangeText('codex');
+  assert.deepEqual(view().filter(node => node.type === 'Section').map(node => node.props.title), ['Codex']);
+  assert.deepEqual(view().filter(node => node.type === 'PickerRow').map(node => node.props.label), ['模型 Beta']);
+  search = 'not-found';
+  assert.equal(view().filter(node => node.type === 'PickerRow').length, 0);
+  assert.ok(JSON.stringify(view()).includes('没有匹配的模型'));
+  search = '';
+  props.disabled = true;
+  assert.ok(view().filter(node => ['Button', 'PathPicker', 'PickerRow'].includes(node.type)).every(node => node.props.disabled));
 });
 
 test('当前聊天订阅旧父会话的跨 Bot 子任务，旧任务报告变化仍触发工作刷新', async () => {

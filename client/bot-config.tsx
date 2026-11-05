@@ -20,7 +20,7 @@ export function BotConfiguration({ bot, botId, disabled, save }: { bot: BotDetai
   const blocked = disabled || readingCapability;
   const defaults = settings.status === 'ready' ? settings.values : undefined;
   return <>
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>{['同事', '模型', '技能', '连接'].map(item => <Button key={item} label={item} primary={tab === item} disabled={blocked} onPress={() => setTab(item)} />)}</View>
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>{['同事', '模型', '技能', '连接'].map(item => <Button key={item} label={item} selected={tab === item} disabled={blocked} onPress={() => setTab(item)} />)}</View>
       {tab === '同事' && <>
         <Field label="名称" value={value.name} disabled={disabled} maxLength={200} onChangeText={name => setValue(current => ({ ...current, name }))} />
         <Field label="职责" value={value.role} disabled={disabled} maxLength={200} multiline onChangeText={role => setValue(current => ({ ...current, role }))} />

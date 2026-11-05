@@ -163,23 +163,23 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
         {chat.agent?.pendingPermissions.map(permission => <ChatPermission key={`${agentId}:${permission.id}`} permission={permission} agent={api.agents.ref(agentId!)} />)}
       </View>
     </ScrollView>
-    {!chat.agent?.archivedAt && <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: compact ? 16 : 28, paddingTop: 12, paddingBottom: 16 }}>
+    {!chat.agent?.archivedAt && <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
       <View style={{ maxWidth: 800, width: '100%', alignSelf: 'center', gap: 8 }}>
         {draft.error && <><Notice error={draft.error} /><Actions><Button label="回查消息" disabled={draft.sending || offline} onPress={() => void observer.current?.refresh()} /></Actions></>}
         {draft.stopError && <Notice error={draft.stopError} />}
         {settingsError && <><Notice error={settingsError} /><Actions><Button label="重试读取设置" disabled={offline} onPress={() => setConfigurationRevision(value => value + 1)} /></Actions></>}
         {settingsChange?.error && <><Notice error={settingsChange.error} /><Actions><Button label="重试切换" disabled={blocked || running || draft.unknown || !!chat.agent?.pendingPermissions.length} onPress={() => void changeSettings()} /></Actions></>}
         {offline && <Copy muted>{connection === 'connecting' ? '连接中…' : '连接已断开'}</Copy>}
-        <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8, backgroundColor: colors.surface1 }}>
+        <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 16, paddingHorizontal: 16, paddingTop: compact ? 8 : 16, paddingBottom: compact ? 8 : 12, gap: 12, backgroundColor: colors.surface1 }}>
           <TextInput accessibilityLabel="消息" placeholder="消息" value={draft.text} multiline editable={!blocked && !draft.unknown} placeholderTextColor={colors.foregroundMuted} onChangeText={text => { if (agentId) setDrafts(current => ({ ...current, [agentId]: { text } })); }} onKeyPress={event => {
             const native = event.nativeEvent as { key: string; shiftKey?: boolean; isComposing?: boolean };
             if (!compact && native.key === 'Enter' && !native.shiftKey && !native.isComposing) { event.preventDefault(); void send(); }
-          }} style={{ color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 24, minHeight: 64, maxHeight: 160, paddingHorizontal: 8, paddingVertical: 10, textAlignVertical: 'top' }} />
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          }} style={{ color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 22, minHeight: 48, maxHeight: 160, padding: 0, textAlignVertical: 'top' }} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginHorizontal: -6 }}>
             {isConversation && <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}><ConversationSettings key={agentId} execution={settings?.execution ?? {}} defaultCwd={settings?.defaultCwd} disabled={blocked || !settings || running || draft.unknown || !!chat.agent?.pendingPermissions.length} onChange={value => void changeSettings(value)} /></View>}
-            <View style={{ flexDirection: 'row', gap: 4, marginLeft: 'auto' }}>
-              {running && <Button label="停止回复" icon="Square" iconOnly disabled={offline || draft.stopping || draft.sending || settingsChange?.pending || chat.agent?.status !== 'running'} onPress={() => void interruptReply()} />}
-              <Button label={draft.unknown ? '重试发送' : '发送'} icon="ArrowUp" iconOnly={!draft.unknown} primary disabled={blocked || !draft.text.trim()} onPress={() => void send()} />
+            <View style={{ flexDirection: 'row', flexShrink: 0, alignItems: 'center', gap: 4, marginLeft: 'auto' }}>
+              {running && <Button label="停止回复" icon="Square" iconOnly size="xs" disabled={offline || draft.stopping || draft.sending || settingsChange?.pending || chat.agent?.status !== 'running'} onPress={() => void interruptReply()} />}
+              <Button label={draft.unknown ? '重试发送' : '发送'} icon="ArrowUp" iconOnly={!draft.unknown} primary size="xs" disabled={blocked || !draft.text.trim()} onPress={() => void send()} />
             </View>
           </View>
         </View>

@@ -72,6 +72,8 @@ Paseo 是唯一执行、模型配置、会话、权限、多 Agent 通信和调�
 
 `workspace.create` 钩子仅将已登记 Bot、其原生调用方及本插件原生例程的执行工作区设为 `background`。普通 Paseo 工作区不变；显示 Bot 详情时通过明确 Agent ID 读取原生状态与历史，不打开普通工作区列表。
 
+UI 优先使用 `@getpaseo/plugin/client/ui` 的设置分组、卡片、行、输入及目录动作入口；多行和限长字段保留公开 TextInput，避免丢失编辑契约。`client/ui.tsx` 集中未公开控件的最小适配：按钮、工具栏触发器和选择行按 Paseo 0.14 的尺寸与主题颜色实现，模型按 Provider 分组并可搜索。完整 Composer、模型浏览器和宿主内部样式未作为插件 API 导出，不导入私有宿主模块或维护它们的副本；源码适配的许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 聊天页复用原生 projected timeline 和 Markdown／StreamedText，执行过程及信息通知折叠，警告与错误保持可见。消息发送使用固定 messageId；回执未确认时保留原文，先回查或明确重试同一消息，不自动重发。0.14 的 Agent 本地监听须配合含后台会话的 owned 列表观察，提供实时状态和权限更新；重连补读历史，replacement、缺口和 epoch 变化重读 tail，离开会话释放订阅。草稿按 Agent 保留于当前挂载页面；归档事项只读，返回主聊天继续对话。复用部分许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 0.14 原生 schedule 只等待根 Agent 的轮次，不等待全部子事项；结束轮次即可能将本次 run 收尾为 succeeded，`archiveOnFinish=false` 也不延长 run。例程先委派并推进独立工作，再使用已配置 CLI 的 `agent wait <完整子AgentId> --timeout 45s --json` 在同轮等原生事件，显式传已配置 `--home` 并按 shell 引用路径。读取 JSON 状态，不能仅看退出码：timeout 仅结束本次等待，可继续等待未完成同事；idle 不等于实际交付，无报告时查询活动并决定恢复或升级，不能反复等待 idle；error／permission 结合已保存报告与实际产物处理。CLI 等待不新增权限、调度框架或产品停止条件。
