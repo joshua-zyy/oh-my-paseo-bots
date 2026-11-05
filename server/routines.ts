@@ -164,6 +164,7 @@ export class BotRoutines {
   }
 
   async action(botId: string, id: string, action: 'pause' | 'resume' | 'run-once'): Promise<RoutineRecord> {
+    if (action !== 'pause' && (await this.options.store.getBot(botId))?.bot.archivedAt) throw new Error('同事已归档，请先恢复再运行例程');
     const record = await this.reconcile(owned(await this.read(), botId, id));
     if (record.state === 'canceled' || !record.nativeId) throw new Error('例程已取消或原生标识未确认，未触发运行');
     if (action === 'run-once') {

@@ -5,7 +5,7 @@ import { mcpImportSchema } from './capabilities.js';
 
 const id = z.string().min(1).max(64);
 const botView = botDetailsSchema.extend({ id });
-const savedBotView = botView.extend({ updatedAt: z.string() });
+const savedBotView = botView.extend({ updatedAt: z.string(), archivedAt: z.string().optional() });
 export const settings = defineSettings({
   id: 'bots', scope: 'host', version: 1,
   schema: z.object({
@@ -18,10 +18,12 @@ export const settings = defineSettings({
   }),
 });
 
-export const listBots = defineRpc({ name: 'bots.list', input: z.object({}), output: z.object({ bots: z.array(savedBotView), corrupt: z.array(z.string()) }) });
+export const listBots = defineRpc({ name: 'bots.list', input: z.object({ includeArchived: z.boolean().optional() }), output: z.object({ bots: z.array(savedBotView), corrupt: z.array(z.string()) }) });
 export const toolStatus = defineRpc({ name: 'bots.tools.status', input: z.object({}), output: z.object({ state: z.enum(['idle', 'ready', 'unavailable']), detail: z.string().optional() }) });
 export const createBot = defineRpc({ name: 'bots.create', input: botDetailsSchema.extend({ id: id.optional() }), output: z.object({ id }) });
 export const updateBot = defineRpc({ name: 'bots.update', input: z.object({ botId: id, patch: botPatchSchema, mcpImports: z.array(mcpImportSchema).optional() }), output: savedBotView });
+export const archiveBot = defineRpc({ name: 'bots.archive', input: z.object({ botId: id }), output: savedBotView });
+export const restoreBot = defineRpc({ name: 'bots.restore', input: z.object({ botId: id }), output: savedBotView });
 export const startSession = defineRpc({ name: 'bots.start', input: z.object({ botId: id, requestId: z.string().uuid().optional(), title: z.string().min(1).max(200), prompt: z.string().min(1) }), output: z.object({ agentId: z.string(), requestId: z.string() }) });
 export const openConversation = defineRpc({ name: 'bots.conversation.open', input: z.object({ botId: id }), output: z.object({ agentId: z.string() }) });
 export const createConversation = defineRpc({ name: 'bots.conversation.create', input: z.object({ botId: id }), output: z.object({ agentId: z.string() }) });

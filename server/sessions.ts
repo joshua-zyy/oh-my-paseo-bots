@@ -102,6 +102,7 @@ export async function startBotSession(
 export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive', overrides?: BotDetails['execution']) {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
+  if (data.bot.archivedAt) throw new Error('同事已归档，请先恢复再派发工作');
   const { skills, disabledMcpServers = [] } = data.bot.capabilities;
   const mcpServers = Object.fromEntries(Object.entries(data.bot.capabilities.mcpServers).filter(([name]) => !disabledMcpServers.includes(name)));
   for (const skill of skills) {

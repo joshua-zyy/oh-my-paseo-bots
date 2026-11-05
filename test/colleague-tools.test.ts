@@ -204,6 +204,22 @@ test('停止后的当前事项不能再委派给其他同事', async () => {
   });
 });
 
+test('归档同事不出现在委派目录，旧标识不能委派，恢复后沿用同一身份', async () => {
+  await withColleagues(async ({ client, store, started }) => {
+    await store.setArchived('research', true);
+    const listed = JSON.parse(text(await client.callTool({ name: 'list_colleagues', arguments: {} })));
+    assert.deepEqual(listed.map((bot: { id: string }) => bot.id), ['writer']);
+    const refused = await client.callTool({ name: 'delegate_to_colleague', arguments: input });
+    assert.equal(refused.isError, true);
+    assert.match(text(refused), /归档/);
+    assert.equal(started.length, 0);
+    await store.setArchived('research', false);
+    assert.notEqual((await client.callTool({ name: 'delegate_to_colleague', arguments: input })).isError, true);
+    assert.equal(started[0].botId, 'research');
+    assert.equal((await client.listTools()).tools.some(tool => /archive|restore|delete/.test(tool.name)), false, '归档恢复只由用户页面操作，不授予 Agent');
+  });
+});
+
 test('自己、未注册或非法目标都不能启动新原生会话', async () => {
   await withColleagues(async ({ client, started }) => {
     for (const colleagueId of ['chief', 'missing', '../research']) {

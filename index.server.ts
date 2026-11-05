@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
+import { archiveBot } from './server/bot-archive.js';
 import { BotJournal } from './server/journal.js';
 import { botSessionConfig, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
@@ -93,6 +94,7 @@ export default function contribute(server: PluginServerContext) {
     const task = await tasks.get(botId, agentId);
     const { agent, previousAgentIds } = await readConversation(store, paseo, botId, agentId);
     if (!task?.conversation || agent.archivedAt) throw new Error('未找到本 Bot 的有效持续聊天');
+    if ((await store.getBot(botId))?.bot.archivedAt) throw new Error('同事已归档，请先恢复再发送消息');
     const memories = await store.getContextMemories(botId);
     return {
       type: 'text' as const, mimeType: 'text/plain' as const, title: '最新确认记忆',
@@ -174,11 +176,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(officeRpc.revokeMailGrant, async input => { await office.mail.revokeGrant(input.botId, input.grantId); return {}; });
   server.handle(rpc.toolStatus, () => mcp.status());
   server.handle(rpc.stopReply, (input, { paseo }) => stopBotReply({ ...input, store, tasks, paseo, cli: readCli }));
-  server.handle(rpc.listBots, async () => {
+  server.handle(rpc.archiveBot, (input, { paseo }) => archiveBot({ store, tasks, routines, paseo }, input.botId));
+  server.handle(rpc.restoreBot, input => store.setArchived(input.botId, false));
+  server.handle(rpc.listBots, async ({ includeArchived }) => {
     const corrupt: string[] = [];
     const bots = await store.listBots(id => corrupt.push(id));
     if (!bots.some(bot => bot.id === CHIEF_BOT_ID) && !corrupt.includes(CHIEF_BOT_ID)) bots.unshift(await store.ensureChief());
-    return { bots, corrupt };
+    return { bots: includeArchived ? bots : bots.filter(bot => !bot.archivedAt), corrupt };
   });
   server.handle(filesRpc.listDirectory, readDirectory);
   server.handle(filesRpc.inspectSkill, input => readSkill(input.path));
@@ -232,6 +236,7 @@ export default function contribute(server: PluginServerContext) {
     currentPaseo = paseo;
     const bot = await store.getBot(botId);
     if (!bot) throw new Error(`Bot 不存在：${botId}`);
+    if (bot.bot.archivedAt) throw new Error('同事已归档，请先恢复再打开聊天');
     const conversations = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active').reverse();
     const intents = await store.listPendingCreations(botId);
     let pendingRequestId: string | undefined;

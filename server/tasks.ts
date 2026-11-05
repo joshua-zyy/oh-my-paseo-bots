@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import { execCommand } from '@getpaseo/plugin/server';
 import type { PaseoApi } from '@getpaseo/client';
 import { z } from 'zod';
-import { botIdPattern, type BotStore } from './store.js';
+import { botIdPattern, type BotRecord, type BotStore } from './store.js';
 
 /**
  * A06/A08 的最小原生跟进关联：只记录「这个 Bot 事项」与原生会话、原生 heartbeat 的对应关系，
@@ -361,7 +361,8 @@ export class TaskTracker {
   ): Promise<TaskRecord> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(agentIdSchema, agentId, 'agentId');
-    await this.requireAgent(id, aid);
+    const bot = await this.requireAgent(id, aid);
+    if (bot.bot.archivedAt) throw new TaskError('task_not_active', '同事已归档，请先恢复再继续工作');
     return this.withFileLock(id, async () => {
       const document = await this.readDocument(id);
       const existing = document.tasks.find((task) => task.agentId === aid);
@@ -720,13 +721,14 @@ export class TaskTracker {
   }
 
   /** 关联来自服务端可信记录：本 Bot 的原生会话或创建意图。 */
-  private async requireAgent(botId: string, agentId: string): Promise<void> {
+  private async requireAgent(botId: string, agentId: string): Promise<BotRecord> {
     const bot = await this.store.getBot(botId);
     if (!bot) throw new TaskError('bot_not_found', `Bot ${botId} 不存在`);
     const linked =
       bot.sessions.some((session) => session.sessionId === agentId) ||
       bot.creationIntents.some((intent) => intent.agentId === agentId);
     if (!linked) throw new TaskError('agent_not_linked', `Agent ${agentId} 未关联到 Bot ${botId}`);
+    return bot;
   }
 
   private withFileLock<T>(botId: string, task: () => Promise<T>): Promise<T> {

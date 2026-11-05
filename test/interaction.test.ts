@@ -412,6 +412,43 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   assert.ok(view().filter(node => ['ModelSelector', 'PathPicker'].includes(node.type)).every(node => node.props.disabled));
 });
 
+test('归档入口先确认，恢复与归档使用实际 Bot 标识且失败不切走同事', async () => {
+  const source = await sourceFile('index.client.tsx');
+  let action = '';
+  const presses = new Map<string, string>();
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'changeArchive') action = node.getText(source);
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+      const label = attributes.find(attribute => attribute.name.getText(source) === 'label')?.initializer;
+      const press = attributes.find(attribute => attribute.name.getText(source) === 'onPress')?.initializer;
+      if (label && ts.isStringLiteral(label) && press) presses.set(label.text, press.getText(source));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(action);
+  assert.equal(presses.get('归档同事'), "{() => setPanel('archive')}");
+  assert.ok(presses.get('确认归档')?.includes('changeArchive(current.id, true)'));
+  assert.ok(presses.get('已归档同事')?.includes("setPanel('archived')"));
+  const calls: string[] = [];
+  const guard = { current: false };
+  let failure = false;
+  const run = new Function('archive', 'restore', 'refresh', 'choose', 'CHIEF_BOT_ID', 'guard', 'setBusy', 'setError', ts.transpileModule(`${action}\nreturn changeArchive;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(
+    async ({ botId }: { botId: string }) => { calls.push(`archive:${botId}`); if (failure) throw new Error('未结束事项'); },
+    async ({ botId }: { botId: string }) => { calls.push(`restore:${botId}`); },
+    async () => calls.push('refresh'), (id: string) => calls.push(`choose:${id}`), 'chief', guard, () => {}, (error: string) => { if (error) calls.push(error); },
+  );
+  await run('helper', true);
+  assert.deepEqual(calls.splice(0), ['archive:helper', 'refresh', 'choose:chief']);
+  await run('other', false);
+  assert.deepEqual(calls.splice(0), ['restore:other', 'refresh']);
+  failure = true;
+  await run('helper', true);
+  assert.deepEqual(calls, ['archive:helper', 'Error: 未结束事项']);
+  assert.equal(guard.current, false);
+});
+
 test('当前聊天订阅旧父会话的跨 Bot 子任务，旧任务报告变化仍触发工作刷新', async () => {
   const source = await sourceFile('client/chat-work.tsx');
   let callback = '';

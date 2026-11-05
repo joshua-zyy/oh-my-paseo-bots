@@ -32,6 +32,7 @@ export interface BotIdentity extends BotDetails {
   id: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 }
 
 /** Bot 关联的一个 Paseo 原生会话。只存标识与最小标注，不存会话内容。 */
@@ -133,6 +134,7 @@ export type StoreErrorCode =
   | 'invalid_input'
   | 'bot_exists'
   | 'bot_not_found'
+  | 'bot_archived'
   | 'memory_not_found'
   | 'memory_conflict'
   | 'creation_not_found'
@@ -178,6 +180,7 @@ const botIdentitySchema = botDetailsSchema.extend({
   id: botIdSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
+  archivedAt: timestampSchema.optional(),
 });
 
 const sessionLinkSchema = z.object({
@@ -349,6 +352,23 @@ export class BotStore {
     });
   }
 
+  /** 仅改变同事可用状态；不删除记忆、会话、工作区或历史。 */
+  async setArchived(botId: string, archived: boolean): Promise<BotIdentity> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    if (archived && id === CHIEF_BOT_ID) throw new StoreError('invalid_input', '主 Bot Chief 不能归档');
+    return this.withLock(id, async () => {
+      const document = await this.requireDocument(id);
+      if (Boolean(document.bot.archivedAt) === archived) return document.bot;
+      if (archived && document.creationIntents.some(intent => intent.status === 'pending')) throw new StoreError('invalid_input', '存在未决创建，请先回查创建结果');
+      const now = new Date().toISOString();
+      if (archived) document.bot.archivedAt = now;
+      else delete document.bot.archivedAt;
+      document.bot.updatedAt = now;
+      await this.writeDocument(id, document);
+      return document.bot;
+    });
+  }
+
   async getBot(botId: string): Promise<BotRecord | null> {
     const id = parseInput(botIdSchema, botId, 'botId');
     return this.withLock(id, () => this.readDocument(id));
@@ -496,6 +516,7 @@ export class BotStore {
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
 
+      if (document.bot.archivedAt) throw new StoreError('bot_archived', '同事已归档，请先恢复再派发工作');
       const byRequest = document.creationIntents.find((intent) => intent.requestId === value.requestId);
       if (byRequest) {
         if (byRequest.fingerprint !== value.fingerprint) {
