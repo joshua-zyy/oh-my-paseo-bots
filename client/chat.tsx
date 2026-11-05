@@ -174,7 +174,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
           <TextInput accessibilityLabel="消息" placeholder="消息" value={draft.text} multiline editable={!blocked && !draft.unknown} placeholderTextColor={colors.foregroundMuted} onChangeText={text => { if (agentId) setDrafts(current => ({ ...current, [agentId]: { text } })); }} onKeyPress={event => {
             const native = event.nativeEvent as { key: string; shiftKey?: boolean; isComposing?: boolean };
             if (!compact && native.key === 'Enter' && !native.shiftKey && !native.isComposing) { event.preventDefault(); void send(); }
-          }} style={{ color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 22, minHeight: 48, maxHeight: 160, padding: 0, textAlignVertical: 'top' }} />
+          }} style={{ outlineWidth: 0, color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 22, minHeight: 48, maxHeight: 160, padding: 0, textAlignVertical: 'top' }} />
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginHorizontal: -6 }}>
             {isConversation && <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}><ConversationSettings key={agentId} execution={settings?.execution ?? {}} defaultCwd={settings?.defaultCwd} disabled={blocked || !settings || running || draft.unknown || !!chat.agent?.pendingPermissions.length} onChange={value => void changeSettings(value)} /></View>}
             <View style={{ flexDirection: 'row', flexShrink: 0, alignItems: 'center', gap: 4, marginLeft: 'auto' }}>

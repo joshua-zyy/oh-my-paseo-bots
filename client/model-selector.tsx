@@ -80,7 +80,7 @@ export function ModelSelector({ catalog, value, disabled, onSelect }: { catalog:
           setActive(next); scroll.current?.scrollTo({ y: Math.max(0, (next - 3) * 40), animated: false });
         }
         if (key === 'Enter' && active >= 0 && options[active]) { event.preventDefault(); choose(options[active].value); }
-      }} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 16 : 14, padding: 0 }} />
+      }} style={{ outlineWidth: 0, flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 16 : 14, padding: 0 }} />
     </View>
     <ScrollView ref={scroll} style={{ flex: 1 }} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 8 }}>
       {catalog.error && <View style={{ padding: 16 }}><Notice error={catalog.error} /><Button label="重试读取模型" disabled={catalog.loading} onPress={catalog.reload} /></View>}

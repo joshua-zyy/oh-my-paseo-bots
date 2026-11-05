@@ -93,7 +93,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
     finally { guard.current = false; setBusy(false); }
   }
   const roster = <>
-    <TextInput accessibilityLabel="搜索同事" placeholder="搜索同事" value={search} onChangeText={setSearch} placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, backgroundColor: colors.surface2, borderRadius: 6, padding: 10, fontSize: compact ? 16 : 14, marginBottom: 12 }} />
+    <TextInput accessibilityLabel="搜索同事" placeholder="搜索同事" value={search} onChangeText={setSearch} placeholderTextColor={colors.foregroundMuted} style={{ outlineWidth: 0, color: colors.foreground, backgroundColor: colors.surface2, borderRadius: 6, padding: 10, fontSize: compact ? 16 : 14, marginBottom: 12 }} />
     {shown.map(bot => <PickerRow key={bot.id} label={bot.name} icon={bot.id === CHIEF_BOT_ID ? 'Users' : 'UserRound'} selected={selected === bot.id} disabled={busy} onPress={() => choose(bot.id)} />)}
     {!shown.length && <Copy muted>没有匹配的同事</Copy>}
   </>;

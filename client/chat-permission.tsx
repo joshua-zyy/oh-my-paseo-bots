@@ -41,7 +41,7 @@ export function ChatPermission({ permission, agent }: { permission: PaseoAgent['
         {(question.options.length === 0 || question.allowOther) && <TextInput accessibilityLabel={question.question} value={texts[index] ?? ''} placeholder={question.placeholder ?? '输入回答'} editable={!busy} onChangeText={text => {
           setTexts(current => ({ ...current, [index]: text }));
           if (!question.multiSelect && text) setSelected(current => ({ ...current, [index]: [] }));
-        }} placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: compact ? 16 : 14, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />}
+        }} placeholderTextColor={colors.foregroundMuted} style={{ outlineWidth: 0, color: colors.foreground, fontSize: compact ? 16 : 14, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }} />}
       </View>)}
       <Actions><Button label={questions.find(question => question.dismissLabel)?.dismissLabel || '跳过'} disabled={busy} onPress={() => void respond(questions.every(question => question.allowEmpty && !question.options.length)
         ? { behavior: 'allow', updatedInput: { ...permission.input, answers: questionAnswers(questions, {}, {}) } }

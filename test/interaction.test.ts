@@ -12,6 +12,25 @@ async function sourceFile(path: string) {
   return ts.createSourceFile(path, await readFile(resolve(root, path), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 }
 
+test('裸输入沿用原生输入层，不显示浏览器绿色内层焦点框', async () => {
+  for (const path of ['index.client.tsx', 'client/chat.tsx', 'client/model-selector.tsx', 'client/ui.tsx', 'client/chat-permission.tsx', 'client/connections.tsx']) {
+    const source = await sourceFile(path);
+    let checked = 0;
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'TextInput') {
+        const style = node.attributes.properties.filter(ts.isJsxAttribute).find(attribute => attribute.name.getText(source) === 'style')?.initializer;
+        assert.ok(style && ts.isJsxExpression(style) && style.expression && ts.isObjectLiteralExpression(style.expression), path);
+        const outline = style.expression.properties.filter(ts.isPropertyAssignment).find(property => property.name.getText(source) === 'outlineWidth');
+        assert.equal(outline?.initializer.getText(source), '0', path);
+        checked++;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    assert.ok(checked, path);
+  }
+});
+
 test('表单复用原生设置组件，保留外部值同步、多行内容和长度限制', async () => {
   const source = await sourceFile('client/ui.tsx');
   const functions = source.statements.filter(ts.isFunctionDeclaration).filter(node => ['Field', 'Section'].includes(node.name?.text ?? '')).map(node => node.getText(source)).join('\n');
