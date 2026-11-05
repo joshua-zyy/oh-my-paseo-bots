@@ -12,6 +12,51 @@ async function sourceFile(path: string) {
   return ts.createSourceFile(path, await readFile(resolve(root, path), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 }
 
+test('表单复用原生设置组件，保留外部值同步、多行内容和长度限制', async () => {
+  const source = await sourceFile('client/ui.tsx');
+  const functions = source.statements.filter(ts.isFunctionDeclaration).filter(node => ['Field', 'Section'].includes(node.name?.text ?? '')).map(node => node.getText(source)).join('\n');
+  const body = ts.transpileModule(`${functions}\nreturn { Field, Section };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h' } }).outputText.replace(/export /g, '');
+  const effects: (() => void)[] = [];
+  const input = { current: null as null | { getText(): string; replaceText(value: string): void } };
+  const render = new Function('h', 'useUi', 'useRef', 'useEffect', 'SettingsCard', 'SettingsInput', 'SettingsRow', 'SettingsSection', 'TextInput', 'View', 'Copy', 'Text', body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }),
+    () => ({ colors: {}, compact: false }), () => input, (effect: () => void) => effects.push(effect),
+    'SettingsCard', 'SettingsInput', 'SettingsRow', 'SettingsSection', 'TextInput', 'View', 'Copy', 'Text',
+  );
+  const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
+  const changes: string[] = [];
+  const props = { label: 'Paseo CLI', value: 'old', disabled: true, onChangeText: (value: string) => changes.push(value) };
+  const single = elements(render.Field(props)).find(node => node.type === 'SettingsInput');
+  assert.ok(single, '可复用的单行输入交给宿主渲染');
+  assert.equal(single.props.label, props.label);
+  assert.equal(single.props.initialValue, 'old');
+  assert.equal(single.props.disabled, true);
+  single.props.onChangeText('typed');
+  assert.deepEqual(changes, ['typed']);
+  let text = 'old';
+  let replacements = 0;
+  single.props.ref.current = { getText: () => text, replaceText: (value: string) => { text = value; replacements++; } };
+  effects.splice(0).forEach(effect => effect());
+  assert.equal(replacements, 0, '父组件回显不重设宿主输入光标');
+  render.Field({ ...props, value: 'reset' });
+  effects.splice(0).forEach(effect => effect());
+  assert.equal(text, 'reset', '程序更新仍同步到原生非受控输入');
+  const limited = elements(render.Field({ ...props, maxLength: 200 }));
+  assert.ok(limited.some(node => node.type === 'SettingsRow' && node.props.label === props.label));
+  assert.equal(limited.find(node => node.type === 'TextInput')?.props.maxLength, 200);
+  const multiline = elements(render.Field({ ...props, value: '第一行\n第二行', multiline: true, maxLength: 8000 }));
+  assert.ok(multiline.some(node => node.type === 'SettingsSection' && node.props.title === props.label));
+  const editor = multiline.find(node => node.type === 'TextInput')!;
+  assert.equal(editor.props.value, '第一行\n第二行');
+  assert.equal(editor.props.multiline, true);
+  assert.equal(editor.props.maxLength, 8000);
+  assert.equal(editor.props.editable, false);
+  const action = { type: 'action' };
+  const section = render.Section({ title: '技能', action, children: 'content' });
+  assert.equal(section.type, 'SettingsSection');
+  assert.equal(section.props.trailing, action);
+});
+
 test('执行详情保留主聊天及草稿归属，只有打开同事聊天才切换固定身份', async () => {
   const source = await sourceFile('index.client.tsx');
   let callback = '';

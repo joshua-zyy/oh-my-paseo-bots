@@ -1,7 +1,7 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
 import type { PluginTheme } from '@getpaseo/plugin';
 import { Pressable, Text, View } from 'react-native';
-import { Icon, TextInput } from '@getpaseo/plugin/client/ui';
+import { Icon, SettingsCard, SettingsInput, SettingsRow, SettingsSection, TextInput, type SettingsInputHandle } from '@getpaseo/plugin/client/ui';
 
 const Appearance = createContext<{ colors: PluginTheme['colors']; compact: boolean } | null>(null);
 export const UiProvider = Appearance.Provider;
@@ -31,21 +31,18 @@ export function Actions({ children }: { children: ReactNode }) {
 
 export function Field({ label, value, onChangeText, multiline = false, placeholder, disabled = false, maxLength }: { label: string; value: string; onChangeText(text: string): void; multiline?: boolean; placeholder?: string; disabled?: boolean; maxLength?: number }) {
   const { colors, compact } = useUi();
-  return <View style={{ gap: 8, marginBottom: 18 }}>
-    <Copy>{label}</Copy>
-    <TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} multiline={multiline} placeholder={placeholder} placeholderTextColor={colors.foregroundMuted} editable={!disabled} maxLength={maxLength} autoCapitalize="none" autoCorrect={false} style={{ minHeight: multiline ? 120 : compact ? 44 : 38, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface1, color: colors.foreground, fontSize: compact ? 16 : 14, textAlignVertical: multiline ? 'top' : 'center', opacity: disabled ? 0.5 : 1 }} />
-  </View>;
+  const input = useRef<SettingsInputHandle>(null);
+  useEffect(() => {
+    if (input.current && input.current.getText() !== value) input.current.replaceText(value);
+  }, [value]);
+  if (!multiline && maxLength === undefined) return <SettingsCard><SettingsInput ref={input} label={label} initialValue={value} onChangeText={onChangeText} placeholder={placeholder} disabled={disabled} /></SettingsCard>;
+  // The public SettingsInput has no multiline or maxLength props; retain those contracts here.
+  const editor = <TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} multiline={multiline} placeholder={placeholder} placeholderTextColor={colors.foregroundMuted} editable={!disabled} maxLength={maxLength} autoCapitalize="none" autoCorrect={false} style={{ minHeight: multiline ? 96 : compact ? 44 : 32, minWidth: multiline ? undefined : 180, paddingHorizontal: multiline ? 16 : 12, paddingVertical: multiline ? 12 : 6, borderRadius: 6, backgroundColor: colors.surface1, color: colors.foreground, fontSize: compact ? 16 : 14, lineHeight: 20, textAlignVertical: multiline ? 'top' : 'center', opacity: disabled ? 0.5 : 1 }} />;
+  return multiline ? <SettingsSection title={label}><SettingsCard>{editor}</SettingsCard></SettingsSection> : <SettingsCard><SettingsRow label={label}>{editor}</SettingsRow></SettingsCard>;
 }
 
 export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
-  const { colors } = useUi();
-  return <View style={{ marginBottom: 28 }}>
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: '500' }}>{title}</Text>
-      {action}
-    </View>
-    {children}
-  </View>;
+  return <SettingsSection title={title} trailing={action}>{children}</SettingsSection>;
 }
 
 export function Notice({ error }: { error: string }) {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { usePaseo, useRpc } from '@getpaseo/plugin/client';
-import { Icon, Modal, SettingsRow, SettingsSelect } from '@getpaseo/plugin/client/ui';
+import { Icon, Modal, SettingsAction, SettingsSelect } from '@getpaseo/plugin/client/ui';
 import { Pressable, Text, View } from 'react-native';
 import * as rpc from '../shared/files.js';
 import { Actions, Button, Copy, Field, Notice, useUi } from './ui.js';
@@ -43,7 +43,7 @@ export function PathPicker({ label, value, initialPath, kind = 'directory', inhe
       <Icon name="Folder" size={16} color={colors.foregroundMuted} />
       <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 13, flexShrink: 1 }}>{name || label}</Text>
       <Icon name="ChevronDown" size={12} color={colors.foregroundMuted} />
-    </Pressable> : <SettingsRow label={label}><Button label={name || (inherit ? '默认文件夹' : '选择…')} icon={kind === 'directory' ? 'Folder' : 'Plus'} disabled={disabled} onPress={show} /></SettingsRow>}
+    </Pressable> : <SettingsAction label={label} actionLabel={name || (inherit ? '默认文件夹' : '选择…')} disabled={disabled} onPress={show} />}
     <Modal title={kind === 'skill' ? '选择技能' : kind === 'mcp' ? '选择 MCP 配置' : inline ? '选择工作区' : '选择文件夹'} open={open} onOpenChange={setOpen}>
       <Modal.Content>
         <Notice error={error} />
