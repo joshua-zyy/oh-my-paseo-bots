@@ -10,7 +10,7 @@ export const conversationConfiguration = defineRpc({
 });
 export const changeConversation = defineRpc({
   name: 'bots.conversation.change',
-  input: z.object({ botId: z.string().min(1), agentId: z.string().min(1), requestId: z.uuid(), execution: botExecutionSchema.pick({ provider: true, cwd: true }).refine(value => value.provider !== undefined || value.cwd !== undefined, '请选择模型或工作区') }),
+  input: z.object({ botId: z.string().min(1), agentId: z.string().min(1), requestId: z.uuid(), execution: botExecutionSchema.pick({ provider: true, cwd: true, thinkingOptionId: true }).refine(value => value.provider !== undefined || value.cwd !== undefined || value.thinkingOptionId !== undefined, '请选择模型、思考等级或工作区') }),
   output: z.object({ agentId: z.string() }),
 });
 

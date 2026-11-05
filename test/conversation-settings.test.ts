@@ -26,7 +26,10 @@ async function fixture({ home = true } = {}) {
   const messages: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
   let loseCreation = false;
   let failCreation = false;
-  const paseo = { workspaces: { create: async (input: { source: { path: string }; background: boolean }) => {
+  const paseo = { providers: { snapshot: async () => ({ entries: [
+    { provider: 'pi', enabled: true, status: 'ready', models: [{ id: 'vendor/old', label: 'Old', thinkingOptions: [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }], defaultThinkingOptionId: 'low' }] },
+    { provider: 'codex', enabled: true, status: 'ready', models: [{ id: 'new-model', label: 'New', thinkingOptions: [{ id: 'medium', label: 'Medium' }] }] },
+  ] }) }, workspaces: { create: async (input: { source: { path: string }; background: boolean }) => {
     assert.equal(input.background, true);
     return { agents: { create: async (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => {
       if (failCreation) { failCreation = false; throw new Error('原生创建尚未执行'); }
@@ -90,6 +93,41 @@ function payload(result: unknown) {
   assert.notEqual(value.isError, true, value.content[0].text);
   return JSON.parse(value.content[0].text);
 }
+
+test('聊天思考等级采用宿主目录，保留草稿所需历史衔接、原模型和Bot默认，子事项继承新等级', async () => {
+  const host = await fixture();
+  try {
+    const first = await host.invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
+    const request = { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { thinkingOptionId: 'high' } };
+    const changed = await host.invoke('bots.conversation.change', request) as { agentId: string };
+    assert.notEqual(changed.agentId, first.agentId);
+    const created = host.created.find(item => item.agentId === changed.agentId)!;
+    assert.equal(created.config.thinkingOptionId, 'high');
+    assert.equal(created.config.provider, 'pi/vendor/old');
+    assert.equal(created.config.modeId, 'old-mode');
+    assert.equal(created.cwd, host.directory);
+    assert.equal(created.labels?.['paseo-guys.conversation.previous'], first.agentId);
+    assert.equal(created.prompt, undefined);
+    assert.deepEqual(await host.invoke('bots.conversation.change', request), changed, '丢失回执可沿原请求核实，不重建');
+    const count = host.created.length;
+    assert.deepEqual(await host.invoke('bots.conversation.change', { ...request, agentId: changed.agentId, requestId: randomUUID() }), changed);
+    assert.equal(host.created.length, count, '重复选择当前等级不创建会话');
+    const client = await host.connect(changed.agentId);
+    const task = payload(await client.callTool({ name: 'start_task', arguments: { requestId: 'thinking-child', title: '合成工作', prompt: '仅检查合成资料' } }));
+    assert.equal(host.created.find(item => item.agentId === task.agentId)!.config.thinkingOptionId, 'high');
+    const original = (await new BotStore({ baseDir: host.directory }).getBot('chief'))!.bot.execution;
+    assert.deepEqual(original, {}, '聊天选择不修改Bot未来会话默认');
+    const reset = await host.invoke('bots.conversation.change', { ...request, agentId: changed.agentId, requestId: randomUUID(), execution: { thinkingOptionId: null } }) as { agentId: string };
+    assert.equal(host.created.find(item => item.agentId === reset.agentId)!.config.thinkingOptionId, undefined, '模型默认不回落宿主 old-thinking');
+    const configuration = await host.invoke('bots.conversation.configuration', { botId: 'chief', agentId: reset.agentId }) as { execution: { thinkingOptionId: string | null } };
+    assert.equal(configuration.execution.thinkingOptionId, null);
+    const beforeInvalid = host.created.length;
+    await assert.rejects(() => host.invoke('bots.conversation.change', { ...request, requestId: randomUUID(), execution: { thinkingOptionId: 'invented-level' } }), /思考|支持/);
+    assert.equal(host.created.length, beforeInvalid);
+    host.statuses.set(first.agentId, 'running');
+    await assert.rejects(() => host.invoke('bots.conversation.change', { ...request, requestId: randomUUID() }), /回复|结束/);
+  } finally { await host.close(); }
+});
 
 test('消息框切换模型和工作区新建原生会话，保留历史链、Bot 默认配置和旧任务绑定', async () => {
   const host = await fixture();

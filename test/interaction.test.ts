@@ -387,6 +387,16 @@ test('消息框切换保留草稿并沿原请求重试，异步完成后仍只�
   assert.equal(drafts.later.text, text);
   assert.equal(drafts.helper.text, '另一位同事的草稿');
   assert.equal(changing.current.size, 0);
+  drafts.old = { text }; fail = true; wait = undefined;
+  await invoke({ thinkingOptionId: 'high' });
+  const high = requests.at(-1)!;
+  await invoke({ thinkingOptionId: 'low' });
+  const low = requests.at(-1)!;
+  assert.notEqual(low.requestId, high.requestId, '改选思考等级不能重用上一等级的失败请求');
+  assert.equal(low.execution.thinkingOptionId, 'low');
+  fail = false;
+  await invoke();
+  assert.deepEqual(requests.at(-1), low, '重试当前等级仍沿原请求');
 });
 
 test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接入消息框切换', async () => {
@@ -408,10 +418,11 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   const component = settings.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'ConversationSettings')!;
   const body = ts.transpileModule(`${component.getText(settings)}\nreturn ConversationSettings;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
   const values: unknown[] = [];
-  const catalog = { entries: [], models: [], error: '', loading: false, reload() {} };
-  const render = new Function('h', 'Fragment', 'View', 'PathPicker', 'ModelSelector', 'useModelCatalog', body)(
+  const levels = [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }];
+  const catalog = { entries: [{ provider: 'pi', enabled: true, status: 'ready', models: [{ id: 'vendor/model', thinkingOptions: levels }] }], models: [], error: '', loading: false, reload() {} };
+  const render = new Function('h', 'Fragment', 'View', 'PathPicker', 'ModelSelector', 'ThinkingSelector', 'useModelCatalog', body)(
     (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }),
-    'Fragment', 'View', 'PathPicker', 'ModelSelector', () => catalog,
+    'Fragment', 'View', 'PathPicker', 'ModelSelector', 'ThinkingSelector', () => catalog,
   );
   const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
   const props = { execution: { provider: 'pi/vendor/model', cwd: 'D:/project' }, defaultCwd: 'D:/bot', disabled: false, onChange: (value: unknown) => values.push(value) };
@@ -426,9 +437,13 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   path.props.onChange(undefined);
   path.props.onChange('D:/selected-project');
   assert.deepEqual(values, [{ provider: 'pi/vendor/model' }, { cwd: 'D:/selected-project' }]);
+  const thinking = view().find(node => node.type === 'ThinkingSelector')!;
+  assert.equal(thinking.props.options, levels, '只传当前Provider/model支持的等级');
+  thinking.props.onSelect('high'); thinking.props.onSelect(null);
+  assert.deepEqual(values.slice(2), [{ thinkingOptionId: 'high' }, { thinkingOptionId: null }]);
   assert.ok(!view().some(node => node.type === 'Modal'), '消息框不再自带简化居中模型列表');
   props.disabled = true;
-  assert.ok(view().filter(node => ['ModelSelector', 'PathPicker'].includes(node.type)).every(node => node.props.disabled));
+  assert.ok(view().filter(node => ['ModelSelector', 'ThinkingSelector', 'PathPicker'].includes(node.type)).every(node => node.props.disabled));
 });
 
 test('归档入口先确认，恢复与归档使用实际 Bot 标识且失败不切走同事', async () => {

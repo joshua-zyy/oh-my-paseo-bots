@@ -78,7 +78,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
     setConfiguration({ agentId, error: '' });
     void readConfiguration({ botId: opened.owner, agentId }).then(value => { if (active) setConfiguration({ agentId, value, error: '' }); }).catch(failure => { if (active) setConfiguration({ agentId, error: String(failure) }); });
     return () => { active = false; };
-  }, [agentId, isConversation, opened.owner, readConfiguration, configurationRevision, chat.agent?.provider, chat.agent?.model, chat.agent?.cwd]);
+  }, [agentId, isConversation, opened.owner, readConfiguration, configurationRevision, chat.agent?.provider, chat.agent?.model, chat.agent?.cwd, chat.agent?.thinkingOptionId]);
   useEffect(() => {
     if (!agentId || !draft.unknown || !draft.messageId) return;
     if (!chat.entries.some(entry => entry.item.type === 'user_message' && (entry.item.messageId === draft.messageId || entry.item.clientMessageId === draft.messageId))) return;
@@ -126,7 +126,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
     const current = observer.current;
     const prior = settingsChanges[target];
     let request = prior?.request;
-    if (execution && (!request || execution.provider !== request.execution.provider || execution.cwd !== request.execution.cwd)) {
+    if (execution && (!request || execution.provider !== request.execution.provider || execution.cwd !== request.execution.cwd || execution.thinkingOptionId !== request.execution.thinkingOptionId)) {
       request = {
         botId: owner, agentId: target, execution,
         requestId: 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, character => { const value = Math.floor(Math.random() * 16); return (character === 'x' ? value : (value & 3) | 8).toString(16); }),

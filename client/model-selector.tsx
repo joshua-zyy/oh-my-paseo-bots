@@ -5,14 +5,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal as NativeModal, Platform, Pressable, Text, View, useWindowDimensions, type PressableStateCallbackType } from 'react-native';
 import { Icon, Modal, ScrollView, TextInput } from '@getpaseo/plugin/client/ui';
 import { useModelCatalog } from './execution.js';
-import { Button, Copy, Notice, useUi } from './ui.js';
+import { Button, Copy, Notice, PickerRow, useUi } from './ui.js';
 import { PROVIDER_ICONS } from './provider-icons.js';
 
 type Catalog = ReturnType<typeof useModelCatalog>;
 type Anchor = { x: number; y: number; width: number; height: number };
 
-function modelPopoverFrame(anchor: Anchor, window: { width: number; height: number }, rows: number) {
-  const width = Math.min(400, window.width - 16);
+function modelPopoverFrame(anchor: Anchor, window: { width: number; height: number }, rows: number, preferredWidth = 400) {
+  const width = Math.min(preferredWidth, window.width - 16);
   const above = anchor.y - 13;
   const below = window.height - anchor.y - anchor.height - 13;
   const height = Math.min(Math.max(220, 80 + rows * 40), 400, Math.max(above, below));
@@ -25,6 +25,35 @@ function ProviderGlyph({ entry, size = 16 }: { entry?: Catalog['entries'][number
   const svg = entry?.iconSvg;
   const builtin = PROVIDER_ICONS[entry?.provider ?? ''];
   return <Icon icon={builtin ? { svg: builtin } : svg?.startsWith('<') ? { svg } : 'Bot'} size={size} color={colors.foregroundMuted} />;
+}
+
+/** Native agent-controls thinking trigger/Combobox, adapted to the public plugin surface. */
+export function ThinkingSelector({ options, value, disabled, onSelect }: {
+  options: readonly { id: string; label: string }[]; value?: string | null; disabled: boolean; onSelect(value: string | null): void;
+}) {
+  const { colors, compact } = useUi();
+  const window = useWindowDimensions();
+  const anchor = useRef<View>(null);
+  const [position, setPosition] = useState<Anchor>();
+  const [open, setOpen] = useState(false);
+  const desktop = Platform.OS === 'web' && !compact;
+  useEffect(() => {
+    if (open && desktop) anchor.current?.measureInWindow((x, y, width, height) => setPosition({ x, y, width, height }));
+  }, [open, desktop, window.width, window.height]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  if (!options.length) return null;
+  const label = options.find(option => option.id === value)?.label ?? value ?? '模型默认';
+  const rows = [{ id: null, label: '模型默认' }, ...options].map(option => <PickerRow key={option.id ?? 'native-default'} label={option.label} selected={option.id === (value ?? null)} disabled={disabled} onPress={() => { if (!disabled) { onSelect(option.id); setOpen(false); } }} />);
+  return <>
+    <View ref={anchor} collapsable={false} style={{ flexShrink: 1, minWidth: 0 }}><Button label={label} accessibilityLabel={`思考等级：${label}`} icon="Brain" trailingIcon="ChevronDown" size="xs" selected={open} disabled={disabled} onPress={() => { if (!disabled) { setPosition(undefined); setOpen(true); } }} /></View>
+    {desktop ? <NativeModal visible={open} transparent animationType="none" onRequestClose={() => setOpen(false)}><View style={{ flex: 1 }}>
+      <Pressable accessibilityLabel="关闭思考等级选择" onPress={() => setOpen(false)} style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />
+      {position && <View accessibilityViewIsModal style={{ ...modelPopoverFrame(position, window, rows.length, 200), borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0, overflow: 'hidden' }}>
+        <View style={{ minHeight: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center' }}><Text style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: '500' }}>思考等级</Text><Button label="关闭思考等级选择" icon="X" iconOnly size="xs" onPress={() => setOpen(false)} /></View>
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>{rows}</ScrollView>
+      </View>}
+    </View></NativeModal> : <Modal title="思考等级" open={open} onOpenChange={setOpen}><Modal.Content>{rows}</Modal.Content></Modal>}
+  </>;
 }
 
 export function ModelSelector({ catalog, value, disabled, onSelect }: { catalog: Catalog; value?: string; disabled: boolean; onSelect(value: string): void }) {

@@ -10,16 +10,16 @@ const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(el
 async function selector(compact = false) {
   const root = process.env.BOT_UI_SOURCE_DIR ?? fileURLToPath(new URL('../../', import.meta.url));
   const source = ts.createSourceFile('selector.tsx', await readFile(resolve(root, 'client/model-selector.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const functions = source.statements.filter(ts.isFunctionDeclaration).filter(node => ['ModelSelector', 'modelPopoverFrame'].includes(node.name?.text ?? '')).map(node => node.getText(source)).join('\n');
-  const body = ts.transpileModule(`${functions}\nreturn { ModelSelector, modelPopoverFrame };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
+  const functions = source.statements.filter(ts.isFunctionDeclaration).filter(node => ['ModelSelector', 'ThinkingSelector', 'modelPopoverFrame'].includes(node.name?.text ?? '')).map(node => node.getText(source)).join('\n');
+  const body = ts.transpileModule(`${functions}\nreturn { ModelSelector, ThinkingSelector, modelPopoverFrame };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
   const state: any[] = [];
   let cursor = 0;
-  const render = new Function('h', 'Fragment', 'View', 'Pressable', 'Text', 'Icon', 'ProviderGlyph', 'NativeModal', 'Modal', 'ScrollView', 'TextInput', 'Button', 'Copy', 'Notice', 'useUi', 'useState', 'useRef', 'useEffect', 'useWindowDimensions', 'Platform', body)(
+  const render = new Function('h', 'Fragment', 'View', 'Pressable', 'Text', 'Icon', 'ProviderGlyph', 'NativeModal', 'Modal', 'ScrollView', 'TextInput', 'Button', 'Copy', 'Notice', 'useUi', 'useState', 'useRef', 'useEffect', 'useWindowDimensions', 'Platform', 'PickerRow', body)(
     (type: string | object, props: unknown, ...children: unknown[]) => ({ type: typeof type === 'string' ? type : 'Modal', props: props ?? {}, children }),
     'Fragment', 'View', 'Pressable', 'Text', 'Icon', 'ProviderGlyph', 'NativeModal', Object.assign('Modal', { Content: 'Modal.Content' }), 'ScrollView', 'TextInput', 'Button', 'Copy', 'Notice',
     () => ({ compact, colors: { foreground: 'fg', foregroundMuted: 'muted', surface0: 's0', surface1: 's1', surface2: 's2', border: 'border' } }),
     (initial: any) => { const index = cursor++; if (!(index in state)) state[index] = initial; return [state[index], (next: any) => { state[index] = next; }]; },
-    () => ({ current: null }), () => {}, () => ({ width: 1000, height: 800 }), { OS: 'web' },
+    () => ({ current: null }), () => {}, () => ({ width: 1000, height: 800 }), { OS: 'web' }, 'PickerRow',
   );
   const selected: string[] = [];
   const props = { value: 'pi/vendor/alpha', disabled: false, onSelect: (value: string) => selected.push(value), catalog: {
@@ -27,8 +27,32 @@ async function selector(compact = false) {
     models: [{ value: 'pi/vendor/alpha', label: 'Alpha', providerLabel: 'Pi' }, { value: 'codex/beta', label: 'Beta', providerLabel: 'Codex' }], error: '', loading: false, reload() {},
   } };
   // Stub tree/callback tests only: this is not browser rendering or focus verification.
-  return { props, selected, state, frame: render.modelPopoverFrame, view: () => { cursor = 0; return elements(render.ModelSelector(props)); } };
+  return { props, selected, state, frame: render.modelPopoverFrame, view: () => { cursor = 0; return elements(render.ModelSelector(props)); }, thinking: (props: unknown) => { cursor = 0; return elements(render.ThinkingSelector(props)); } };
 }
+
+test('思考选择仅提供真实等级和模型默认，桌面锚定、窄屏宿主Modal，禁用时不派发', async () => {
+  const f = await selector();
+  const changes: (string | null)[] = [];
+  const props = { options: [{ id: 'low', label: 'Low' }, { id: 'high', label: 'High' }], value: 'high', disabled: false, onSelect: (value: string | null) => changes.push(value) };
+  const view = () => f.thinking(props);
+  view().find(node => node.props.accessibilityLabel === '思考等级：High')!.props.onPress();
+  f.state[0] = { x: 100, y: 600, width: 100, height: 28 };
+  assert.ok(view().some(node => node.type === 'NativeModal' && node.props.visible));
+  const rows = () => view().filter(node => node.type === 'PickerRow');
+  assert.deepEqual(rows().map(row => row.props.label), ['模型默认', 'Low', 'High']);
+  assert.equal(rows()[2].props.selected, true);
+  rows()[1].props.onPress();
+  assert.deepEqual(changes, ['low']);
+  assert.equal(f.state[1], false);
+  rows()[0].props.onPress();
+  assert.deepEqual(changes, ['low', null]);
+  props.disabled = true;
+  rows()[2].props.onPress();
+  assert.deepEqual(changes, ['low', null]);
+  const compact = await selector(true);
+  assert.ok(compact.thinking(props).some(node => node.type === 'Modal'));
+  assert.equal(compact.thinking({ ...props, options: [] }).length, 0, '不为未支持思考的模型添加假控件');
+});
 
 test('模型弹层锚定输入触发器，受视口限制，优先向上展开', async () => {
   const { frame } = await selector();

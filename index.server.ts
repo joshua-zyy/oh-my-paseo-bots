@@ -277,10 +277,17 @@ export default function contribute(server: PluginServerContext) {
     if (!task.conversation || agent.archivedAt) throw new Error('未找到本 Bot 的有效持续聊天');
     if (agent.status === 'running' || agent.status === 'initializing' || agent.pendingPermissions.length) throw new Error('请在当前回复结束并处理授权后切换');
     const current = conversationExecution(agent);
-    if ((selected.provider === undefined || selected.provider === current.provider) && (selected.cwd === undefined || selected.cwd === current.cwd)) return { agentId };
+    if ((selected.provider === undefined || selected.provider === current.provider) && (selected.cwd === undefined || selected.cwd === current.cwd) && (selected.thinkingOptionId === undefined || selected.thinkingOptionId === current.thinkingOptionId)) return { agentId };
     const execution = { ...current, ...selected };
     if (!execution.provider) throw new Error('原生未提供当前模型，请先选择模型');
-    if (selected.provider && selected.provider !== current.provider) { execution.modeId = null; execution.thinkingOptionId = null; }
+    if (selected.provider && selected.provider !== current.provider) { execution.modeId = null; if (selected.thinkingOptionId === undefined) execution.thinkingOptionId = null; }
+    if (typeof selected.thinkingOptionId === 'string') {
+      const provider = execution.provider;
+      const separator = provider.indexOf('/');
+      const catalog = await paseo.providers.snapshot({ cwd: execution.cwd });
+      const model = catalog.entries.find(entry => entry.provider === provider.slice(0, separator) && entry.enabled && entry.status === 'ready')?.models?.find(model => model.id === provider.slice(separator + 1));
+      if (!model?.thinkingOptions?.some(option => option.id === selected.thinkingOptionId)) throw new Error('当前模型不支持此思考等级，或模型目录尚未就绪，请重新读取后选择');
+    }
     if (selected.cwd && selected.cwd === await managedWorkspacePath(botId)) await mkdir(selected.cwd, { recursive: true });
     const bot = (await store.getBot(botId))!;
     const result = await startBoundSession({ botId, requestId, title: bot.bot.name, kind: 'conversation', execution, previousAgentId: agentId }, paseo);
