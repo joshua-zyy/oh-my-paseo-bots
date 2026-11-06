@@ -101,7 +101,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
       await api.agents.ref(target).send(text, { messageId, activeTurnBehavior: 'steer', ...(attachments ? { attachments } : {}) });
       setDrafts(current => ({ ...current, [target]: { text: '' } }));
     } catch (failure) {
-      setDrafts(current => ({ ...current, [target]: { text, messageId, attachments, unknown: dispatched, error: `${dispatched ? '发送回执未确认' : '读取确认记忆失败，消息尚未发送'}：${String(failure)}` } }));
+      setDrafts(current => ({ ...current, [target]: { text, messageId, attachments, unknown: dispatched, error: `${dispatched ? '发送回执未确认' : '准备聊天上下文失败，消息尚未发送'}：${String(failure)}` } }));
     } finally { sends.current.delete(target); }
     void current?.refresh();
   }

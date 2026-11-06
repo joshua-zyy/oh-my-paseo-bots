@@ -44,7 +44,7 @@ export async function startBotSession(
 ): Promise<StartedSession> {
   const { cwd, config, systemPrompt: botSystemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive', input.execution);
   const systemPrompt = input.previousAgentId
-    ? `${botSystemPrompt}\n\n当前是同一 Bot 持续聊天切换模型或工作区后的原生会话。上一段原生会话标识：${input.previousAgentId}。首次回复前先用 read_bot_history 读取上一段末页，理解用户已交办的目标、决定与上下文；更早来源见本轮附件。此前事项保留原父会话及其回报，不因配置切换重新派发或扩大授权。`
+    ? `${botSystemPrompt}\n\n当前是同一 Bot 持续聊天切换模型或工作区后的原生会话。上一段原生会话标识：${input.previousAgentId}。优先使用本轮附件中的交接原文理解用户已交办的目标、决定与上下文；附件缺失或内容不足时，再用 read_bot_history 查读此前分段的相关历史。此前事项保留原父会话及其回报，不因配置切换重新派发或扩大授权。`
     : botSystemPrompt;
   const fingerprint = createHash('sha256')
     .update(

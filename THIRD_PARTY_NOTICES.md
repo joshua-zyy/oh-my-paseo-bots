@@ -8,6 +8,10 @@
 
 这些上游适配部分遵循 Apache License 2.0，许可证原文见 [licenses/Paseo-Apache-2.0.txt](licenses/Paseo-Apache-2.0.txt)。其余项目原创部分的 MIT 许可不改变。
 
+## t3code 上下文交接适配
+
+`server/conversations.ts` 的有界完整消息选择改编自 [pingdotgg/t3code](https://github.com/pingdotgg/t3code) 提交 `337c5858c33bc7f8f6dfd391a2c279fa0f7e4d17` 的 `packages/provider-core/src/server/handoffBudget.ts`。保留最近用户／助手和较早用户消息优先、完整原文、来源与遗漏标记；适配为 Paseo 原生历史读取及空分段的首轮附件，不引入 t3code 的编排层、会话库或 Provider 驱动。许可为 MIT，Copyright (c) 2026 T3 Tools Inc.，全文见 [licenses/t3code-MIT.txt](licenses/t3code-MIT.txt)。
+
 ## paseo-bots 许可原文
 
 MIT License

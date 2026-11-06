@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PluginServerContext } from '@getpaseo/plugin/server';
 import type { PluginRpcContract } from '@getpaseo/plugin';
-import type { PaseoApi, PaseoAgentCreateOptions, PaseoAgentSendOptions } from '@getpaseo/client';
+import type { PaseoApi, PaseoAgentCreateOptions, PaseoAgentSendOptions, PaseoAgentTimelineRefetchOptions } from '@getpaseo/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import contribute from '../index.server.js';
@@ -24,6 +24,9 @@ async function fixture({ home = true } = {}) {
   const archived = new Set<string>();
   const statuses = new Map<string, string>();
   const messages: { agentId: string; text: string; options?: PaseoAgentSendOptions }[] = [];
+  const history = new Map<string, { type: string; text: string }[]>();
+  const historyReads: { agentId: string; limit?: number }[] = [];
+  const historyFailures = new Map<string, string>();
   let loseCreation = false;
   let failCreation = false;
   const paseo = { providers: { snapshot: async () => ({ entries: [
@@ -51,7 +54,12 @@ async function fixture({ home = true } = {}) {
     },
     archive: async () => { archived.add(agentId); return { archivedAt: 'now' }; },
     send: async (text: string, options?: PaseoAgentSendOptions) => { messages.push({ agentId, text, options }); },
-    timeline: { refetch: async () => ({ entries: [{ seqStart: 1, seqEnd: 1, item: { type: 'user_message', text: '取消旧任务' } }], error: null, staleCursor: false, gap: false, hasOlder: false, hasNewer: false }) },
+    timeline: { refetch: async (options: PaseoAgentTimelineRefetchOptions) => {
+      historyReads.push({ agentId, limit: options.limit });
+      const items = history.get(agentId) ?? [{ type: 'user_message', text: '取消旧任务' }];
+      const start = Math.max(0, items.length - (options.limit ?? 50));
+      return { entries: items.slice(start).map((item, index) => ({ seqStart: start + index + 1, seqEnd: start + index + 1, item })), error: historyFailures.get(agentId) ?? null, staleCursor: false, gap: false, hasOlder: start > 0, hasNewer: false };
+    } },
   }) } } as unknown as PaseoApi;
   const server = {
     registerSettings: (definition: { id: string }) => ({ read: async () => ({ status: 'ready', values: definition.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'pi/vendor/old', modeId: 'old-mode', thinkingOptionId: 'old-thinking', ...(home ? { paseoHome: join(directory, 'paseo') } : {}) } }) }),
@@ -76,7 +84,7 @@ async function fixture({ home = true } = {}) {
   }
   await invoke('bots.list', {});
   return {
-    directory, invoke, created, archived, statuses, messages, connect, loseNextCreation: () => { loseCreation = true; },
+    directory, invoke, created, archived, statuses, messages, history, historyReads, historyFailures, connect, loseNextCreation: () => { loseCreation = true; },
     failNextCreation: () => { failCreation = true; },
     reload: async () => { await Promise.all(clients.splice(0).map(client => client.close())); await cleanup(); cleanup = contribute(server); },
     close: async () => {
@@ -93,6 +101,84 @@ function payload(result: unknown) {
   assert.notEqual(value.isError, true, value.content[0].text);
   return JSON.parse(value.content[0].text);
 }
+
+test('跨后端切换首次消息交接可见原文与来源，切回包含新进展且不读取其他Bot', async () => {
+  const host = await fixture();
+  const data = (context: { text: string }) => JSON.parse(context.text.split('\n历史交接数据：\n')[1]) as { partial: boolean; messages: { agentId: string; seqStart: number; role: string; text: string }[] };
+  try {
+    await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '当前确认约定：报告用中文' });
+    const first = await host.invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
+    const firstItems = [
+      { type: 'user_message', text: '北桥方案已定：先核对输入，不执行外发。' },
+      { type: 'reasoning', text: 'HIDDEN-REASONING' },
+      { type: 'tool_call', text: 'PRIVATE-TOOL-STATE' },
+      { type: 'assistant_message', text: '已核对输入；下一步只制作草案。' },
+    ];
+    host.history.set(first.agentId, firstItems);
+    await host.invoke('bots.create', { id: 'other', name: '其他同事', role: '不参与此聊天' });
+    const other = await host.invoke('bots.conversation.create', { botId: 'other' }) as { agentId: string };
+    host.history.set(other.agentId, [{ type: 'user_message', text: 'OTHER-BOT-PRIVATE' }]);
+    const second = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { provider: 'codex/new-model' } }) as { agentId: string };
+    host.history.set(second.agentId, []);
+    const prompt = host.created.find(item => item.agentId === second.agentId)!.config.systemPrompt!;
+    assert.match(prompt, /优先使用本轮附件中的交接原文/);
+    assert.doesNotMatch(prompt, /首次回复前先用/);
+    const before = await new BotStore({ baseDir: host.directory }).getBot('chief');
+    const context = await host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }) as { text: string };
+    assert.deepEqual(data(context), { partial: false, messages: [
+      { agentId: first.agentId, seqStart: 1, seqEnd: 1, role: 'user', text: firstItems[0].text },
+      { agentId: first.agentId, seqStart: 4, seqEnd: 4, role: 'assistant', text: firstItems[3].text },
+    ] });
+    assert.match(context.text, /当前确认约定：报告用中文/);
+    assert.doesNotMatch(context.text, /HIDDEN-REASONING|PRIVATE-TOOL-STATE|OTHER-BOT-PRIVATE/);
+    assert.deepEqual(await host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }), context, '准备重试不消费交接或写入额外状态');
+    assert.deepEqual(await new BotStore({ baseDir: host.directory }).getBot('chief'), before);
+    const secondItems = [{ type: 'user_message', text: '新增决定：草案附上核对清单。' }, { type: 'assistant_message', text: '已完成草案，仍未发送。' }];
+    host.history.set(second.agentId, secondItems);
+    const reads = host.historyReads.length;
+    const ongoing = await host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }) as { text: string };
+    assert(!ongoing.text.includes('历史交接数据：'), '已有当前分段历史后不重复注入旧原文');
+    assert.deepEqual(host.historyReads.slice(reads), [{ agentId: second.agentId, limit: 1 }]);
+    const third = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: second.agentId, requestId: randomUUID(), execution: { provider: 'pi/vendor/old' } }) as { agentId: string };
+    host.history.set(third.agentId, []);
+    const returned = data(await host.invoke('bots.conversation.context', { botId: 'chief', agentId: third.agentId }) as { text: string });
+    assert.deepEqual(returned.messages.map(message => message.text), [firstItems[0].text, firstItems[3].text, ...secondItems.map(item => item.text)]);
+    assert.deepEqual(returned.messages.map(message => message.agentId), [first.agentId, first.agentId, second.agentId, second.agentId]);
+    assert(host.historyReads.every(read => read.agentId !== other.agentId));
+    host.created.find(item => item.agentId === third.agentId)!.labels!['paseo-guys.conversation.previous'] = other.agentId;
+    const priorReads = host.historyReads.length;
+    await assert.rejects(() => host.invoke('bots.conversation.context', { botId: 'chief', agentId: third.agentId }), /关联/);
+    assert.equal(host.historyReads.length, priorReads, '归属无效时不读取任何原文');
+  } finally { await host.close(); }
+});
+
+test('交接按UTF8预算保留完整原文并报告遗漏，原生历史失败不冒充成功', async () => {
+  const host = await fixture();
+  try {
+    const first = await host.invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
+    const second = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { provider: 'codex/new-model' } }) as { agentId: string };
+    host.history.set(second.agentId, []);
+    const items = [{ type: 'user_message', text: '最初目标：只制作草案。' }, { type: 'assistant_message', text: '过大原文'.repeat(8000) }, ...Array.from({ length: 20 }, (_, index) => ({ type: index % 2 ? 'assistant_message' : 'user_message', text: `${index}：${'合成材料核对记录'.repeat(100)}` }))];
+    host.history.set(first.agentId, items);
+    const context = await host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }) as { text: string };
+    const block = context.text.slice(context.text.indexOf('\n以下是旧分段的可见对话原文'));
+    assert(Buffer.byteLength(block, 'utf8') <= 16_000);
+    const handoff = JSON.parse(block.split('\n历史交接数据：\n')[1]) as { partial: boolean; messages: { text: string }[] };
+    assert.equal(handoff.partial, true);
+    assert(handoff.messages.some(message => message.text === items[0].text));
+    assert(handoff.messages.some(message => message.text === items.at(-1)!.text));
+    assert(handoff.messages.some(message => message.text === items.at(-2)!.text));
+    assert(handoff.messages.every(message => items.some(item => item.text === message.text)), '不生成摘要、不截断原文为半句话');
+    assert(!handoff.messages.some(message => message.text === items[1].text));
+    host.history.set(first.agentId, Array.from({ length: 60 }, (_, index) => ({ type: 'user_message', text: `短记录${index}` })));
+    const paged = await host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }) as { text: string };
+    const pageData = JSON.parse(paged.text.split('\n历史交接数据：\n')[1]);
+    assert.equal(pageData.partial, true, '原生分页遗漏也必须报告');
+    assert.equal(pageData.messages.length, 50);
+    host.historyFailures.set(first.agentId, 'synthetic-history-error');
+    await assert.rejects(() => host.invoke('bots.conversation.context', { botId: 'chief', agentId: second.agentId }), /无法稳定读取/);
+  } finally { await host.close(); }
+});
 
 test('聊天思考等级采用宿主目录，保留草稿所需历史衔接、原模型和Bot默认，子事项继承新等级', async () => {
   const host = await fixture();

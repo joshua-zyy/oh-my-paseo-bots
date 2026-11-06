@@ -18,7 +18,7 @@ import * as filesRpc from './shared/files.js';
 import { readDirectory, readSkill, readMcp, discoverMcpSources } from './server/files.js';
 import { stopBotReply } from './server/reply.js';
 import { conversationContext, conversationWork, conversationConfiguration, changeConversation } from './shared/chat.js';
-import { readConversation, conversationExecution } from './server/conversations.js';
+import { readConversation, conversationExecution, prepareConversationHandoff } from './server/conversations.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
@@ -96,9 +96,10 @@ export default function contribute(server: PluginServerContext) {
     if (!task?.conversation || agent.archivedAt) throw new Error('未找到本 Bot 的有效持续聊天');
     if ((await store.getBot(botId))?.bot.archivedAt) throw new Error('同事已归档，请先恢复再发送消息');
     const memories = await store.getContextMemories(botId);
+    const handoff = await prepareConversationHandoff(store, paseo, botId, agentId, previousAgentIds);
     return {
-      type: 'text' as const, mimeType: 'text/plain' as const, title: '最新确认记忆',
-      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}`,
+      type: 'text' as const, mimeType: 'text/plain' as const, title: handoff ? 'Bot 记忆与对话交接' : '最新确认记忆',
+      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}${handoff ?? ''}`,
     };
   });
   server.handle(conversationWork, async ({ botId, agentId }, { paseo }) => {
