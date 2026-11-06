@@ -19,7 +19,7 @@ test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，�
   const server = {
     registerSettings: () => ({ read: async () => ({ status: 'invalid', error: '未配置' }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: () => () => {}, before: () => () => {},
+    addHook: () => () => {},
   } as unknown as PluginServerContext;
   const cleanup = contribute(server);
   async function invoke(name: string, input: unknown) {
@@ -173,7 +173,7 @@ test('Bot 默认工作区自动创建在当前 Paseo home 下，显式工作目�
   const cleanup = contribute({
     registerSettings: () => ({ read: async () => ({ status: 'ready', values: { cwd: join(directory, 'workspace'), provider: 'synthetic/model' } }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: () => () => {}, before: () => () => {},
+    addHook: () => () => {},
   } as unknown as PluginServerContext);
   async function invoke(name: string, input: unknown) {
     const entry = handlers.get(name)!;

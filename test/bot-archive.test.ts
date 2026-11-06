@@ -91,7 +91,7 @@ test('归档 RPC 默认从目录移除，可列出恢复；归档后的旧聊天
   process.env.OH_MY_PASEO_BOTS_DATA_DIR = f.directory;
   const handlers = new Map<string, { contract: PluginRpcContract; handler(input: unknown, context: unknown): unknown }>();
   const server = { registerSettings: () => ({ read: async () => ({ status: 'invalid', error: '合成环境未配置模型' }) }),
-    handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }), on: () => () => {}, before: () => () => {},
+    handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }), addHook: () => () => {},
   } as unknown as PluginServerContext;
   const cleanup = contribute(server);
   async function invoke(name: string, input: unknown) {

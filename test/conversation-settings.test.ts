@@ -56,7 +56,7 @@ async function fixture({ home = true } = {}) {
   const server = {
     registerSettings: (definition: { id: string }) => ({ read: async () => ({ status: 'ready', values: definition.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'pi/vendor/old', modeId: 'old-mode', thinkingOptionId: 'old-thinking', ...(home ? { paseoHome: join(directory, 'paseo') } : {}) } }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: () => () => {}, before: () => () => {},
+    addHook: () => () => {},
   } as unknown as PluginServerContext;
   let cleanup = contribute(server);
   const clients: Client[] = [];

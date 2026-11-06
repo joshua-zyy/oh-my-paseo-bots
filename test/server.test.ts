@@ -35,7 +35,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     },
     archive: async () => {
       archived.add(agentId);
-      await hooks.get('agent.archived')?.({ agent: { id: agentId } }, { paseo });
+      await hooks.get('agent.archive.after')?.({ agent: { id: agentId } }, { paseo });
       return { archivedAt: 'now' };
     },
     send: async (text: string, options?: PaseoAgentSendOptions) => { messages.push({ agentId, text, options }); if (messageFailure) throw new Error('原生通知未确认'); },
@@ -44,7 +44,7 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
   const server = {
     registerSettings: (definition: { id: string }) => ({ read: async () => ({ status: 'ready', revision: 'ready', values: definition.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'synthetic/model' } }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); }, before: () => () => {},
+    addHook: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
   } as unknown as PluginServerContext;
   async function invoke(name: string, input: unknown) {
     const entry = handlers.get(name);
@@ -239,8 +239,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   const server = {
     registerSettings: (definition: { id: string }) => ({ read: async () => definition.id === 'office' ? { status: 'ready', revision: 'o1', values: { bots: {} } } : configured ? { status: 'ready', revision: 'r2', values: { cwd: directory, provider: 'configured/model' } } : { status: 'invalid', revision: 'r1', error: '未配置' } }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
-    before: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
+    addHook: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
   } as unknown as PluginServerContext;
   async function invoke(name: string, input: unknown) {
     const entry = handlers.get(name)!;
@@ -254,11 +253,11 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     assert.deepEqual(seeded.bots.map(bot => bot.id), ['chief'], '首次打开即有固定 Chief，不用手工注册');
     assert.equal(created.length, 0, '创建入口元数据不会自动调用模型');
     const normalWorkspace = { source: { kind: 'directory', path: directory } };
-    assert.equal(await hooks.get('workspace.create')!({ request: normalWorkspace }, { paseo }), undefined, '正常 Paseo 工作区不变');
+    assert.equal(await hooks.get('workspace.create.before')!({ request: normalWorkspace }, { paseo }), undefined, '正常 Paseo 工作区不变');
     const botWorkspace = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'chief' } } };
-    assert.deepEqual(await hooks.get('workspace.create')!({ request: botWorkspace }, { paseo }), { ...botWorkspace, background: true });
+    assert.deepEqual(await hooks.get('workspace.create.before')!({ request: botWorkspace }, { paseo }), { ...botWorkspace, background: true });
     const unknownBot = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'missing' } } };
-    assert.equal(await hooks.get('workspace.create')!({ request: unknownBot }, { paseo }), undefined, '未登记标签不能改变正常工作区');
+    assert.equal(await hooks.get('workspace.create.before')!({ request: unknownBot }, { paseo }), undefined, '未登记标签不能改变正常工作区');
     assert.deepEqual(await invoke('bots.list', {}), seeded, '再次打开沿用同一 Chief');
     await invoke('bots.update', { botId: 'chief', patch: { name: '主 Bot', role: '核对' } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '用户明确记忆' });
@@ -288,8 +287,8 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     assert.equal(created.length, 0);
     const agent = { id: 'native-agent', workspaceId: 'ws-1', title: '交办事项' };
     const context = { paseo: { agents: { ref: () => ({ refresh: async () => ({ agent: { labels: { 'paseo-guys.bot': 'chief' } } }) }) } } };
-    await hooks.get('agent.turn_started')!({ agent, turnId: null }, context);
-    await hooks.get('agent.turn_ended')!({ agent, turnId: null, outcome: { kind: 'completed' }, timeline: [] }, context);
+    await hooks.get('agent.turn.before')!({ agent, turnId: null }, context);
+    await hooks.get('agent.turn.after')!({ agent, turnId: null, outcome: { kind: 'completed' }, timeline: [] }, context);
     const snapshot = await invoke('bots.journal', { botId: 'chief' }) as { entries: { kind: string; outcome?: string; turnId: string | null }[]; corruptCount: number; total: number };
     const journal = snapshot.entries;
     assert.equal(snapshot.corruptCount, 0);
@@ -340,8 +339,8 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.deepEqual((await invoke('bots.memories', { botId: 'chief' }) as { content: string }[]).map(item => item.content), ['纠正后的明确记忆']);
       // 专家只靠原生父链关联到事项，不获得根 Bot 的会话绑定或工具凭证。
       const specialist = { id: 'grandchild', parentAgentId: 'child', title: '专家核对', workspaceId: 'ws-expert' };
-      await hooks.get('agent.created')!({ agent: specialist }, { paseo });
-      await hooks.get('agent.turn_ended')!({ agent: specialist, turnId: 'expert-turn', outcome: { kind: 'canceled', reason: 'Interrupted' } }, { paseo });
+      await hooks.get('agent.create.after')!({ agent: specialist }, { paseo });
+      await hooks.get('agent.turn.after')!({ agent: specialist, turnId: 'expert-turn', outcome: { kind: 'canceled', reason: 'Interrupted' } }, { paseo });
       const tasks = await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string; specialists: string[] }[];
       assert.deepEqual(tasks.find(task => task.agentId === started.agentId)?.specialists, ['grandchild']);
       assert.equal(tasks.find(task => task.agentId === started.agentId)?.status, 'active', '自由 canceled.reason 不取消整个事项');
@@ -400,8 +399,7 @@ test('恢复会话时原生回查、Bot 存档或 MCP 预热失败只报告错�
   const server = {
     registerSettings: () => ({}),
     handle: (contract: PluginRpcContract, handler: (input: unknown) => Promise<unknown>) => handlers.set(contract.name, handler),
-    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
-    before: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
+    addHook: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
   } as unknown as PluginServerContext;
   const cleanup = contribute(server);
   try {
@@ -411,7 +409,7 @@ test('恢复会话时原生回查、Bot 存档或 MCP 预热失败只报告错�
       if (failure) throw failure;
       return { agent: { labels: { 'paseo-guys.bot': 'chief' } } };
     } }) } } };
-    const open = () => hooks.get('agent.session_open')!(event, context);
+    const open = () => hooks.get('agent.open.before')!(event, context);
     await assert.doesNotReject(open);
     failure = undefined;
     await handlers.get('bots.create')!({ id: 'chief', name: '主 Bot', role: '核对' });
@@ -473,8 +471,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
   const server = {
     registerSettings: () => ({ read: async () => ({ status: 'ready', revision: 'r1', values: { cwd: directory, provider: 'configured/model', modeId: 'host-mode', thinkingOptionId: 'host-thinking' } }) }),
     handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }),
-    on: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
-    before: () => () => {},
+    addHook: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
   } as unknown as PluginServerContext;
   async function invoke(name: string, input: unknown) {
     const entry = handlers.get(name)!;
@@ -541,13 +538,13 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     await childClient.connect(new StreamableHTTPClientTransport(new URL(childTools.url), { requestInit: { headers: childTools.headers } }));
     const ownMemories = payload(await childClient.callTool({ name: 'read_memories', arguments: {} }));
     assert.deepEqual(ownMemories.memories.map((item: { content: string }) => item.content), ['结论必须附资料来源']);
-    await hooks.get('agent.created')!({ agent: { id: child.agentId, parentAgentId: root.agentId, title: request.title, workspaceId: 'ws-team' } }, { paseo });
+    await hooks.get('agent.create.after')!({ agent: { id: child.agentId, parentAgentId: root.agentId, title: request.title, workspaceId: 'ws-team' } }, { paseo });
     const rootTask = payload(await client.callTool({ name: 'read_task', arguments: {} }));
     assert.deepEqual(rootTask.specialists, [child.agentId]);
     assert.equal(rootTask.status, 'active', '委派启动不等于主事项完成');
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'active');
     const failedTurn = { agent: { id: child.agentId, parentAgentId: root.agentId, title: request.title, workspaceId: 'ws-team' }, turnId: 'failed-turn', outcome: { kind: 'failed', error: { message: 'synthetic provider failure' } }, timeline: [] };
-    await hooks.get('agent.turn_ended')!(failedTurn, { paseo });
+    await hooks.get('agent.turn.after')!(failedTurn, { paseo });
     assert.equal(failureMessages.length, 1, '同事原生轮次失败须回报 Chief，而非只记日志');
     assert.equal(failureMessages[0].agentId, root.agentId);
     assert.deepEqual(failureMessages[0].options, { sourceAgentId: child.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:failure:${child.agentId}:failed-turn` });
@@ -558,19 +555,19 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'active');
     assert.equal(nativeEvents.length, 0, '失败回报不归档或重新执行');
     assert.equal(created.length, 2, '失败回报不重新派发');
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, turnId: null }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, turnId: null }, { paseo });
     assert.deepEqual(failureMessages[1].options, { sourceAgentId: child.agentId, activeTurnBehavior: 'steer' }, '宿主无 turnId 时不复用跨轮次的固定消息键');
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, outcome: { kind: 'completed' } }, { paseo });
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, outcome: { kind: 'canceled', reason: 'native turn interrupted' } }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, outcome: { kind: 'completed' } }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, outcome: { kind: 'canceled', reason: 'native turn interrupted' } }, { paseo });
     assert.equal(failureMessages.length, 2, '单轮完成或取消不被当作事项失败回报');
     const rootSessions = await invoke('bots.sessions', { botId: 'chief' }) as { sessionId: string }[];
     assert.deepEqual(rootSessions.map(item => item.sessionId), [root.agentId]);
     const childSessions = await invoke('bots.sessions', { botId: 'researcher' }) as { sessionId: string }[];
     assert.deepEqual(childSessions.map(item => item.sessionId), [child.agentId]);
-    assert.equal(typeof hooks.get('agent.archived'), 'function');
-    await hooks.get('agent.archived')!({ agent: { id: child.agentId }, archivedAt: new Date().toISOString() }, { paseo });
+    assert.equal(typeof hooks.get('agent.archive.after'), 'function');
+    await hooks.get('agent.archive.after')!({ agent: { id: child.agentId }, archivedAt: new Date().toISOString() }, { paseo });
     assert.equal(payload(await childClient.callTool({ name: 'read_task', arguments: {} })).status, 'canceled', '同事被原生归档后不能继续显示进行中');
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, turnId: 'late-failure' }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, turnId: 'late-failure' }, { paseo });
     assert.equal(failureMessages.length, 2, '已停止的子事项不因迟到失败观察重新推进 Chief');
     assert.equal((await childClient.callTool({ name: 'create_followup', arguments: { name: '继续', prompt: '继续', cron: '* * * * *', timezone: 'Asia/Shanghai' } })).isError, true);
     assert.equal(payload(await client.callTool({ name: 'read_task', arguments: {} })).status, 'active', '单独归档同事不自动完成 Chief 的事项');
@@ -617,11 +614,11 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     await writeFile(join(directory, 'routines', 'state.json'), JSON.stringify({ schemaVersion: 1, routines: [{ id: routineId, botId: 'chief', name: '合成例程', prompt: '合成例程核对', cron: '* * * * *', timezone: 'UTC', continuity: false, execution: { provider: 'configured/model', cwd: directory }, state: 'ready', nativeId: 'synthetic-schedule' }] }));
     delete created[0].labels!['paseo-guys.bot'];
     created[0].labels!['paseo.schedule-id'] = 'synthetic-schedule';
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'routine-parent-failure' }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'routine-parent-failure' }, { paseo });
     assert.equal(failureMessages.length, 3, '无 Bot 标签的例程父事项仍收到固定同事失败回报');
     assert.equal(failureMessages[2].agentId, root.agentId);
     await invoke('bots.task.cancel', { botId: 'chief', agentId: root.agentId });
-    await hooks.get('agent.turn_ended')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'failure-after-parent-stop' }, { paseo });
+    await hooks.get('agent.turn.after')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'failure-after-parent-stop' }, { paseo });
     assert.equal(failureMessages.length, 3, '父事项已停止时不能被失败观察唤醒');
   } finally {
     await client.close(); await childClient.close(); await cleanup();

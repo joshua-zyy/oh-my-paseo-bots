@@ -2,5 +2,5 @@
   "id": "oh-my-paseo-bots",
   "name": "oh-my-paseo-bots",
   "description": "固定 Bot 团队，复用 Paseo 原生执行与协作",
-  "requirements": { "paseo": ">=0.14.0 <0.16.0" }
+  "requirements": { "paseo": "0.15.2" }
 }

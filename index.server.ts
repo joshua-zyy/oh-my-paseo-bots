@@ -372,7 +372,7 @@ export default function contribute(server: PluginServerContext) {
     catch (error) { console.error(`Bot ${botId} 的事项关联未保存；仍记录原生观察`, error); }
     return botId;
   }
-  const hidden = server.before('workspace.create', async ({ request }, { paseo }) => {
+  const hidden = server.addHook('workspace.create.before', async ({ request }, { paseo }) => {
     const botId = request.agent?.labels?.['paseo-guys.bot'];
     if (botId && await store.getBot(botId)) return { ...request, background: true };
     const scheduleId = request.agent?.labels?.['paseo.schedule-id'];
@@ -383,7 +383,7 @@ export default function contribute(server: PluginServerContext) {
       if (owner && await store.getBot(owner)) return { ...request, background: true };
     }
   });
-  const opened = server.before('agent.session_open', async ({ request }, context) => {
+  const opened = server.addHook('agent.open.before', async ({ request }, context) => {
     currentPaseo = context.paseo;
     if (request.labels?.['paseo.schedule-id']) {
       const routine = await routines.bind(request);
@@ -401,12 +401,12 @@ export default function contribute(server: PluginServerContext) {
       console.error(`原生会话 ${request.agentId} 的 Bot 工具恢复失败；继续打开会话`, error);
     }
   });
-  const started = server.on('agent.turn_started', async (event, context) => {
+  const started = server.addHook('agent.turn.before', async (event, context) => {
     const botId = await associate(event.agent, context);
     if (botId) await journal.append(botId, { agentId: event.agent.id, turnId: event.turnId, kind: 'turn_started' });
   });
-  const created = server.on('agent.created', async (event, context) => { await associate(event.agent, context); });
-  const archived = server.on('agent.archived', async (event, context) => {
+  const created = server.addHook('agent.create.after', async (event, context) => { await associate(event.agent, context); });
+  const archived = server.addHook('agent.archive.after', async (event, context) => {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(event.agent.id).refresh();
     const botId = snapshot?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(event.agent.id);
@@ -418,7 +418,7 @@ export default function contribute(server: PluginServerContext) {
       }
     }
   });
-  const ended = server.on('agent.turn_ended', async (event, context) => {
+  const ended = server.addHook('agent.turn.after', async (event, context) => {
     const botId = await associate(event.agent, context);
     if (botId) await journal.append(botId, {
       agentId: event.agent.id, turnId: event.turnId, kind: 'turn_ended', outcome: event.outcome.kind,
