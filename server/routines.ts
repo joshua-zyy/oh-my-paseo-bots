@@ -142,7 +142,10 @@ export class BotRoutines {
   async context(botId: string, agentId: string) {
     const task = await this.options.tasks.get(botId, agentId);
     const mapped = await botSessionConfig(this.options.store, botId, await this.options.defaults(), task?.routine ? 'routine' : task?.conversation ? 'conversation' : 'interactive');
-    if (!task?.routine) return { instructions: mapped.systemPrompt, task };
+    if (!task?.routine) return {
+      instructions: mapped.systemPrompt, task,
+      ...(task?.conversation ? { confirmedMemories: (await this.options.store.getContextMemories(botId)).map(memory => memory.content) } : {}),
+    };
     const record = owned(await this.read(), botId, task.routine.id);
     const native = record.nativeId ? await this.inspect(record.nativeId) : null;
     const actualConfig = native?.target.type === 'new-agent' ? native.target.config : null;

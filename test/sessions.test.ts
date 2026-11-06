@@ -5,10 +5,40 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { PaseoApi, PaseoAgentCreateOptions, PaseoWorkspaceCreateOptions } from '@getpaseo/client';
 import { BotStore, StoreError } from '../server/store.js';
-import { startBotSession } from '../server/sessions.js';
+import { botSessionConfig, startBotSession } from '../server/sessions.js';
 
 const placement = (cwd: string) => ({ cwd, config: { provider: 'configured-provider/model' } });
 const tools = { mount: async (botId: string, agentId: string) => ({ type: 'http' as const, url: `http://127.0.0.1:1/bots/${botId}/${agentId}` }) };
+
+test('持续聊天创建不重复读取或注入全量记忆，事项和例程仍保留自己的确认记忆', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-conversation-memory-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '协调', instructions: '长期职责保持不变' });
+    await store.addMemory('chief', { kind: 'confirmed', content: 'CONFIRMED-STARTUP-ONLY' });
+    await store.addMemory('chief', { kind: 'candidate', content: 'CANDIDATE-NEVER-CONTEXT' });
+    const archived = await store.addMemory('chief', { kind: 'confirmed', content: 'ARCHIVED-NEVER-CONTEXT' });
+    await store.removeMemory('chief', archived.id);
+    let reads = 0;
+    const getContextMemories = store.getContextMemories.bind(store);
+    store.getContextMemories = (...args) => { reads++; return getContextMemories(...args); };
+    const conversation = await botSessionConfig(store, 'chief', placement(directory), 'conversation');
+    assert.equal(reads, 0, '创建聊天不读取不会使用的全量记忆');
+    assert.match(conversation.systemPrompt, /长期职责保持不变/);
+    assert.match(conversation.systemPrompt, /没有附件时用 get_bot_context/);
+    assert.doesNotMatch(conversation.systemPrompt, /CONFIRMED-STARTUP-ONLY|会话创建时的确认记忆快照/);
+    await store.addMemory('chief', { kind: 'confirmed', content: 'NEW-MEMORY-AFTER-CREATION' });
+    assert.equal((await botSessionConfig(store, 'chief', placement(directory), 'conversation')).systemPrompt, conversation.systemPrompt);
+    assert.equal(reads, 0, '记忆变化不重写聊天启动提示词');
+    for (const kind of ['interactive', 'routine'] as const) {
+      const mapped = await botSessionConfig(store, 'chief', placement(directory), kind);
+      assert.match(mapped.systemPrompt, /CONFIRMED-STARTUP-ONLY/);
+      assert.match(mapped.systemPrompt, /NEW-MEMORY-AFTER-CREATION/);
+      assert.doesNotMatch(mapped.systemPrompt, /CANDIDATE-NEVER-CONTEXT|ARCHIVED-NEVER-CONTEXT/);
+    }
+    assert.equal(reads, 2, '独立事项与例程各读取自己的确认记忆');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('关闭连接保留配置，之后的新任务不挂载，重新启用后使用同一配置', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-connection-toggle-'));

@@ -109,7 +109,8 @@ export async function botSessionConfig(store: BotStore, botId: string, placement
     if (!isAbsolute(skill.path)) throw new Error(`技能必须使用宿主绝对路径：${skill.path}`);
     if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
   }
-  const memories = await store.getContextMemories(botId);
+  // 持续聊天通过发送前附件或 get_bot_context 取得最新记忆，不固化到启动提示词。
+  const memories = kind === 'conversation' ? [] : await store.getContextMemories(botId);
   const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
   const execution = { ...data.bot.execution, ...overrides };
   const cwd = execution.cwd ?? placement.cwd;
