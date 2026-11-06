@@ -220,6 +220,49 @@ test('read_memories 按关键词查回确认记忆，先匹配再分页且不传
   });
 });
 
+test('read_memories 按稳定 ID 查当前正文，旧线索失效后仍能准确读到纠正值', async () => {
+  await withWorkspace(async ({ store, journal }) => {
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
+    await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
+    const target = await store.addMemory('chief', { kind: 'confirmed', content: '北桥汇报约定：OLD-FORMAT' });
+    const unrelated = await store.addMemory('chief', { kind: 'confirmed', content: '南桥汇报约定：OTHER-PROJECT' });
+    const candidate = await store.addMemory('chief', { kind: 'candidate', content: '候选秘密' });
+    const archived = await store.addMemory('chief', { kind: 'confirmed', content: '归档秘密' });
+    await store.removeMemory('chief', archived.id);
+    const foreign = await store.addMemory('other', { kind: 'confirmed', content: '他人秘密' });
+    await store.updateMemory('chief', target.id, { content: '北桥汇报约定：CURRENT-FORMAT' });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    type Page = { total: number; nextOffset: number | null; memories: { id: string; content: string }[] };
+    const read = async (args: Record<string, unknown>) => {
+      const result = await client.callTool({ name: 'read_memories', arguments: args });
+      assert.notEqual(result.isError, true, textOf(result));
+      return parse<Page>(textOf(result));
+    };
+    try {
+      assert.equal((await read({ query: target.content })).total, 0, '正文前缀线索包含旧值，纠正后不再匹配');
+      const current = await read({ memoryIds: [target.id, target.id, candidate.id, archived.id, foreign.id, 'unknown'] });
+      assert.equal(current.total, 1);
+      assert.deepEqual(current.memories.map(({ id, content }) => ({ id, content })), [{ id: target.id, content: '北桥汇报约定：CURRENT-FORMAT' }]);
+      assert.equal(JSON.stringify(current).includes('OLD-FORMAT'), false);
+      assert.deepEqual((await read({ memoryIds: [candidate.id, archived.id, foreign.id, 'unknown'] })).memories, [], '无当前可见条目时不能回退到全部记忆');
+      assert.deepEqual((await read({ memoryIds: [target.id], query: '南桥' })).memories, [], '同时提供关键词时取交集，不绕过任何筛选');
+      const first = await read({ memoryIds: [target.id, unrelated.id], limit: 1 });
+      assert.equal(first.total, 2);
+      assert.equal(first.nextOffset, 1);
+      const older = await read({ memoryIds: [target.id, unrelated.id], limit: 1, offset: first.nextOffset });
+      assert.deepEqual([...first.memories, ...older.memories].map(item => item.id), [unrelated.id, target.id]);
+      assert.equal(older.nextOffset, null);
+      await store.removeMemory('chief', target.id);
+      assert.deepEqual((await read({ memoryIds: [target.id] })).memories, [], '遗忘后的旧 ID 不再提供正文');
+      await store.restoreMemory('chief', target.id);
+      assert.equal((await read({ memoryIds: [target.id] })).memories[0].content, '北桥汇报约定：CURRENT-FORMAT');
+      for (const memoryIds of [[], [''], ['x'.repeat(65)], Array(201).fill(target.id), target.id, [123]]) {
+        assert.equal((await client.callTool({ name: 'read_memories', arguments: { memoryIds } })).isError, true);
+      }
+    } finally { await close(); }
+  });
+});
+
 test('read_journal 只读本 Bot 日志，默认返回最近若干条', async () => {
   await withWorkspace(async ({ store, journal }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });

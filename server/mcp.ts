@@ -15,6 +15,7 @@ import { registerTaskTools, type ExplicitTaskCancel } from './task-tools.js';
 import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
 import type { MemoryCorrection, MemoryForget } from './memory.js';
 import type { BotHistoryInput } from './history.js';
+import { memoryEntrySchema } from '../shared/memory.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -164,22 +165,24 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     'read_memories',
     {
       title: '读取本 Bot 的明确记忆',
-      description: '读取当前 Bot 已被用户确认的长期记忆，可按关键词查回。候选记忆不会出现在这里，也不要把候选当成用户已确认的事实。total 和 nextOffset 针对匹配结果；未提供 query 时读取全部确认记忆。',
+      description: '读取当前 Bot 已被用户确认的长期记忆，可按关键词或 memoryIds 查回最新正文。已有条目 ID 时优先按 ID 读取，不把可能过期的预览当查询词或当前事实。候选、归档及其他 Bot 的记忆不返回。total 和 nextOffset 针对匹配结果；query 和 memoryIds 同时提供时取交集，都省略时读取全部确认记忆。空结果不代表旧预览仍有效。',
       annotations: { readOnlyHint: true },
       inputSchema: {
         limit: z.number().int().min(1).max(MAX_MEMORY_ITEMS).default(MAX_MEMORY_ITEMS),
         offset: z.number().int().min(0).default(0).describe('从最新记忆开始跳过的条数；用 nextOffset 继续读取更早记录'),
         query: z.string().trim().max(500).optional().describe('空白分隔的关键词，忽略大小写；内容须包含全部词。中文短语按原文匹配，空查询不筛选。'),
+        memoryIds: z.array(memoryEntrySchema.shape.id).min(1).max(MAX_MEMORY_ITEMS).optional().describe('从线索或之前读取结果取得的条目 ID；只返回仍属本 Bot 的活跃确认条目及当前正文，不匹配时不回退全量。'),
       },
     },
-    async ({ limit, offset, query }) => {
+    async ({ limit, offset, query, memoryIds }) => {
       try {
         const memories = await store.getContextMemories(botId);
         const terms = (query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-        const matched = terms.length ? memories.filter(memory => {
+        const matched = memories.filter(memory => {
+          if (memoryIds && !memoryIds.includes(memory.id)) return false;
           const content = memory.content.toLowerCase();
           return terms.every(term => content.includes(term));
-        }) : memories;
+        });
         const end = Math.max(0, matched.length - offset);
         const shown = matched.slice(Math.max(0, end - limit), end);
         return toolResult({
