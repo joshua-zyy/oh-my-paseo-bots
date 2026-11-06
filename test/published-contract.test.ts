@@ -7,11 +7,13 @@ import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { assertPluginCompatibility } from '@getpaseo/protocol/plugin-requirements';
 
-test('manifest 接受 0.14 宿主和客户端，拒绝缺少例程接入字段的旧版及未核对的下一主线', async () => {
+test('manifest 接受 0.14/0.15 宿主和客户端，拒绝缺少例程接入字段的旧版及未核对的下一主线', async () => {
   const manifest = JSON.parse(await readFile(new URL('../../paseo-plugin.json', import.meta.url), 'utf8'));
   for (const runtime of ['daemon', 'app'] as const) {
-    assert.doesNotThrow(() => assertPluginCompatibility({ ...manifest, version: '0.14.0', runtime }));
-    for (const version of ['0.12.0', '0.13.2', '0.15.0']) {
+    for (const version of ['0.14.0', '0.15.0', '0.15.2']) {
+      assert.doesNotThrow(() => assertPluginCompatibility({ ...manifest, version, runtime }));
+    }
+    for (const version of ['0.12.0', '0.13.2', '0.16.0']) {
       assert.throws(() => assertPluginCompatibility({ ...manifest, version, runtime }));
     }
   }
