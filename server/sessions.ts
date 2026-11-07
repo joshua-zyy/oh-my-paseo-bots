@@ -7,6 +7,7 @@ import { botPrompt } from './prompt.js';
 import type { BotMcp } from './mcp.js';
 import type { BotDetails } from '../shared/bot.js';
 import { CONVERSATION_PREVIOUS_LABEL } from '../shared/chat.js';
+import type { ChannelId } from '../shared/channels.js';
 
 export interface SessionInput {
   botId: string;
@@ -14,7 +15,8 @@ export interface SessionInput {
   title: string;
   prompt?: string;
   parentAgentId?: string;
-  kind?: 'conversation';
+  kind?: 'conversation' | 'channel';
+  channelId?: ChannelId;
   execution?: BotDetails['execution'];
   previousAgentId?: string;
 }
@@ -54,6 +56,7 @@ export async function startBotSession(
         prompt: input.prompt,
         parentAgentId: input.parentAgentId,
         kind: input.kind,
+        channelId: input.channelId,
         previousAgentId: input.previousAgentId,
         cwd,
         config,
@@ -62,7 +65,7 @@ export async function startBotSession(
     )
     .digest('hex');
 
-  const proposal = await store.prepareCreation(input.botId, { requestId: input.requestId, fingerprint });
+  const proposal = await store.prepareCreation(input.botId, { requestId: input.requestId, fingerprint, channelId: input.channelId });
   const botTools = await tools.mount(input.botId, proposal.intent.agentId);
   // 已 created 且未 ack 的同输入请求只能拿回已知 agentId，不再创建。
   if (proposal.action === 'known') return { agentId: proposal.intent.agentId, requestId: proposal.intent.requestId };
@@ -77,7 +80,7 @@ export async function startBotSession(
       config: { ...config, systemPrompt, mcpServers: { ...config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,
-      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.kind === 'conversation' ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
+      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.channelId ? { 'paseo-guys.channel': input.channelId } : {}), ...(input.kind ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
     const workspaceKey = createHash('sha256').update(stable({ bot: input.botId, cwd })).digest('hex');
@@ -92,6 +95,7 @@ export async function startBotSession(
 
   await store.completeCreation(input.botId, proposal.intent.requestId, {
     sessionId: agent.id,
+    channelId: input.channelId,
     title: input.title,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
   });
@@ -99,7 +103,7 @@ export async function startBotSession(
 }
 
 /** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
-export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' = 'interactive', overrides?: BotDetails['execution']) {
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' | 'channel' = 'interactive', overrides?: BotDetails['execution']) {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
   if (data.bot.archivedAt) throw new Error('同事已归档，请先恢复再派发工作');
@@ -110,7 +114,7 @@ export async function botSessionConfig(store: BotStore, botId: string, placement
     if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
   }
   // 持续聊天通过发送前附件或 get_bot_context 取得最新记忆，不固化到启动提示词。
-  const memories = kind === 'conversation' ? [] : await store.getContextMemories(botId);
+  const memories = kind === 'conversation' || kind === 'channel' ? [] : await store.getContextMemories(botId);
   const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
   const execution = { ...data.bot.execution, ...overrides };
   const cwd = execution.cwd ?? placement.cwd;

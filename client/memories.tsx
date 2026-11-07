@@ -4,10 +4,11 @@ import { useRpc } from '@getpaseo/plugin/client';
 import type { RpcOutput } from '@getpaseo/plugin';
 import * as rpc from '../shared/contracts.js';
 import type { MemoryOrigin } from '../shared/memory.js';
+import type { ChannelId } from '../shared/channels.js';
 import { Actions, Button, Copy, Disclosure, Field, Notice, Section, useUi } from './ui.js';
 import { useBotUpdates } from './use-bot-updates.js';
 
-export function Memories({ botId, openAgent }: { botId: string; openAgent?: (agentId: string) => void }) {
+export function Memories({ botId, channelId, openAgent }: { botId: string; channelId?: ChannelId; openAgent?: (agentId: string) => void }) {
   const updates = useBotUpdates(botId);
   const list = useRpc(rpc.listMemories);
   const save = useRpc(rpc.saveMemory);
@@ -25,15 +26,15 @@ export function Memories({ botId, openAgent }: { botId: string; openAgent?: (age
   async function run(action?: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
-    try { await action?.(); setEntries(await list({ botId, includeArchived: true })); }
+    try { await action?.(); setEntries(await list({ botId, ...(channelId ? { channelId } : {}), includeArchived: true })); }
     catch (failure) { setError(String(failure)); }
     finally { guard.current = false; setBusy(false); }
   }
   useEffect(() => {
     let active = true;
-    void list({ botId, includeArchived: true }).then(value => { if (active) setEntries(value); }).catch(failure => { if (active) setError(String(failure)); });
+    void list({ botId, ...(channelId ? { channelId } : {}), includeArchived: true }).then(value => { if (active) setEntries(value); }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
-  }, [botId, list, updates.revision]);
+  }, [botId, channelId, list, updates.revision]);
   const groups = [
     { key: 'candidate', title: '待确认', items: entries.filter(item => !item.archivedAt && item.kind === 'candidate') },
     { key: 'confirmed', title: '已确认', items: entries.filter(item => !item.archivedAt && item.kind === 'confirmed') },
@@ -47,8 +48,8 @@ export function Memories({ botId, openAgent }: { botId: string; openAgent?: (age
     {editing && <View style={{ padding: 16, marginVertical: 16, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Field label={editing.id ? '纠正记忆' : '记忆内容'} value={editing.content} maxLength={8000} multiline disabled={busy} onChangeText={content => setEditing({ ...editing, content })} />
       <Actions><Button label="取消" disabled={busy} onPress={() => setEditing(undefined)} /><Button label="保存记忆" primary disabled={busy || !editing.content.trim()} onPress={() => void run(async () => {
-        if (editing.id) await correct({ botId, memoryId: editing.id, kind: editing.kind, content: editing.content });
-        else await save({ botId, kind: 'confirmed', content: editing.content });
+        if (editing.id) await correct({ botId, ...(channelId ? { channelId } : {}), memoryId: editing.id, kind: editing.kind, content: editing.content });
+        else await save({ botId, ...(channelId ? { channelId } : {}), kind: 'confirmed', content: editing.content });
         setEditing(undefined);
       })} /></Actions>
       {editing.id && <Copy muted small>只修改当前记忆，历史和备份保留。</Copy>}
@@ -56,10 +57,10 @@ export function Memories({ botId, openAgent }: { botId: string; openAgent?: (age
     {groups.map(group => (group.items.length > 0 || group.key !== 'candidate') && <Section key={group.key} title={group.title}>
       {group.items.map(entry => <View key={entry.id} style={{ paddingVertical: 14, gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
         <Copy>{entry.content}</Copy>
-        <Actions>{entry.archivedAt ? <Button label="恢复" disabled={busy} onPress={() => void run(() => restore({ botId, memoryId: entry.id }))} /> : <>
-          {entry.kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}
+        <Actions>{entry.archivedAt ? <Button label="恢复" disabled={busy} onPress={() => void run(() => restore({ botId, ...(channelId ? { channelId } : {}), memoryId: entry.id }))} /> : <>
+          {entry.kind === 'candidate' && <Button label="确认" disabled={busy} onPress={() => void run(() => correct({ botId, ...(channelId ? { channelId } : {}), memoryId: entry.id, kind: 'confirmed', content: entry.content }))} />}
           <Button label="编辑" disabled={busy} onPress={() => setEditing({ id: entry.id, content: entry.content, kind: entry.kind })} />
-          <Button label={entry.kind === 'candidate' ? '拒绝' : '遗忘'} disabled={busy} onPress={() => void run(() => forget({ botId, memoryId: entry.id }))} />
+          <Button label={entry.kind === 'candidate' ? '拒绝' : '遗忘'} disabled={busy} onPress={() => void run(() => forget({ botId, ...(channelId ? { channelId } : {}), memoryId: entry.id }))} />
         </>}</Actions>
         <Disclosure title="来源与变更记录" open={opened === entry.id} onPress={() => setOpened(opened === entry.id ? undefined : entry.id)}>
           <Copy muted small>创建时间：{entry.createdAt}</Copy>

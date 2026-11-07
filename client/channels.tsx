@@ -1,22 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcInput } from '@getpaseo/plugin';
 import { useRpc } from '@getpaseo/plugin/client';
-import { SettingsCard, SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
+import { Modal, SettingsCard, SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import * as rpc from '../shared/channels.js';
-import type { Channel } from '../shared/channels.js';
+import type { Channel, ChannelId } from '../shared/channels.js';
+import { ChannelChat } from './channel-chat.js';
 import { CHIEF_BOT_ID } from '../shared/bot.js';
 import { Actions, Button, Copy, Field, Notice, Section } from './ui.js';
 import { PathPicker } from './path-picker.js';
 
 type Member = { id: string; name: string; archivedAt?: string; execution?: { cwd?: string } };
 
-export function Channels({ bots }: { bots: Member[] }) {
+export function Channels({ bots, hostId, initialChannelId }: { bots: Member[]; hostId: string; initialChannelId?: ChannelId }) {
   const list = useRpc(rpc.listChannels);
   const create = useRpc(rpc.createChannel);
   const update = useRpc(rpc.updateChannel);
   const archive = useRpc(rpc.archiveChannel);
   const [items, setItems] = useState<Channel[]>();
   const [editing, setEditing] = useState<Channel | null>();
+  const [chat, setChat] = useState<Channel>();
   const [showArchived, setShowArchived] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -26,6 +28,9 @@ export function Channels({ bots }: { bots: Member[] }) {
     void list({ includeArchived: true }).then(rows => { if (active) setItems(rows); }).catch(failure => { if (active) setError(String(failure)); });
     return () => { active = false; };
   }, [list]);
+  useEffect(() => {
+    if (initialChannelId) { const channel = items?.find(item => item.id === initialChannelId && !item.archivedAt); if (channel) setChat(channel); }
+  }, [initialChannelId, items]);
   async function run(action: () => Promise<unknown>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); setError('');
@@ -42,7 +47,7 @@ export function Channels({ bots }: { bots: Member[] }) {
     });
   }
   return <>
-    <Copy muted>为项目设置成员、管理员和共同工作范围。频道聊天尚未接入；保存配置不会启动 Agent、复制私聊或改变成员权限。</Copy>
+    <Copy muted>配置成员、管理员与共同工作范围。进入频道后由管理员回应，群记忆仅留本群；保存配置本身不启动Agent或改变成员权限。</Copy>
     <Notice error={error} />
     {editing !== undefined ? <ChannelEditor key={editing?.id ?? 'new'} channel={editing ?? undefined} bots={bots} busy={busy} save={save} cancel={() => setEditing(undefined)} /> : <>
       <Actions><Button label={showArchived ? '活动频道' : '已归档频道'} selected={showArchived} disabled={busy} onPress={() => setShowArchived(value => !value)} /><Button label="刷新频道" disabled={busy} onPress={() => void run(async () => setItems(await list({ includeArchived: true })))} /><Button label="新建频道" icon="Plus" disabled={busy || !bots.some(bot => !bot.archivedAt)} onPress={() => { setError(''); setEditing(null); }} /></Actions>
@@ -52,6 +57,7 @@ export function Channels({ bots }: { bots: Member[] }) {
         <Copy muted>{channel.memberIds.map(id => bots.find(bot => bot.id === id)?.name ?? id).join('、')} · 管理员：{bots.find(bot => bot.id === channel.adminBotId)?.name ?? channel.adminBotId}{channel.archivedAt ? ' · 已归档' : ''}</Copy>
         <Copy small>{channel.cwd}</Copy>
         <Actions>
+          {!channel.archivedAt && <Button label={`进入${channel.name}`} icon="MessagesSquare" disabled={busy} onPress={() => setChat(channel)} />}
           {!channel.archivedAt && <Button label={`编辑${channel.name}`} icon="Settings" disabled={busy} onPress={() => { setError(''); setEditing(channel); }} />}
           <Button label={channel.archivedAt ? `恢复${channel.name}` : `归档${channel.name}`} icon={channel.archivedAt ? 'ArchiveRestore' : 'Archive'} disabled={busy} onPress={() => void run(async () => {
             const saved = await archive({ channelId: channel.id, archived: !channel.archivedAt });
@@ -61,6 +67,7 @@ export function Channels({ bots }: { bots: Member[] }) {
         </Actions>
       </Section>)}
     </>}
+    <Modal title={chat?.name ?? '项目频道'} open={chat !== undefined} onOpenChange={open => { if (!open) setChat(undefined); }}><Modal.Content scrollable={false} style={{ height: 640 }} contentContainerStyle={{ flex: 1, padding: 0, gap: 0 }}>{chat && <ChannelChat key={chat.id} channel={chat} hostId={hostId} />}</Modal.Content></Modal>
   </>;
 }
 

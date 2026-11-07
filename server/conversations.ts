@@ -14,6 +14,7 @@ export async function readConversation(store: BotStore, paseo: PaseoApi, botId: 
   while (current) {
     if (!linked.delete(current)) throw new Error('持续聊天的原生会话关联无效');
     const snapshot = await paseo.agents.ref(current).refresh();
+    if (snapshot?.agent.labels['paseo-guys.channel']) throw new Error('频道场景不能作为私聊读取');
     if (!snapshot || snapshot.agent.labels['paseo-guys.bot'] !== botId || snapshot.agent.labels['paseo-guys.conversation'] !== 'true') throw new Error('未找到本 Bot 关联的原生持续聊天');
     segments.push(snapshot.agent);
     current = snapshot.agent.labels[CONVERSATION_PREVIOUS_LABEL];

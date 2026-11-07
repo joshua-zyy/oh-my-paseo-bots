@@ -280,7 +280,7 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   visit(source);
   assert.ok(callback);
   const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const createSend = new Function('agentId', 'sends', 'stops', 'changing', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', body);
+  const createSend = new Function('agentId', 'sends', 'stops', 'changing', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', 'channelId', 'prepareGroup', body);
   const text = '请记住：后续报告使用英文。\n本条原话不能附加或删改。';
   const attachment = { type: 'text', mimeType: 'text/plain', title: '最新确认记忆', text: '["使用英文"]' };
   let preparations = 0;
@@ -289,12 +289,15 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   let sendFails = true;
   let contextFails = false;
   let conversation = true;
+  let channelId: string | undefined;
+  let groupPreparations = 0;
+  const groupAttachment = { ...attachment, title: '频道上下文', text: '["本群约定"]' };
   const changing = { current: new Set<string>() };
   const invoke = () => createSend('helper-chat', { current: new Set() }, { current: new Set() }, changing, drafts['helper-chat'], false,
     { loading: false, agent: { archivedAt: null, labels: conversation ? { 'paseo-guys.conversation': 'true' } : {} } }, { current: { refresh() {} } },
     (update: (value: typeof drafts) => typeof drafts) => { drafts = update(drafts); },
     { agents: { ref: () => ({ send: async (text: string, options: unknown) => { requests.push({ text, options }); if (sendFails) throw new Error('回执丢失'); } }) } },
-    { owner: 'helper' }, async (input: unknown) => { preparations++; assert.deepEqual(input, { botId: 'helper', agentId: 'helper-chat' }); if (contextFails) throw new Error('记忆读取失败'); return attachment; },
+    { owner: 'helper' }, async (input: unknown) => { preparations++; assert.deepEqual(input, { botId: 'helper', agentId: 'helper-chat' }); if (contextFails) throw new Error('记忆读取失败'); return attachment; }, channelId, async (input: unknown) => { groupPreparations++; assert.deepEqual(input, { channelId, agentId: 'helper-chat' }); return groupAttachment; },
   )();
   await invoke();
   assert.equal(preparations, 1);
@@ -320,6 +323,12 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   changing.current.add('helper-chat');
   await invoke();
   assert.equal(requests.length, 3, '配置切换期间不把未发送消息发给旧会话');
+  changing.current.clear(); channelId = 'channel-test'; conversation = true;
+  drafts['helper-chat'] = { text, messageId: 'group-message' };
+  await invoke();
+  assert.equal(groupPreparations, 1);
+  assert.equal(preparations, 2, '频道发送不调用私聊上下文');
+  assert.deepEqual(requests[3], { text, options: { messageId: 'group-message', activeTurnBehavior: 'steer', attachments: [groupAttachment] } });
 });
 
 test('消息框切换保留草稿并沿原请求重试，异步完成后仍只更新所属 Bot', async () => {

@@ -36,14 +36,14 @@ test('记忆页编辑保留确认状态，只有明确确认候选才进入上�
       new Function('entry', 'setEditing', `return (${callbacks.get('编辑')});`)(entry, setEditing)();
       assert.ok(editing);
       editing.content = `${kind} 新内容`;
-      new Function('run', 'correct', 'save', 'setEditing', 'editing', 'botId', `return (${callbacks.get('保存记忆')});`)(run, correct, () => assert.fail('编辑不创建新记忆'), setEditing, editing, 'chief')();
+      new Function('run', 'correct', 'save', 'setEditing', 'editing', 'botId', `const channelId = undefined; return (${callbacks.get('保存记忆')});`)(run, correct, () => assert.fail('编辑不创建新记忆'), setEditing, editing, 'chief')();
       await pending;
       const saved = (await store.listMemories('chief')).find(item => item.id === entry.id)!;
       assert.equal(saved.kind, kind);
       assert.equal(saved.content, `${kind} 新内容`);
       assert.equal((await store.getContextMemories('chief')).some(item => item.id === entry.id), kind === 'confirmed');
       if (kind === 'candidate') {
-        new Function('run', 'correct', 'entry', 'botId', `return (${callbacks.get('确认')});`)(run, correct, saved, 'chief')();
+        new Function('run', 'correct', 'entry', 'botId', `const channelId = undefined; return (${callbacks.get('确认')});`)(run, correct, saved, 'chief')();
         await pending;
         assert.ok((await store.getContextMemories('chief')).some(item => item.id === entry.id));
       }
@@ -77,14 +77,14 @@ test('记忆页遗忘、拒绝、恢复和来源按钮调用实际条目，归�
     const restore = ({ botId, memoryId }: { botId: string; memoryId: string }) => store.restoreMemory(botId, memoryId);
     for (const kind of ['confirmed', 'candidate'] as const) {
       const entry = await store.addMemory('chief', { content: `合成 ${kind}`, kind });
-      new Function('run', 'forget', 'botId', 'entry', `return (${callbacks.get('归档操作')});`)(run, forget, 'chief', entry)();
+      new Function('run', 'forget', 'botId', 'entry', `const channelId = undefined; return (${callbacks.get('归档操作')});`)(run, forget, 'chief', entry)();
       await pending;
       assert.deepEqual(await store.getContextMemories('chief'), []);
       const entries = await store.listMemories('chief', { includeArchived: true });
       const select = new Function('entries', 'showArchived', `return (${groups});`);
       assert.ok(select(entries, false).every((group: { items: unknown[] }) => group.items.length === 0));
       assert.ok(select(entries, true).find((group: { key: string }) => group.key === 'archived').items.some((item: { id: string }) => item.id === entry.id));
-      new Function('run', 'restore', 'botId', 'entry', `return (${callbacks.get('恢复')});`)(run, restore, 'chief', entry)();
+      new Function('run', 'restore', 'botId', 'entry', `const channelId = undefined; return (${callbacks.get('恢复')});`)(run, restore, 'chief', entry)();
       await pending;
       assert.equal((await store.listMemories('chief'))[0].kind, kind);
       assert.equal((await store.getContextMemories('chief')).length, kind === 'confirmed' ? 1 : 0);
@@ -94,6 +94,22 @@ test('记忆页遗忘、拒绝、恢复和来源按钮调用实际条目，归�
     new Function('origin', 'openAgent', `return (${callbacks.get('打开来源会话')});`)({ type: 'message', agentId: 'source-agent' }, (id: string) => opened.push(id))();
     assert.deepEqual(opened, ['source-agent']);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('群记忆页初次读取使用频道作用域，私聊入口继续使用个人作用域', async () => {
+  const source = ts.createSourceFile('memories.tsx', await readFile(new URL('../../client/memories.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let effect = '';
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect') effect = node.arguments[0].getText(source);
+    ts.forEachChild(node, visit);
+  };
+  visit(source); assert.ok(effect);
+  for (const channelId of [undefined, 'df36bb2c-837d-4051-8a6b-4ae1e07b6041']) {
+    const calls: unknown[] = [];
+    const mount = new Function('list', 'botId', 'channelId', 'setEntries', 'setError', `return (${effect});`)(async (input: unknown) => { calls.push(input); return []; }, 'chief', channelId, () => {}, (error: unknown) => assert.fail(String(error)));
+    const cleanup = mount(); await new Promise(resolve => setImmediate(resolve)); cleanup();
+    assert.deepEqual(calls, [{ botId: 'chief', ...(channelId ? { channelId } : {}), includeArchived: true }]);
+  }
 });
 
 test('明确记忆回查跨页原生用户依据，伪造依据与跨Bot会话被拒绝', async () => {

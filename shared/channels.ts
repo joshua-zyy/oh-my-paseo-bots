@@ -21,4 +21,6 @@ export type Channel = z.output<typeof channelSchema>;
 export const listChannels = defineRpc({ name: 'bots.channels.list', input: z.object({ includeArchived: z.boolean().default(false) }), output: z.array(channelSchema) });
 export const createChannel = defineRpc({ name: 'bots.channels.create', input: channelCreateSchema, output: channelSchema });
 export const updateChannel = defineRpc({ name: 'bots.channels.update', input: z.object({ channelId: channelIdSchema, details: channelDetailsSchema }), output: channelSchema });
+export const openChannel = defineRpc({ name: 'bots.channels.open', input: z.object({ channelId: channelIdSchema }), output: z.object({ botId: z.string(), agentId: z.string() }) });
+export const channelContext = defineRpc({ name: 'bots.channels.context', input: z.object({ channelId: channelIdSchema, agentId: z.string().min(1) }), output: z.object({ type: z.literal('text'), mimeType: z.literal('text/plain'), title: z.string(), text: z.string() }) });
 export const archiveChannel = defineRpc({ name: 'bots.channels.archive', input: z.object({ channelId: channelIdSchema, archived: z.boolean() }), output: channelSchema });

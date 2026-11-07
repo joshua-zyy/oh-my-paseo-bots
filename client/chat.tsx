@@ -6,6 +6,7 @@ import type { RpcInput, RpcOutput } from '@getpaseo/plugin';
 import type { PaseoAgentSendOptions } from '@getpaseo/client';
 import * as rpc from '../shared/contracts.js';
 import { conversationContext, conversationConfiguration, changeConversation } from '../shared/chat.js';
+import { openChannel, channelContext, type ChannelId } from '../shared/channels.js';
 import { EMPTY_CHAT, observeChat, type ChatState } from './chat-state.js';
 import { ChatTimeline } from './chat-timeline.js';
 import { ChatPermission } from './chat-permission.js';
@@ -17,10 +18,12 @@ interface Draft { text: string; messageId?: string; attachments?: PaseoAgentSend
 interface SettingsChange { request: RpcInput<typeof changeConversation>; pending: boolean; error?: string }
 const NO_HISTORY: string[] = [];
 
-export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange }: { botId: string; hostId: string; sessionId?: string; openAgent(id: string): void; onConversationChange?(botId: string, previousId: string, agentId: string): void }) {
+export function Chat({ botId, hostId, sessionId, channelId, openAgent, onConversationChange }: { botId: string; hostId: string; sessionId?: string; channelId?: ChannelId; openAgent(id: string): void; onConversationChange?(botId: string, previousId: string, agentId: string): void }) {
   const api = usePaseo();
   const hosts = useHosts();
   const open = useRpc(rpc.openConversation);
+  const openGroup = useRpc(openChannel);
+  const prepareGroup = useRpc(channelContext);
   const stop = useRpc(rpc.stopReply);
   const prepare = useRpc(conversationContext);
   const readConfiguration = useRpc(conversationConfiguration);
@@ -39,14 +42,14 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
   const sends = useRef(new Set<string>());
   const stops = useRef(new Set<string>());
   const changing = useRef(new Set<string>());
-  const key = `${botId}:${sessionId ?? 'conversation'}`;
+  const key = `${botId}:${sessionId ?? 'conversation'}${channelId ? `:channel:${channelId}` : ''}`;
   const agentId = opened.key === key ? opened.agentId : undefined;
   const chat = state.agentId === agentId ? state : EMPTY_CHAT;
   const draft = agentId ? drafts[agentId] ?? { text: '' } : { text: '' };
   const connection = hosts.find(host => host.serverId === hostId)?.status;
   const offline = connection !== undefined && connection !== 'online';
   const running = chat.agent?.status === 'running' || chat.agent?.status === 'initializing';
-  const isConversation = chat.agent?.labels['paseo-guys.conversation'] === 'true';
+  const isConversation = chat.agent?.labels['paseo-guys.conversation'] === 'true' && !channelId;
   const settings = configuration && configuration.agentId === agentId ? configuration.value : undefined;
   const settingsError = configuration && configuration.agentId === agentId ? configuration.error : '';
   const settingsChange = agentId ? settingsChanges[agentId] : undefined;
@@ -56,15 +59,16 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
     setOpened({ key, owner: botId, error: '' });
     const request = sessionId ? api.agents.ref(sessionId).refresh().then(snapshot => {
       if (!snapshot) throw new Error('原生会话未找到');
+      if (snapshot.agent.labels['paseo-guys.channel'] !== channelId) throw new Error('会话与当前私聊／频道场景不符');
       return { agentId: sessionId, owner: snapshot.agent.labels['paseo-guys.bot'] ?? botId };
-    }) : open({ botId }).then(result => ({ ...result, owner: botId }));
+    }) : channelId ? openGroup({ channelId }).then(result => ({ agentId: result.agentId, owner: result.botId })) : open({ botId }).then(result => ({ ...result, owner: botId }));
     void request.then(result => {
       if (!active) return;
       setOpened({ key: !sessionId && onConversationChange ? `${botId}:${result.agentId}` : key, ...result, error: '' });
       if (!sessionId) onConversationChange?.(result.owner, result.agentId, result.agentId);
     }).catch(failure => { if (active) setOpened({ key, owner: botId, error: String(failure) }); });
     return () => { active = false; };
-  }, [api, botId, sessionId, open, revision, onConversationChange]);
+  }, [api, botId, sessionId, channelId, open, openGroup, revision, onConversationChange]);
   useEffect(() => {
     nearBottom.current = true;
     if (!agentId) { setState(EMPTY_CHAT); return; }
@@ -95,7 +99,7 @@ export function Chat({ botId, hostId, sessionId, openAgent, onConversationChange
     sends.current.add(target);
     setDrafts(current => ({ ...current, [target]: { text, messageId, sending: true } }));
     try {
-      if (!attachments && chat.agent?.labels['paseo-guys.conversation'] === 'true') attachments = [await prepare({ botId: opened.owner, agentId: target })];
+      if (!attachments && chat.agent?.labels['paseo-guys.conversation'] === 'true') attachments = [channelId ? await prepareGroup({ channelId, agentId: target }) : await prepare({ botId: opened.owner, agentId: target })];
       setDrafts(current => ({ ...current, [target]: { text, messageId, attachments, sending: true } }));
       dispatched = true;
       await api.agents.ref(target).send(text, { messageId, activeTurnBehavior: 'steer', ...(attachments ? { attachments } : {}) });

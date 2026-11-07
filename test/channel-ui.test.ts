@@ -83,7 +83,7 @@ test('频道管理默认隐藏归档记录，恢复后返回活动频道', async
   const calls: unknown[] = [];
   const useState = (initial: any) => { const index = cursor++; if (!(index in values)) values[index] = initial; return [values[index], (next: any) => { values[index] = typeof next === 'function' ? next(values[index]) : next; }]; };
   const useRpc = (contract: { name: string }) => contract.name === 'bots.channels.list' ? async () => [active, archived] : async (input: any) => { assert.equal(contract.name, 'bots.channels.archive'); calls.push(input); const { archivedAt: _archivedAt, ...restored } = archived; return restored; };
-  const names = ['Copy', 'Notice', 'ChannelEditor', 'Actions', 'Button', 'Section'];
+  const names = ['Copy', 'Notice', 'ChannelEditor', 'Actions', 'Button', 'Section', 'Modal', 'ChannelChat'];
   const component = new Function('h', 'Fragment', 'useRpc', 'useState', 'useRef', 'useEffect', 'rpc', ...names, body)((type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', useRpc, useState, () => guard, (effect: () => unknown) => { if (!mounted) effects.push(effect); }, rpc, ...names);
   const render = () => { cursor = 0; return elements(component({ bots })); };
   render(); mounted = true; effects.forEach(effect => effect()); await new Promise(resolve => setImmediate(resolve));

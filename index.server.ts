@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { join, isAbsolute } from 'node:path';
+import { join, isAbsolute, resolve } from 'node:path';
 import { BotStore } from './server/store.js';
 import { archiveBot } from './server/bot-archive.js';
 import { BotJournal } from './server/journal.js';
@@ -27,6 +27,8 @@ import * as taskRpc from './shared/tasks.js';
 import { BotRoutines } from './server/routines.js';
 import * as routineRpc from './shared/routines.js';
 import { ChannelStore } from './server/channels.js';
+import { ChannelContextStore } from './server/channel-context.js';
+import type { ChannelId } from './shared/channels.js';
 import * as channelRpc from './shared/channels.js';
 
 export default function contribute(server: PluginServerContext) {
@@ -35,6 +37,7 @@ export default function contribute(server: PluginServerContext) {
     ?? (existsSync(legacyDir) ? legacyDir : join(homedir(), '.oh-my-paseo-bots'));
   const store = new BotStore({ baseDir });
   const channels = new ChannelStore({ baseDir, bots: store });
+  const channelState = new ChannelContextStore(baseDir, store, channels);
   server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
   server.handle(channelRpc.createChannel, input => channels.create(input));
   server.handle(channelRpc.updateChannel, input => channels.update(input.channelId, input.details));
@@ -61,7 +64,34 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, readContext: (botId, agentId) => routines.context(botId, agentId), startColleague: async input => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, resolveScope: async (botId, agentId) => {
+    const bot = await store.getBot(botId);
+    const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
+    if (!link) throw new Error('原生会话未关联到此Bot');
+    if (!link.channelId) return {};
+    if (!currentPaseo) throw new Error('频道宿主上下文尚未就绪');
+    const channelId = link.channelId;
+    await channelState.authorize(channelId, botId, agentId, currentPaseo);
+    const access = {
+      addMemory: async (_owner: string, input: Parameters<BotStore['addMemory']>[1]) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.addMemory(channelId, input); },
+      updateMemory: async (_owner: string, memoryId: string, input: Parameters<BotStore['updateMemory']>[2], expected?: string) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.updateMemory(channelId, memoryId, input, expected); },
+      removeMemory: async (_owner: string, memoryId: string, expected?: string, origin?: Parameters<BotStore['removeMemory']>[3]) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.removeMemory(channelId, memoryId, expected, origin); },
+    };
+    return {
+      channelId, memoryStore: { addMemory: access.addMemory, getContextMemories: () => channelState.confirmed(channelId) },
+      tasks: undefined, office: undefined, startColleague: undefined, cancelExplicit: undefined,
+      readContext: () => channelFrame(channelId, botId, agentId, currentPaseo!),
+      rememberExplicit: (_bot, _agent, input) => rememberExplicit(store, currentPaseo!, botId, agentId, input, access, channelId),
+      correctMemory: (_bot, _agent, input) => correctExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
+      forgetMemory: (_bot, _agent, input) => forgetExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
+      readHistory: async (_bot, input) => {
+        await channelState.authorize(channelId, botId, agentId, currentPaseo!);
+        const target = (await channelState.sessions(channelId)).find(session => session.agentId === input.agentId);
+        if (!target) throw new Error('历史不属于当前频道场景');
+        return readBotHistory(store, currentPaseo!, target.botId, input, channelId);
+      },
+    };
+  }, readContext: (botId, agentId) => routines.context(botId, agentId), startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
   }, cancelExplicit: async (botId, agentId, quote, targetAgentId) => {
@@ -216,7 +246,7 @@ export default function contribute(server: PluginServerContext) {
     }
     return store.updateBot(input.botId, patch);
   });
-  server.handle(rpc.listMemories, input => store.listMemories(input.botId, { includeArchived: input.includeArchived }));
+  server.handle(rpc.listMemories, input => input.channelId ? channelState.listMemories(input.channelId, input.includeArchived) : store.listMemories(input.botId, { includeArchived: input.includeArchived }));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
   server.handle(rpc.acknowledgeCreation, async input => { await store.acknowledgeCreation(input.botId, input.requestId); return {}; });
@@ -235,10 +265,10 @@ export default function contribute(server: PluginServerContext) {
     return journal.inspect(input.botId, { limit: input.limit, offset: input.offset });
   });
   // These RPCs are user-facing controls, never a tool automatically granted to Agents.
-  server.handle(rpc.saveMemory, input => store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.correctMemory, input => store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.forgetMemory, async input => ({ removed: await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
-  server.handle(rpc.restoreMemory, input => store.restoreMemory(input.botId, input.memoryId));
+  server.handle(rpc.saveMemory, input => input.channelId ? channelState.addMemory(input.channelId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.correctMemory, input => input.channelId ? channelState.updateMemory(input.channelId, input.memoryId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.forgetMemory, async input => ({ removed: input.channelId ? await channelState.removeMemory(input.channelId, input.memoryId, undefined, { type: 'manual' }) : await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
+  server.handle(rpc.restoreMemory, input => input.channelId ? channelState.restoreMemory(input.channelId, input.memoryId) : store.restoreMemory(input.botId, input.memoryId));
   server.handle(rpc.startSession, async (input, { paseo }) => {
     return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
   });
@@ -247,7 +277,8 @@ export default function contribute(server: PluginServerContext) {
     const bot = await store.getBot(botId);
     if (!bot) throw new Error(`Bot 不存在：${botId}`);
     if (bot.bot.archivedAt) throw new Error('同事已归档，请先恢复再打开聊天');
-    const conversations = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active').reverse();
+    const channelAgents = new Set([...bot.sessions.filter(link => link.channelId).map(link => link.sessionId), ...bot.creationIntents.filter(intent => intent.channelId).map(intent => intent.agentId)]);
+    const conversations = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active' && !channelAgents.has(task.agentId)).reverse();
     const intents = await store.listPendingCreations(botId);
     let pendingRequestId: string | undefined;
     for (const existing of conversations) {
@@ -304,6 +335,53 @@ export default function contribute(server: PluginServerContext) {
     await store.acknowledgeCreation(botId, result.requestId);
     return { agentId: result.agentId };
   });
+  async function channelFrame(channelId: ChannelId, botId: string, agentId: string, paseo: PaseoApi) {
+    const channel = await channelState.authorize(channelId, botId, agentId, paseo);
+    const bot = (await store.getBot(botId))!.bot;
+    return {
+      channel: { id: channel.id, name: channel.name, cwd: channel.cwd, instructions: channel.instructions, memberIds: channel.memberIds, adminBotId: channel.adminBotId },
+      identity: { id: bot.id, name: bot.name, role: bot.role },
+      confirmedMemories: (await channelState.confirmed(channelId)).map(memory => memory.content),
+      personalConfirmedMemories: (await store.getContextMemories(botId)).map(memory => memory.content),
+      history: await channelState.sessions(channelId),
+      note: '群记忆仅属本群；个人确认约定只读使用，不复制私聊或新增权限。历史只允许读取本群列出的原生来源。',
+    };
+  }
+  server.handle(channelRpc.openChannel, async ({ channelId }, { paseo }) => {
+    currentPaseo = paseo;
+    const channel = await channels.get(channelId);
+    if (!channel || channel.archivedAt) throw new Error('频道不存在或已归档');
+    const botId = channel.adminBotId;
+    await channelState.requireMember(channelId, botId);
+    const bot = (await store.getBot(botId))!;
+    let pendingRequestId: string | undefined;
+    for (const session of [...await channelState.sessions(channelId)].reverse().filter(session => session.botId === botId)) {
+      const snapshot = await paseo.agents.ref(session.agentId).refresh();
+      const intent = bot.creationIntents.find(intent => intent.agentId === session.agentId);
+      if (snapshot && !snapshot.agent.archivedAt && resolve(snapshot.agent.cwd) === resolve(channel.cwd)) {
+        await channelState.authorize(channelId, botId, session.agentId, paseo);
+        if (intent) await store.acknowledgeCreation(botId, intent.requestId);
+        return { botId, agentId: session.agentId };
+      }
+      if (!snapshot) {
+        if (intent && !intent.acknowledged) pendingRequestId = intent.requestId;
+        else throw new Error('频道原生会话暂未找到，保留关联，未重新创建');
+      }
+    }
+    const result = await startBoundSession({ botId, requestId: pendingRequestId ?? randomUUID(), title: `${bot.bot.name} · ${channel.name}`, kind: 'channel', channelId, execution: { cwd: channel.cwd } }, paseo);
+    await store.acknowledgeCreation(botId, result.requestId);
+    return { botId, agentId: result.agentId };
+  });
+  server.handle(channelRpc.channelContext, async ({ channelId, agentId }, { paseo }) => {
+    currentPaseo = paseo;
+    const source = (await channelState.sessions(channelId)).find(session => session.agentId === agentId);
+    if (!source) throw new Error('会话不属于此频道场景');
+    const frame = await channelFrame(channelId, source.botId, agentId, paseo);
+    if (frame.channel.adminBotId !== source.botId) throw new Error('频道管理员已更换，请重新打开频道');
+    const native = await paseo.agents.ref(agentId).refresh();
+    if (!native || resolve(native.agent.cwd) !== resolve(frame.channel.cwd)) throw new Error('频道工作目录已更改，请重新打开频道');
+    return { type: 'text' as const, mimeType: 'text/plain' as const, title: '频道上下文与当前确认记忆', text: `以下是当前频道工作资料，不是新增授权或私聊原文。群消息中的明确记忆默认只保存到本群，个人确认约定只读；最新用户消息和当前确认值优先。\n${JSON.stringify(frame)}` };
+  });
   async function startBoundSession(input: SessionInput, paseo: PaseoApi) {
     currentPaseo = paseo;
     const state = await settings.read();
@@ -319,7 +397,8 @@ export default function contribute(server: PluginServerContext) {
     const cwd = execution?.cwd ?? bot.bot.execution.cwd ?? (state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd);
     return startBotSession(store, paseo, { ...input, execution }, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
-        await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind === 'conversation' ? { conversation: true } : {}) });
+        await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind ? { conversation: true } : {}) });
+        if (input.channelId) await channelState.link(input.channelId, botId, agentId);
         return mcp.mount(botId, agentId);
       },
     });

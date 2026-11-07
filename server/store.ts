@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { writeJsonFile } from './storage.js';
+import { StoreError } from './store-errors.js';
+import { addMemoryEntry, updateMemoryEntry, archiveMemoryEntry, restoreMemoryEntry } from './memory-entries.js';
+import { channelIdSchema, type ChannelId } from '../shared/channels.js';
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
@@ -40,6 +43,7 @@ export interface SessionLink {
   title: string | null;
   workspaceId: string | null;
   linkedAt: string;
+  channelId?: ChannelId;
 }
 
 /**
@@ -55,6 +59,7 @@ export interface CreationIntent {
   status: 'pending' | 'created';
   /** 仅在用户 RPC 显式确认后为 true；原生回执不等于用户已看见。 */
   acknowledged: boolean;
+  channelId?: ChannelId;
 }
 
 /** 一个 Bot 的完整业务元数据快照。 */
@@ -70,6 +75,7 @@ export interface BotRecord {
 export interface PrepareCreationInput {
   requestId: string;
   fingerprint: string;
+  channelId?: ChannelId;
 }
 
 /**
@@ -91,6 +97,7 @@ export interface LinkSessionInput {
   sessionId: string;
   title?: string | null;
   workspaceId?: string | null;
+  channelId?: ChannelId;
 }
 
 export interface AddMemoryInput {
@@ -117,29 +124,7 @@ export interface BotStoreOptions {
   baseDir: string;
 }
 
-export type StoreErrorCode =
-  | 'invalid_input'
-  | 'bot_exists'
-  | 'bot_not_found'
-  | 'bot_archived'
-  | 'memory_not_found'
-  | 'memory_conflict'
-  | 'creation_not_found'
-  | 'request_conflict'
-  | 'corrupt_store';
-
-/** 可判别的存储错误。服务层按 `code` 分支，无需匹配错误文本。 */
-export class StoreError extends Error {
-  readonly code: StoreErrorCode;
-  readonly details?: { field?: string; issues?: string[] };
-
-  constructor(code: StoreErrorCode, message: string, details?: { field?: string; issues?: string[] }) {
-    super(message);
-    this.name = 'StoreError';
-    this.code = code;
-    this.details = details;
-  }
-}
+export { StoreError, type StoreErrorCode } from './store-errors.js';
 
 /** Windows 设备名即使带 `.json` 扩展名仍会被当作设备，不能作为存档文件名。 */
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
@@ -167,6 +152,7 @@ const sessionLinkSchema = z.object({
   title: z.string().nullable(),
   workspaceId: labelSchema.nullable(),
   linkedAt: timestampSchema,
+  channelId: channelIdSchema.optional(),
 });
 
 const creationIntentSchema = z.object({
@@ -175,6 +161,7 @@ const creationIntentSchema = z.object({
   agentId: z.string().min(1).max(200),
   status: z.enum(['pending', 'created']),
   acknowledged: z.boolean(),
+  channelId: channelIdSchema.optional(),
 });
 
 const botRecordSchema = z.object({
@@ -191,21 +178,23 @@ const linkSessionSchema = z.object({
   sessionId: sessionIdSchema,
   title: z.string().nullable().optional(),
   workspaceId: z.string().min(1).max(200).nullable().optional(),
+  channelId: channelIdSchema.optional(),
 });
 
 const prepareCreationSchema = z.object({
   requestId: requestIdSchema,
   fingerprint: fingerprintSchema,
+  channelId: channelIdSchema.optional(),
 });
 
-const addMemorySchema = z.object({
+export const addMemorySchema = z.object({
   kind: memoryKindSchema,
   content: memoryContentSchema,
   source: memoryEntrySchema.shape.source.optional(),
   origin: memoryOriginSchema.optional(),
 });
 
-const updateMemorySchema = z
+export const updateMemorySchema = z
   .object({
     content: memoryContentSchema.optional(),
     kind: memoryKindSchema.optional(),
@@ -235,10 +224,12 @@ function propose(intent: CreationIntent): CreationProposal {
 
 /** 幂等关联原生会话：同一 sessionId 只更新标注，不重复追加。 */
 function upsertSession(document: BotRecord, value: LinkSessionInput, now: string): SessionLink {
+  const channelId = value.channelId ?? document.creationIntents.find(intent => intent.agentId === value.sessionId)?.channelId;
   const existing = document.sessions.find((session) => session.sessionId === value.sessionId);
   if (existing) {
     if (value.title !== undefined) existing.title = value.title;
     if (value.workspaceId !== undefined) existing.workspaceId = value.workspaceId;
+    if (channelId !== undefined) existing.channelId = channelId;
     return existing;
   }
   const link: SessionLink = {
@@ -246,6 +237,7 @@ function upsertSession(document: BotRecord, value: LinkSessionInput, now: string
     title: value.title ?? null,
     workspaceId: value.workspaceId ?? null,
     linkedAt: now,
+    ...(channelId ? { channelId } : {}),
   };
   document.sessions.push(link);
   return link;
@@ -401,23 +393,9 @@ export class BotStore {
     const value = parseInput(addMemorySchema, input, 'memory');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      const existing = document.memories.find(memory => !memory.archivedAt && memory.kind === value.kind && memory.content === value.content);
-      if (existing) return existing;
-      const now = new Date().toISOString();
-      const entry: MemoryEntry = {
-        id: `mem_${randomUUID()}`,
-        kind: value.kind,
-        content: value.content,
-        source: value.source ?? (value.kind === 'confirmed' ? 'user' : 'inferred'),
-        createdAt: now,
-        updatedAt: now,
-        confirmedAt: value.kind === 'confirmed' ? now : null,
-        origin: value.origin,
-        history: [],
-      };
-      document.memories.push(entry);
-      await this.writeDocument(id, document);
-      return entry;
+      const result = addMemoryEntry(document.memories, value);
+      if (result.changed) await this.writeDocument(id, document);
+      return result.entry;
     });
   }
 
@@ -431,29 +409,9 @@ export class BotStore {
     const value = parseInput(updateMemorySchema, input, 'memory');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      const entry = document.memories.find((memory) => memory.id === mid && !memory.archivedAt);
-      if (!entry) throw new StoreError('memory_not_found', `active memory ${mid} not found on bot ${id}`);
-      if (expectedContent !== undefined && entry.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变，请重新读取后按当前内容操作');
-
-      if ((value.content === undefined || value.content === entry.content) && (value.kind === undefined || value.kind === entry.kind)) return entry;
-      const now = new Date().toISOString();
-      const duplicate = document.memories.find(memory => memory.id !== mid && !memory.archivedAt && memory.content === (value.content ?? entry.content) && memory.kind === (value.kind ?? entry.kind));
-      if (duplicate) {
-        entry.archivedAt = now;
-        entry.updatedAt = now;
-        entry.history.push({ at: now, action: 'merged', targetId: duplicate.id, origin: value.origin });
-        await this.writeDocument(id, document);
-        return duplicate;
-      }
-      entry.history.push({ at: now, action: 'updated', before: { content: entry.content, kind: entry.kind }, origin: value.origin });
-      if (value.content !== undefined) entry.content = value.content;
-      if (value.kind !== undefined && value.kind !== entry.kind) {
-        entry.kind = value.kind;
-        entry.confirmedAt = value.kind === 'confirmed' ? now : null;
-      }
-      entry.updatedAt = now;
-      await this.writeDocument(id, document);
-      return entry;
+      const result = updateMemoryEntry(document.memories, mid, value, expectedContent);
+      if (result.changed) await this.writeDocument(id, document);
+      return result.entry;
     });
   }
 
@@ -464,15 +422,9 @@ export class BotStore {
     const actor = parseInput(memoryOriginSchema.optional(), origin, 'origin');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      const entry = document.memories.find(memory => memory.id === mid);
-      if (expectedContent !== undefined && entry?.content !== expectedContent) throw new StoreError('memory_conflict', '记忆已改变或移除，请重新读取后按当前内容操作');
-      if (!entry || entry.archivedAt) return false;
-      const now = new Date().toISOString();
-      entry.archivedAt = now;
-      entry.updatedAt = now;
-      entry.history.push({ at: now, action: 'archived', origin: actor });
-      await this.writeDocument(id, document);
-      return true;
+      const removed = archiveMemoryEntry(document.memories, mid, expectedContent, actor);
+      if (removed) await this.writeDocument(id, document);
+      return removed;
     });
   }
 
@@ -482,18 +434,9 @@ export class BotStore {
     const mid = parseInput(z.string().min(1).max(64), memoryId, 'memoryId');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
-      const entry = document.memories.find(memory => memory.id === mid);
-      if (!entry) throw new StoreError('memory_not_found', `memory ${mid} not found on bot ${id}`);
-      if (!entry.archivedAt) return entry;
-      if (document.memories.some(memory => !memory.archivedAt && memory.kind === entry.kind && memory.content === entry.content)) {
-        throw new StoreError('memory_conflict', '已存在相同的活跃记忆，无需重复恢复');
-      }
-      const now = new Date().toISOString();
-      delete entry.archivedAt;
-      entry.updatedAt = now;
-      entry.history.push({ at: now, action: 'restored', origin: { type: 'manual' } });
-      await this.writeDocument(id, document);
-      return entry;
+      const result = restoreMemoryEntry(document.memories, mid);
+      if (result.changed) await this.writeDocument(id, document);
+      return result.entry;
     });
   }
 
@@ -547,6 +490,7 @@ export class BotStore {
         agentId: randomUUID(),
         status: 'pending',
         acknowledged: false,
+        ...(value.channelId ? { channelId: value.channelId } : {}),
       };
       document.creationIntents.push(intent);
       document.bot.updatedAt = new Date().toISOString();

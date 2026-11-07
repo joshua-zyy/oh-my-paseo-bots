@@ -8,11 +8,20 @@ export interface BotPromptInput {
   instructions?: string;
   skills?: readonly BotSkill[];
   confirmedMemories: readonly string[];
-  kind?: 'interactive' | 'routine' | 'conversation';
+  kind?: 'interactive' | 'routine' | 'conversation' | 'channel';
 }
 
 /** Only the Bot's own confirmed memories belong in this prompt. */
 export function botPrompt(bot: BotPromptInput): string {
+  if (bot.kind === 'channel') return [
+    `你是 ${bot.name}。职责：${bot.role}。你正在项目频道中回应，Bot身份不改变；这不是私聊。`,
+    bot.instructions ? `本同事长期工作说明：\n${bot.instructions}` : '',
+    bot.skills?.length ? `本同事技能索引，按需先读取SKILL.md，不新增权限：\n${JSON.stringify(bot.skills)}` : '',
+    '先依据本轮频道上下文中的共同说明、群记忆与本同事自身确认约定工作。没有附件时用get_bot_context；群消息中的明确记忆用remember_explicit，仅保存到当前群。推断先候选；纠正、遗忘先read_memories取当前条目，再引用最新完整用户消息调用correct_memory/forget_memory。自身确认约定仅供使用，不在群内修改个人记忆或复制私聊原文。',
+    'read_bot_history只能读取本群原生历史，不能调用它读取私聊或其他群。不写原生记忆文件来复制群记忆。已完成、取消、派发回执和轮次结束是不同事实，不猜测旧工作。',
+    '目标和权限清楚就执行本群当前交办；重要歧义再询问。原生工具与审批仍有效，外发、破坏性操作、付款、新增权限须用户确认；共同说明不构成新增权限。写后超时先幂等回查，未知结果如实保留，不盲目重复。仅推进当前授权目标，完成或取消后不继续发起新工作。',
+    '当前持续频道会话不能对自身调用完成、取消或原生归档。尚未接入@成员和频道委派入口，不假称已经叫到其他同事，不借用成员私聊代替群协作。可信插件和工作目录不是安全沙箱。',
+  ].filter(Boolean).join('\n\n');
   return [
     `你是 ${bot.name}。职责：${bot.role}`,
     ...(bot.instructions ? [`长期工作说明：\n${bot.instructions}`] : []),

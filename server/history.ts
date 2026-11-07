@@ -4,11 +4,13 @@ import type { BotStore } from './store.js';
 export type BotHistoryInput = { agentId: string } & Pick<PaseoAgentTimelineRefetchOptions, 'direction' | 'cursor' | 'limit'>;
 
 /** Read native history in place; Bot linkage grants no access to unrelated specialists. */
-export async function readBotHistory(store: BotStore, paseo: PaseoApi, botId: string, input: BotHistoryInput) {
+export async function readBotHistory(store: BotStore, paseo: PaseoApi, botId: string, input: BotHistoryInput, channelId?: string) {
   const bot = await store.getBot(botId);
   if (!bot || (!bot.sessions.some(session => session.sessionId === input.agentId) && !bot.creationIntents.some(intent => intent.agentId === input.agentId))) {
     throw new Error('该原生会话未关联到此 Bot');
   }
+  const link = bot.sessions.find(link => link.sessionId === input.agentId) ?? bot.creationIntents.find(intent => intent.agentId === input.agentId);
+  if (link?.channelId !== channelId) throw new Error('原生历史与当前私聊／频道场景不符');
   const direction = input.direction ?? 'tail';
   if ((direction === 'tail' && input.cursor) || (direction !== 'tail' && !input.cursor)) throw new Error('tail 不使用游标；before／after 需使用上一页返回的游标');
   const page = await paseo.agents.ref(input.agentId).timeline.refetch({ direction, cursor: input.cursor, limit: input.limit ?? 50, projection: 'canonical' });
