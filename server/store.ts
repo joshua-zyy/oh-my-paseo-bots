@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { writeJsonFile } from './storage.js';
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
@@ -663,24 +664,7 @@ export class BotStore {
 
   /** 原子写：同目录临时文件 → fsync → rename 覆盖。 */
   private async writeDocument(botId: string, document: BotRecord): Promise<void> {
-    const target = this.fileFor(botId);
-    await mkdir(this.baseDir, { recursive: true });
-
-    const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
-    const payload = `${JSON.stringify(document, null, 2)}\n`;
-    const handle = await open(temporary, 'wx', 0o600);
-    try {
-      try {
-        await handle.writeFile(payload, 'utf8');
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, target);
-    } catch (error) {
-      await rm(temporary, { force: true });
-      throw error;
-    }
+    await writeJsonFile(this.fileFor(botId), document);
   }
 
   private async listStoreFiles(): Promise<string[]> {

@@ -12,11 +12,12 @@ import { Work } from './client/work.js';
 import { Chat } from './client/chat.js';
 import { BotConfiguration } from './client/bot-config.js';
 import { HostSettings } from './client/host-settings.js';
+import { Channels } from './client/channels.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
 import { Actions, Button, Copy, Field, Notice, PickerRow, UiProvider } from './client/ui.js';
 
-type Panel = 'menu' | 'settings' | 'host' | 'work' | 'memories' | 'routines' | 'archive' | 'archived';
-const panels = { menu: '同事', settings: '同事设置', host: '默认设置', work: '工作记录', memories: '记忆', routines: '例程', archive: '归档同事', archived: '已归档同事' };
+type Panel = 'menu' | 'settings' | 'host' | 'work' | 'memories' | 'routines' | 'archive' | 'archived' | 'channels';
+const panels = { menu: '同事', settings: '同事设置', host: '默认设置', work: '工作记录', memories: '记忆', routines: '例程', archive: '归档同事', archived: '已归档同事', channels: '项目频道' };
 const menu = [
   { panel: 'settings', label: '设置', icon: 'Settings' },
   { panel: 'work', label: '工作记录', icon: 'ListTodo' },
@@ -102,7 +103,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       {!compact && <View style={{ width: 220, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.surface1 }}>
         <View style={{ padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Copy>同事</Copy><Button label="添加同事" icon="Plus" iconOnly size="xs" disabled={busy} onPress={() => setCreating(true)} /></View>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 20 }} keyboardShouldPersistTaps="handled">{roster}</ScrollView>
-        <View style={{ padding: 10, borderTopWidth: 1, borderTopColor: colors.border }}><Button label="已归档同事" icon="Archive" disabled={busy} onPress={() => setPanel('archived')} /><Button label="默认设置" icon="Settings2" disabled={busy} onPress={() => setPanel('host')} /></View>
+        <View style={{ padding: 10, borderTopWidth: 1, borderTopColor: colors.border }}><Button label="项目频道" icon="Hash" disabled={busy} onPress={() => setPanel('channels')} /><Button label="已归档同事" icon="Archive" disabled={busy} onPress={() => setPanel('archived')} /><Button label="默认设置" icon="Settings2" disabled={busy} onPress={() => setPanel('host')} /></View>
       </View>}
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
@@ -114,14 +115,14 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
         {current ? <Chat key={host.id} botId={selected} hostId={host.id} sessionId={conversations[selected]} onConversationChange={rememberConversation} openAgent={openAgent} /> : <View style={{ padding: 24 }}><Copy muted>读取同事中…</Copy></View>}
       </View>
     </View>
-    <Modal title="选择同事" open={picker} onOpenChange={setPicker}><Modal.Content>{roster}<Actions><Button label="已归档同事" icon="Archive" onPress={() => { setPicker(false); setPanel('archived'); }} /><Button label="默认设置" icon="Settings2" onPress={() => { setPicker(false); setPanel('host'); }} /><Button label="添加同事" icon="Plus" onPress={() => { setPicker(false); setCreating(true); }} /></Actions></Modal.Content></Modal>
+    <Modal title="选择同事" open={picker} onOpenChange={setPicker}><Modal.Content>{roster}<Actions><Button label="项目频道" icon="Hash" onPress={() => { setPicker(false); setPanel('channels'); }} /><Button label="已归档同事" icon="Archive" onPress={() => { setPicker(false); setPanel('archived'); }} /><Button label="默认设置" icon="Settings2" onPress={() => { setPicker(false); setPanel('host'); }} /><Button label="添加同事" icon="Plus" onPress={() => { setPicker(false); setCreating(true); }} /></Actions></Modal.Content></Modal>
     <Modal title={panel === 'menu' ? current?.name || '同事' : panel ? panels[panel] : '同事'} open={panel !== null} onOpenChange={open => { if (!open) setPanel(null); }}><Modal.Content>
-      {panel && panel !== 'menu' && panel !== 'host' && panel !== 'archived' && <View style={{ alignItems: 'flex-start' }}><Button label="返回" icon="ArrowLeft" disabled={busy} onPress={() => setPanel('menu')} /></View>}
+      {panel && panel !== 'menu' && panel !== 'host' && panel !== 'archived' && panel !== 'channels' && <View style={{ alignItems: 'flex-start' }}><Button label="返回" icon="ArrowLeft" disabled={busy} onPress={() => setPanel('menu')} /></View>}
       <Notice error={error} />
       {panel === 'archive' && current && <><Copy>归档「{current.name}」后，它会从同事列表与委派目录移除。身份、记忆、聊天历史和工作区文件保留，可从「已归档同事」恢复。</Copy><Copy muted>未结束事项、正在回复、待授权或有效例程须先处理；归档不会替你停止或取消工作。</Copy><Actions><Button label="暂不归档" disabled={busy} onPress={() => setPanel('menu')} /><Button label="确认归档" primary disabled={busy || current.id === CHIEF_BOT_ID} onPress={() => void changeArchive(current.id, true)} /></Actions></>}
       {panel === 'archived' && <>{archived.length ? <SettingsCard>{archived.map(bot => <SettingsAction key={bot.id} label={bot.name} hint={bot.role} actionLabel="恢复" disabled={busy} onPress={() => void changeArchive(bot.id, false)} />)}</SettingsCard> : <Copy muted>没有已归档同事</Copy>}</>}
       {panel === 'menu' ? <>{menu.map(item => <Pressable key={item.panel} accessibilityRole="button" onPress={() => setPanel(item.panel)} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, minHeight: 44, backgroundColor: pressed ? colors.surface1 : 'transparent', borderRadius: 6 })}><Icon name={item.icon} size={18} color={colors.foregroundMuted} /><Text style={{ color: colors.foreground, flex: 1, fontSize: 15 }}>{item.label}</Text><Icon name="ChevronRight" size={16} color={colors.foregroundMuted} /></Pressable>)}{current && current.id !== CHIEF_BOT_ID && <Button label="归档同事" icon="Archive" disabled={busy} onPress={() => setPanel('archive')} />}</>
-        : panel === 'host' ? <HostSettings /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew, mcpImports) => {
+        : panel === 'host' ? <HostSettings /> : panel === 'channels' ? <Channels bots={bots} /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew, mcpImports) => {
           if (guard.current) return;
           guard.current = true; setBusy(true); setError('');
           let saved = false;

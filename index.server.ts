@@ -26,12 +26,19 @@ import { TaskTracker } from './server/tasks.js';
 import * as taskRpc from './shared/tasks.js';
 import { BotRoutines } from './server/routines.js';
 import * as routineRpc from './shared/routines.js';
+import { ChannelStore } from './server/channels.js';
+import * as channelRpc from './shared/channels.js';
 
 export default function contribute(server: PluginServerContext) {
   const legacyDir = join(homedir(), '.paseo-guys');
   const baseDir = process.env.OH_MY_PASEO_BOTS_DATA_DIR ?? process.env.PASEO_GUYS_DATA_DIR
     ?? (existsSync(legacyDir) ? legacyDir : join(homedir(), '.oh-my-paseo-bots'));
   const store = new BotStore({ baseDir });
+  const channels = new ChannelStore({ baseDir, bots: store });
+  server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
+  server.handle(channelRpc.createChannel, input => channels.create(input));
+  server.handle(channelRpc.updateChannel, input => channels.update(input.channelId, input.details));
+  server.handle(channelRpc.archiveChannel, input => channels.setArchived(input.channelId, input.archived));
   const defaultCwd = join(baseDir, 'workspace');
   const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
   let currentPaseo: PaseoApi | undefined;
