@@ -12,6 +12,12 @@
 
 `server/conversations.ts` 的有界完整消息选择改编自 [pingdotgg/t3code](https://github.com/pingdotgg/t3code) 提交 `337c5858c33bc7f8f6dfd391a2c279fa0f7e4d17` 的 `packages/provider-core/src/server/handoffBudget.ts`。保留最近用户／助手和较早用户消息优先、完整原文、来源与遗漏标记；适配为 Paseo 原生历史读取及空分段的首轮附件，不引入 t3code 的编排层、会话库或 Provider 驱动。许可为 MIT，Copyright (c) 2026 T3 Tools Inc.，全文见 [licenses/t3code-MIT.txt](licenses/t3code-MIT.txt)。
 
+## DS-Bot 点名识别适配
+
+`shared/channel-mentions.ts` 改编自 [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot) 提交 `5c514ad70d5f3fd1c3b72b2e76e530bef50989d7` 的 `ds-bot/src/shared/mentions.js`：保留代码／Markdown 链接／地址／路径排除、最长名称优先与去重语义，增加本项目 Bot 稳定标识及同名歧义报告；不迁移其会话库、群轮次循环或调度。Copyright 2026 Fei2411 and the DS Bot contributors，Apache-2.0 许可及适用告知见 [许可证](licenses/DS-Bot-Apache-2.0.txt) 和 [NOTICE](licenses/DS-Bot-NOTICE.txt)。
+
+`server/channel-chat.ts` 的群原文预算选择沿用上节 t3code 适配的完整消息、来源、遗漏标记方法；仍只查 Paseo 原生历史，不另建历史库。
+
 ## paseo-bots 许可原文
 
 MIT License

@@ -1,0 +1,7 @@
+DS Bot
+Copyright 2026 Fei2411 and the DS Bot contributors
+
+This product is licensed under the Apache License, Version 2.0 (see DS-Bot-Apache-2.0.txt).
+
+This project adapts only ds-bot/src/shared/mentions.js. The unrelated third-party
+portions listed in the upstream NOTICE are not copied by this adaptation.

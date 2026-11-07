@@ -29,6 +29,43 @@ async function editor() {
 
 const bots = [{ id: 'chief', name: '主同事', execution: { cwd: '/synthetic/project' } }, { id: 'helper', name: '资料同事' }];
 
+test('群消息框点名插入稳定标识，发送原文给解析成员并复用原生快照', async () => {
+  const source = ts.createSourceFile('channel-chat.tsx', await readFile(new URL('../../client/channel-chat.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = source.statements.filter(ts.isFunctionDeclaration).find(node => node.name?.text === 'ChannelChat')!;
+  const body = ts.transpileModule(`${declaration.getText(source)}\nreturn ChannelChat;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
+  const helpers = await import('../client/channel-state.js');
+  const channel = rpc.channelSchema.parse({ id: '1524b809-dbbd-40f7-91b5-a74cd5764c60', name: '协作群', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: '/synthetic/project', instructions: '', createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' });
+  const attachment = { type: 'text' as const, mimeType: 'text/plain' as const, title: '本群资料', text: 'GROUP-SNAPSHOT' };
+  const calls: { agentId: string; text: string; options: any }[] = [], routes: unknown[] = [], checks: unknown[] = [];
+  const api = { agents: { ref: (agentId: string) => ({ send: async (text: string, options: unknown) => { calls.push({ agentId, text, options }); } }) } };
+  const targets = [{ botId: 'chief', agentId: 'group-chief', attachment }, { botId: 'helper', agentId: 'group-helper', attachment }];
+  const handlers: Record<string, (input: any) => Promise<any>> = {
+    'bots.channels.view': async () => ({ channel, members: bots, sessions: [] }),
+    'bots.channels.route': async input => { routes.push(input); return { targets }; },
+    'bots.channels.context': async input => { checks.push(input); return attachment; },
+    'bots.reply.stop': async () => ({}),
+  };
+  const values: any[] = [], effects: (() => unknown)[] = []; let cursor = 0;
+  const useState = (initial: any) => { const i = cursor++; if (!(i in values)) values[i] = initial; return [values[i], (value: any) => { values[i] = typeof value === 'function' ? value(values[i]) : value; }]; };
+  const useRef = (initial: any) => { const i = cursor++; if (!(i in values)) values[i] = { current: initial }; return values[i]; };
+  const useEffect = (work: () => unknown, deps: unknown[]) => { const i = cursor++; if (!values[i] || deps.some((value, index) => value !== values[i][index])) effects.push(work); values[i] = deps; };
+  const names = ['View', 'ScrollView', 'Copy', 'Actions', 'Button', 'Notice', 'Memories', 'ChatSegment', 'ChatTimeline', 'ChatPermission', 'TextInput'];
+  const component = new Function('h', 'Fragment', 'useState', 'useRef', 'useEffect', 'usePaseo', 'useHosts', 'useRpc', 'useUi', 'rpc', 'stopReply', 'observeChat', 'channelTimeline', 'deliverChannelMessage', ...names, body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', useState, useRef, useEffect, () => api, () => [{ serverId: 'host', status: 'online' }], (contract: { name: string }) => { assert(handlers[contract.name], contract.name); return handlers[contract.name]; }, () => ({ colors: {}, compact: false }), rpc, { name: 'bots.reply.stop' }, () => assert.fail('空群不应订阅不存在的来源'), helpers.channelTimeline, helpers.deliverChannelMessage, ...names);
+  const render = () => { cursor = 0; const nodes = elements(component({ channel, hostId: 'host' })); effects.splice(0).forEach(work => work()); return nodes; };
+  render(); await new Promise(resolve => setImmediate(resolve));
+  let view = render(); view.find(node => node.type === 'Button' && node.props.label === '@资料同事')!.props.onPress();
+  view = render(); assert.equal(view.find(node => node.type === 'TextInput')!.props.value, '@helper ');
+  const text = '@helper @chief 请核对\n保留原话'; view.find(node => node.type === 'TextInput')!.props.onChangeText(text);
+  view = render(); view.find(node => node.type === 'Button' && node.props.label === '发送')!.props.onPress();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(routes, [{ channelId: channel.id, text }]);
+  assert.deepEqual(calls.map(call => call.agentId), ['group-chief', 'group-helper']); assert(calls.every(call => call.text === text));
+  assert.equal(calls[0].options.messageId, calls[1].options.messageId); assert.deepEqual(calls[0].options.attachments, [attachment]);
+  assert.deepEqual(checks.map((input: any) => input.agentId), ['group-chief', 'group-helper']);
+  assert.equal(render().find(node => node.type === 'TextInput')!.props.value, '');
+});
+
 test('频道表单选择成员和管理员、保存目录及共同说明，重试沿用创建标识', async () => {
   const render = await editor();
   const saved: unknown[] = [];

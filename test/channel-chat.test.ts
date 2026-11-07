@@ -25,7 +25,7 @@ async function fixture() {
   } }, agents: { ref: (id: string) => ({
     refresh: async () => { const source = created.find(input => input.agentId === id); return source ? { agent: { id, title: source.title, labels: source.labels, cwd: source.cwd, provider: 'claude', model: 'synthetic', status: 'idle', pendingPermissions: [], archivedAt: archived.has(id) ? 'now' : null } } : null; },
     archive: async () => { archived.add(id); },
-    timeline: { refetch: async () => ({ epoch: 'one', entries: (history.get(id) ?? []).map((item, i) => ({ item, seqStart: i + 1, seqEnd: i + 1 })), startCursor: null, endCursor: null, hasOlder: false, hasNewer: false, gap: false, staleCursor: false, error: null }) },
+    timeline: { refetch: async () => ({ epoch: 'one', entries: (history.get(id) ?? []).map((item, i) => ({ item, timestamp: new Date((i + 1) * 1000).toISOString(), seqStart: i + 1, seqEnd: i + 1 })), startCursor: null, endCursor: null, hasOlder: false, hasNewer: false, gap: false, staleCursor: false, error: null }) },
   }) } } as unknown as PaseoApi;
   const server = { registerSettings: (setting: { id: string }) => ({ read: async () => ({ status: 'ready', values: setting.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'claude/synthetic' } }) }), addHook: () => () => {}, handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }) } as unknown as PluginServerContext;
   const cleanup = contribute(server);
@@ -113,6 +113,75 @@ test('更换管理员后保留本群记忆与原生来源，移除成员的旧�
     assert.equal(payload(await tools.callTool({ name: 'read_memories', arguments: {} })).memories[0].content, '本群保留的约定');
     const history = payload(await tools.callTool({ name: 'read_bot_history', arguments: { agentId: old.agentId } }));
     assert.equal(history.entries[0].item.text, '本群之前的讨论原文');
+  } finally { await host.close(); }
+});
+
+test('普通群消息默认交管理员，明确@支持多成员去重且不误读代码、地址或私聊', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    const id = randomUUID();
+    await host.invoke('bots.channels.create', { id, name: '协作群', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: host.directory, instructions: '本群范围' });
+    const normal = await host.invoke('bots.channels.route', { channelId: id, text: '普通问题' }) as { targets: { botId: string; agentId: string; attachment: { text: string } }[] };
+    assert.deepEqual(normal.targets.map(target => target.botId), ['chief']);
+    const privateChat = await host.invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
+    const routed = await host.invoke('bots.channels.route', { channelId: id, text: '@资料同事 @chief @资料同事 请核对。' }) as typeof normal;
+    assert.deepEqual(routed.targets.map(target => target.botId), ['helper', 'chief']);
+    assert.notEqual(routed.targets[0].agentId, privateChat.agentId);
+    assert.equal(routed.targets[1].agentId, normal.targets[0].agentId);
+    const literal = await host.invoke('bots.channels.route', { channelId: id, text: '`@资料同事` user@helper.com https://example.com/@helper [网页](@helper) @helper/docs 只是引用' }) as typeof normal;
+    assert.deepEqual(literal.targets.map(target => target.botId), ['chief']);
+    const view = await host.invoke('bots.channels.view', { channelId: id }) as { sessions: { agentId: string }[] };
+    assert.equal(view.sessions.length, 2); assert(!view.sessions.some(session => session.agentId === privateChat.agentId));
+  } finally { await host.close(); }
+});
+
+test('点名成员得到本群必要可见原文和自身确认约定，不复制他人的个人记忆或其他场景', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: 'ADMIN-PERSONAL-SECRET' });
+    await host.invoke('bots.memory.save', { botId: 'helper', kind: 'confirmed', content: 'HELPER-PERSONAL-RULE' });
+    const privateChat = await host.invoke('bots.conversation.open', { botId: 'chief' }) as { agentId: string };
+    host.history.set(privateChat.agentId, [{ type: 'user_message', text: 'PRIVATE-SECRET' }]);
+    const id = randomUUID();
+    await host.invoke('bots.channels.create', { id, name: '协作群', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: host.directory, instructions: '本群范围' });
+    const admin = await host.invoke('bots.channels.open', { channelId: id }) as { agentId: string };
+    host.history.set(admin.agentId, [{ type: 'user_message', text: '本群先前决定用方案甲' }, { type: 'assistant_message', text: '方案甲的核对结论' }, { type: 'reasoning', text: 'HIDDEN-REASONING' }]);
+    const route = await host.invoke('bots.channels.route', { channelId: id, text: '@资料同事 请接着核对' }) as { targets: { attachment: { text: string }; agentId: string }[] };
+    const text = route.targets[0].attachment.text;
+    assert.match(text, /本群先前决定用方案甲/); assert.match(text, /方案甲的核对结论/); assert.match(text, /HELPER-PERSONAL-RULE/);
+    assert.doesNotMatch(text, /PRIVATE-SECRET|ADMIN-PERSONAL-SECRET|HIDDEN-REASONING/);
+    const frame = await host.invoke('bots.channels.context', { channelId: id, agentId: route.targets[0].agentId }) as { text: string };
+    assert.match(frame.text, /本群先前决定用方案甲/);
+    const tools = await host.connect(route.targets[0].agentId);
+    const shared = payload(await tools.callTool({ name: 'get_bot_context', arguments: {} }));
+    assert.deepEqual(shared.personalConfirmedMemories, ['HELPER-PERSONAL-RULE']);
+    host.history.set(admin.agentId, [{ type: 'user_message', text: '预算内完整原话' }, { type: 'assistant_message', text: '不可截断'.repeat(5000) }]);
+    const limited = await host.invoke('bots.channels.context', { channelId: id, agentId: route.targets[0].agentId }) as { text: string };
+    const data = JSON.parse(limited.text.slice(limited.text.indexOf('\n') + 1));
+    assert.equal(data.recentDiscussion.partial, true);
+    assert(Buffer.byteLength(JSON.stringify(data.recentDiscussion), 'utf8') <= 16_000);
+    assert.deepEqual(data.recentDiscussion.messages.map((message: { text: string }) => message.text), ['预算内完整原话']);
+  } finally { await host.close(); }
+});
+
+test('群外、已归档同事及同名歧义不退回管理员或启动未获准的成员', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'outsider', name: '群外同事', role: '其他场景' });
+    const a = await host.channel('甲'); const before = host.created.length;
+    await assert.rejects(host.invoke('bots.channels.route', { channelId: a.id, text: '@群外同事 请回应' }), /不属于此频道/);
+    assert.equal(host.created.length, before);
+    await host.invoke('bots.create', { id: 'same-a', name: '同名', role: '甲' });
+    await host.invoke('bots.create', { id: 'same-b', name: '同名', role: '乙' });
+    await assert.rejects(host.invoke('bots.channels.route', { channelId: a.id, text: '@同名 请回应' }), /同名|标识/);
+    await host.invoke('bots.channels.update', { channelId: a.id, details: { name: '甲', memberIds: ['chief', 'outsider'], adminBotId: 'chief', cwd: host.directory, instructions: '' } });
+    await host.invoke('bots.archive', { botId: 'outsider' });
+    await assert.rejects(host.invoke('bots.channels.route', { channelId: a.id, text: '@群外同事 请回应' }), /归档/);
+    await host.invoke('bots.channels.archive', { channelId: a.id, archived: true });
+    await assert.rejects(host.invoke('bots.channels.route', { channelId: a.id, text: '普通消息' }), /归档/);
+    assert.equal(host.created.length, before);
   } finally { await host.close(); }
 });
 

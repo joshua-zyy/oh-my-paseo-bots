@@ -192,7 +192,7 @@ export function Chat({ botId, hostId, sessionId, channelId, openAgent, onConvers
   </View>;
 }
 
-function ChatSegment({ botId, agentId, openAgent, onLoadOlder }: { botId: string; agentId: string; openAgent(id: string): void; onLoadOlder(): void }) {
+export function ChatSegment({ botId, agentId, openAgent, onLoadOlder }: { botId: string; agentId: string; openAgent(id: string): void; onLoadOlder(): void }) {
   const api = usePaseo();
   const [state, setState] = useState<ChatState>(EMPTY_CHAT);
   const [revision, setRevision] = useState(0);
