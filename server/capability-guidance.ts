@@ -9,15 +9,16 @@ function requestView({ fingerprint: _fingerprint, ...view }: CapabilityRequest) 
 
 /** Existing capability selection + explicit user decision; native execution remains Paseo's. */
 export class CapabilityGuidance {
-  constructor(private readonly store: BotStore, private readonly locations: NonNullable<Parameters<typeof discoverMcpSources>[0]> = {}, private readonly defaultCwd?: () => Promise<string | undefined>) {}
+  constructor(private readonly store: BotStore, private readonly locations: NonNullable<Parameters<typeof discoverMcpSources>[0]> = {}, private readonly defaultCwd?: () => Promise<string | undefined>, private readonly builtinSkills?: () => Promise<BotDetails['capabilities']['skills']>) {}
 
   async catalog(botId: string) {
     const bot = await this.store.getBot(botId);
     if (!bot || bot.bot.archivedAt) throw new Error('同事不存在或已归档');
     const cwd = bot.bot.execution.cwd ?? await this.defaultCwd?.() ?? this.locations.cwd;
     const discovered = await discoverSkills(this.locations.home ?? homedir(), cwd);
+    const builtin = await this.builtinSkills?.() ?? [];
     const sources = await discoverMcpSources({ ...this.locations, cwd });
-    return { skills: [...new Map([...bot.bot.capabilities.skills, ...discovered.skills].map(skill => [skill.path, skill])).values()], sources: sources.sources, errors: discovered.errors };
+    return { skills: [...new Map([...builtin, ...bot.bot.capabilities.skills, ...discovered.skills].map(skill => [skill.path, skill])).values()], sources: sources.sources, errors: discovered.errors };
   }
 
   async inspect(botId: string) {

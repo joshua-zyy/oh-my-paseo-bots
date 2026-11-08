@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRpc } from '@getpaseo/plugin/client';
 import { SettingsCard, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import type { BotDetails } from '../shared/bot.js';
@@ -10,10 +10,16 @@ export function Skills({ value, disabled, onChange, onBusyChange }: {
   value: BotDetails['capabilities']; disabled: boolean; onChange(value: BotDetails['capabilities']): void; onBusyChange(busy: boolean): void;
 }) {
   const inspectSkill = useRpc(rpc.inspectSkill);
+  const listBuiltin = useRpc(rpc.listBuiltinSkills);
   const [skills, setSkills] = useState(value.skills);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const guard = useRef(false);
+  useEffect(() => {
+    let active = true;
+    void listBuiltin({}).then(builtin => { if (active) setSkills(current => [...new Map([...builtin, ...current].map(skill => [skill.path, skill])).values()]); }).catch(error => { if (active) setError(String(error)); });
+    return () => { active = false; };
+  }, [listBuiltin]);
   async function run(action: () => Promise<void>) {
     if (guard.current) return;
     guard.current = true; setBusy(true); onBusyChange(true); setError('');

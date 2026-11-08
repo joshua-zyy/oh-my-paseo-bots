@@ -31,6 +31,7 @@ import { ChannelContextStore } from './server/channel-context.js';
 import { ChannelChat } from './server/channel-chat.js';
 import { TeamMemoryStore } from './server/team-memory.js';
 import { CapabilityGuidance } from './server/capability-guidance.js';
+import { provisionOfficeSkills } from './server/office-skills.js';
 import * as capabilityRpc from './shared/capability-guidance.js';
 import * as channelRpc from './shared/channels.js';
 
@@ -42,7 +43,10 @@ export default function contribute(server: PluginServerContext) {
   const channels = new ChannelStore({ baseDir, bots: store });
   const channelState = new ChannelContextStore(baseDir, store, channels);
   const teamMemory = new TeamMemoryStore(baseDir);
-  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; });
+  const officeSkills = provisionOfficeSkills(baseDir);
+  void officeSkills.catch(error => console.error('内置Office资源准备失败', error));
+  server.handle(filesRpc.listBuiltinSkills, () => officeSkills);
+  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; }, () => officeSkills);
   server.handle(capabilityRpc.inspectCapabilities, input => capabilityGuidance.inspect(input.botId));
   server.handle(capabilityRpc.decideCapabilities, input => capabilityGuidance.decide(input.botId, input.requestId, input.decision));
   const channelChat = new ChannelChat(store, channels, channelState, startBoundSession, teamMemory);

@@ -18,6 +18,12 @@
 
 `server/channel-chat.ts` 的群原文预算选择沿用上节 t3code 适配的完整消息、来源、遗漏标记方法；仍只查 Paseo 原生历史，不另建历史库。
 
+## Office 工作流适配
+
+`server/office-skills.ts` 的固定 Excel 技能工作流参考并适配 [anthropics/skills](https://github.com/anthropics/skills) 提交 `2c5958ecac7cee2b583967a2c4981d0f4a75c579` 的 `skills/xlsx/SKILL.md`（Apache-2.0），包含原生工作簿、保留原件与公式、双模式回读、真实重算及交付检查原则。改动为中文、Paseo 原生命令/权限、按需索引和本机已有 Excel COM 的重算/检查路径；不假定 LibreOffice 或其他依赖预装，也不将静态资源发放作为 Bot 自动学习/迭代技能。许可全文见 [licenses/Anthropic-Skills-Apache-2.0.txt](licenses/Anthropic-Skills-Apache-2.0.txt)。
+
+同时参考 DS-Bot `5c514ad` 的 `office-tools` 创建/修改/实际检查流程及元数据与正文分离方式，其适用 Apache-2.0/NOTICE 见前述 DS-Bot 告知。没有复制其 DSH 技能服务、Office CLI 或执行底座；重算调用已安装的 Microsoft Excel，文件读写复用 openpyxl，不另造公式引擎。Microsoft Excel 与 Python 包各自的许可证不因本项目适配改变。
+
 ## paseo-bots 许可原文
 
 MIT License

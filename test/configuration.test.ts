@@ -38,9 +38,11 @@ test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，�
       other: { command: 'synthetic-tool', args: ['--read-only'] },
     } }));
     await writeFile(join(directory, 'ordinary.txt'), '不读取普通文件');
+    const builtin = await invoke('bots.skills.builtin', {}) as { name: string; path: string }[];
+    assert.equal(builtin.length, 1); assert.equal(builtin[0].name, 'paseo-office-xlsx');
     const listing = await invoke('bots.directory.list', { path: directory, kind: 'skill' }) as { path: string; parent: string | null; entries: { name: string; kind: string }[] };
     assert.equal(listing.path, directory);
-    assert.deepEqual(listing.entries.map(entry => entry.name), ['a-folder', 'b-skill']);
+    assert.deepEqual(listing.entries.map(entry => entry.name), ['a-folder', 'b-skill', 'builtin-skills']);
     assert.ok(listing.parent);
     const inside = await invoke('bots.directory.list', { path: join(directory, 'b-skill'), kind: 'skill' }) as { entries: { name: string; kind: string }[] };
     assert.deepEqual(inside.entries, [{ name: 'SKILL.md', path: skillPath, kind: 'file' }]);
