@@ -1,5 +1,6 @@
 import type { PaseoApi, PaseoAgentTimelineRefetchOptions } from '@getpaseo/client';
 import type { BotStore } from './store.js';
+import type { TeamMemoryStore } from './team-memory.js';
 
 export type MemoryAccess = Pick<BotStore, 'addMemory' | 'updateMemory' | 'removeMemory'>;
 
@@ -73,9 +74,18 @@ export type MemoryForget = Omit<MemoryCorrection, 'content'>;
 /** Mutations require the whole current user message and an exact old value, so stale selections cannot overwrite corrections. */
 async function correctionSource(store: BotStore, paseo: PaseoApi, botId: string, agentId: string, input: MemoryForget, channelId?: string) {
   const userMessage = await memoryRequest(store, paseo, botId, agentId, input.userQuote, channelId);
-  if (input.userQuote.trim() !== userMessage.trim()) throw new MemorySourceError('纠正／遗忘需引用最新完整用户消息', userMessage);
+  if (input.userQuote.trim() !== userMessage.trim()) throw new MemorySourceError('发布／纠正／遗忘需引用最新完整用户消息', userMessage);
   return userMessage;
 }
+/** Explicit user-directed publication copies only current confirmed content, never private provenance. */
+export async function publishExplicitTeamMemory(store: BotStore, paseo: PaseoApi, botId: string, agentId: string, input: MemoryForget, team: TeamMemoryStore, access: Pick<BotStore, 'getContextMemories'> = store, channelId?: string) {
+  await correctionSource(store, paseo, botId, agentId, input, channelId);
+  const entry = (await access.getContextMemories(botId)).find(entry => entry.id === input.memoryId);
+  if (!entry || entry.content !== input.currentContent) throw new Error('只能发布当前场景仍活跃的已确认条目，内容须与当前读取一致；候选、归档或其他场景未发布');
+  const published = await team.addMemory({ kind: 'confirmed', content: entry.content });
+  return { memoryId: published.id, content: published.content, scope: 'team' as const, note: '已按用户明确要求发布独立团队副本，仅复制正文，不复制原条来源、原话或历史；后续纠正和遗忘分别操作。' };
+}
+
 export async function correctExplicitMemory(store: BotStore, paseo: PaseoApi, botId: string, agentId: string, input: MemoryCorrection, access: MemoryAccess = store, channelId?: string) {
   const userMessage = await correctionSource(store, paseo, botId, agentId, input, channelId);
   if (!input.content.trim() || !userMessage.includes(input.content.trim())) throw new Error('纠正内容须逐字来自用户当前消息；推断先存候选');

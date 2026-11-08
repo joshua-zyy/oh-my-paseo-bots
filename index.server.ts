@@ -9,7 +9,7 @@ import { archiveBot } from './server/bot-archive.js';
 import { BotJournal } from './server/journal.js';
 import { botSessionConfig, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
-import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory } from './server/memory.js';
+import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory, publishExplicitTeamMemory } from './server/memory.js';
 import { readBotHistory } from './server/history.js';
 import { readHistory } from './shared/history.js';
 import type { PaseoApi } from '@getpaseo/client';
@@ -94,6 +94,7 @@ export default function contribute(server: PluginServerContext) {
       rememberExplicit: (_bot, _agent, input) => rememberExplicit(store, currentPaseo!, botId, agentId, input, access, channelId),
       correctMemory: (_bot, _agent, input) => correctExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
       forgetMemory: (_bot, _agent, input) => forgetExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
+      publishMemory: (_bot, _agent, input) => publishExplicitTeamMemory(store, currentPaseo!, botId, agentId, input, teamMemory, { getContextMemories: () => channelState.confirmed(channelId) }, channelId),
       readHistory: async (_bot, input) => {
         await channelState.authorize(channelId, botId, agentId, currentPaseo!);
         const target = (await channelState.sessions(channelId)).find(session => session.agentId === input.agentId);
@@ -124,6 +125,9 @@ export default function contribute(server: PluginServerContext) {
   }, rememberExplicit: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未保存明确记忆');
     return rememberExplicit(store, currentPaseo, botId, agentId, input);
+  }, publishMemory: async (botId, agentId, input) => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未发布团队记忆');
+    return publishExplicitTeamMemory(store, currentPaseo, botId, agentId, input, teamMemory);
   }, correctMemory: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未纠正记忆');
     return correctExplicitMemory(store, currentPaseo, botId, agentId, input);

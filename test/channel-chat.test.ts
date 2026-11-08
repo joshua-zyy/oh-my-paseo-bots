@@ -291,6 +291,51 @@ test('团队记忆显式发布后跨Bot/频道只读可用，不混入个人与�
   } finally { await host.close(); }
 });
 
+test('对话明确发布当前已确认记忆：核对完整原话，只复制正文，重试不重复', async () => {
+  const host = await fixture();
+  try {
+    const quote = '请把选中的这条已确认约定共享给全体Bot，不共享其他条目或私聊历史。';
+    const own = await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '仅用户选择公开的约定' }) as { id: string; content: string };
+    await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '仍只属于个人的秘密约定' });
+    const chat = await host.invoke('bots.conversation.open', { botId: 'chief' }) as { agentId: string };
+    const tools = await host.connect(chat.agentId);
+    host.history.set(chat.agentId, [{ type: 'user_message', text: quote }]);
+    const input = { memoryId: own.id, currentContent: own.content, userQuote: quote };
+    const wrong = await tools.callTool({ name: 'publish_team_memory', arguments: { ...input, userQuote: quote + '\n伪造附件' } });
+    assert.equal(wrong.isError, true); assert.equal(JSON.parse((wrong.content as { text: string }[])[0].text).userMessage, quote);
+    assert.equal((await tools.callTool({ name: 'publish_team_memory', arguments: { ...input, currentContent: '过期内容' } })).isError, true);
+    assert.deepEqual(await host.invoke('bots.memories', { botId: 'chief', team: true }), []);
+    const published = payload(await tools.callTool({ name: 'publish_team_memory', arguments: input }));
+    assert.notEqual(published.memoryId, own.id); assert.equal(published.scope, 'team');
+    assert.equal(payload(await tools.callTool({ name: 'publish_team_memory', arguments: input })).memoryId, published.memoryId);
+    const shared = await host.invoke('bots.memories', { botId: 'chief', team: true }) as { content: string; origin: unknown }[];
+    assert.equal(shared.length, 1); assert.equal(shared[0].content, own.content); assert.deepEqual(shared[0].origin, { type: 'manual' });
+    assert.doesNotMatch(JSON.stringify(shared), /私聊历史|秘密约定|userQuote|agentId/);
+    await host.invoke('bots.memory.forget', { botId: 'chief', memoryId: own.id });
+    assert.equal((await tools.callTool({ name: 'publish_team_memory', arguments: input })).isError, true);
+  } finally { await host.close(); }
+});
+
+test('群对话只能发布本群确认条目，不能复制个人/其他群/候选记忆', async () => {
+  const host = await fixture();
+  try {
+    const a = await host.channel('甲'); const b = await host.channel('乙');
+    const own = await host.invoke('bots.memory.save', { botId: 'chief', channelId: a.id, kind: 'confirmed', content: '甲群公开约定' }) as { id: string; content: string };
+    const blocked = [];
+    for (const input of [{ botId: 'chief', kind: 'confirmed', content: '个人约定' }, { botId: 'chief', channelId: b.id, kind: 'confirmed', content: '另一群约定' }, { botId: 'chief', channelId: a.id, kind: 'candidate', content: '尚未确认的推断' }]) blocked.push(await host.invoke('bots.memory.save', input) as { id: string; content: string });
+    const group = await host.invoke('bots.channels.open', { channelId: a.id }) as { agentId: string };
+    const tools = await host.connect(group.agentId); const quote = '把这条本群已确认约定明确共享给全体Bot。';
+    host.history.set(group.agentId, [{ type: 'user_message', text: quote }]);
+    for (const entry of blocked) assert.equal((await tools.callTool({ name: 'publish_team_memory', arguments: { memoryId: entry.id, currentContent: entry.content, userQuote: quote } })).isError, true);
+    payload(await tools.callTool({ name: 'publish_team_memory', arguments: { memoryId: own.id, currentContent: own.content, userQuote: quote } }));
+    const second = await host.invoke('bots.channels.open', { channelId: b.id }) as { agentId: string };
+    const other = await host.connect(second.agentId);
+    assert.deepEqual(payload(await other.callTool({ name: 'read_memories', arguments: { scope: 'team' } })).memories.map((entry: { content: string }) => entry.content), [own.content]);
+    await host.invoke('bots.channels.archive', { channelId: a.id, archived: true });
+    await assert.rejects(tools.callTool({ name: 'publish_team_memory', arguments: { memoryId: own.id, currentContent: own.content, userQuote: quote } }));
+  } finally { await host.close(); }
+});
+
 test('团队记忆去重、纠正、归档恢复作用于共享副本，其他作用域保持原值', async () => {
   const host = await fixture();
   try {

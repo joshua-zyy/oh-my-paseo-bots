@@ -46,7 +46,7 @@ export function Memories({ botId, channelId, openAgent }: { botId: string; chann
   const actions = { updated: '修改／确认', archived: '遗忘／拒绝', restored: '恢复', merged: '合并重复' };
   return <>
     <Actions><Button label={channelId ? '本群记忆' : '个人记忆'} selected={!team} disabled={busy || !!editing} onPress={() => { setEntries([]); setTeam(false); setPublished(false); }} /><Button label="团队共享记忆" selected={team} disabled={busy || !!editing} onPress={() => { setEntries([]); setTeam(true); setPublished(false); }} /></Actions>
-    <Copy muted small>{team ? '当前为团队共享区：你在此保存的内容对全体Bot可读，Bot记忆工具仅读；不包含私聊原话或来源历史。' : '当前记忆默认仅属本同事或本群；只有你明确发布的内容才进入团队共享区。'}</Copy>
+    <Copy muted small>{team ? '当前为团队共享区：确认内容对全体Bot可读。你也可在对话中明确要求发布当前场景的确认条目；不会自动共享私聊来源或历史。' : '当前记忆默认仅属本同事或本群；只有你明确发布的内容才进入团队共享区。'}</Copy>
     {published && <Copy small>已发布团队共享副本，可到「团队共享记忆」查看；原条与副本的纠正、遗忘分别操作，不自动同步。</Copy>}
     <Notice error={error || updates.error} />
     <Actions><Button label="刷新" disabled={busy} onPress={() => void run()} /><Button label="添加记忆" icon="Plus" disabled={busy} onPress={() => setEditing({ content: '', kind: 'confirmed' })} /><Button label="已归档" selected={showArchived} disabled={busy} onPress={() => setShowArchived(value => !value)} /></Actions>
@@ -89,7 +89,7 @@ export function Memories({ botId, channelId, openAgent }: { botId: string; chann
 
 function MemoryOriginView({ label, origin, openAgent }: { label: string; origin?: MemoryOrigin; openAgent?: (agentId: string) => void }) {
   return <>
-    <Copy muted small>{label}：{!origin ? '未记录' : origin.type === 'manual' ? '用户在记忆页操作' : origin.type === 'message' ? '核对过的用户消息' : 'Agent 提出的候选'}</Copy>
+    <Copy muted small>{label}：{!origin ? '未记录' : origin.type === 'manual' ? '用户明确录入／发布（不附会话原文）' : origin.type === 'message' ? '核对过的用户消息' : 'Agent 提出的候选'}</Copy>
     {origin && origin.type !== 'manual' && <>
       <Copy muted small>会话：{origin.agentId}</Copy>
       {origin.type === 'message' && <Copy muted small>用户原话：{origin.userQuote}</Copy>}

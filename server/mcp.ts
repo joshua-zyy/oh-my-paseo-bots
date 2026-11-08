@@ -78,6 +78,7 @@ export interface BotMcpOptions {
   rememberExplicit?: RememberExplicit;
   correctMemory?: (botId: string, agentId: string, input: MemoryCorrection) => Promise<unknown>;
   forgetMemory?: (botId: string, agentId: string, input: MemoryForget) => Promise<unknown>;
+  publishMemory?: (botId: string, agentId: string, input: MemoryForget) => Promise<unknown>;
   readHistory?: (botId: string, input: BotHistoryInput, callerAgentId: string) => Promise<unknown>;
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
@@ -105,6 +106,7 @@ export interface BotMcpToolScope {
   rememberExplicit?: RememberExplicit;
   correctMemory?: BotMcpOptions['correctMemory'];
   forgetMemory?: BotMcpOptions['forgetMemory'];
+  publishMemory?: BotMcpOptions['publishMemory'];
   readHistory?: BotMcpOptions['readHistory'];
   office?: BotOfficeAccess;
   tasks?: TaskTracker;
@@ -295,6 +297,15 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     currentContent: z.string().min(1).max(MAX_MEMORY_CHARS).describe('read_memories 返回的当前内容，须逐字一致'),
     userQuote: z.string().min(1).max(MAX_MEMORY_CHARS).describe('最新完整用户消息；不得截取片段或引用旧消息'),
   };
+  if (scope.publishMemory) server.registerTool('publish_team_memory', {
+    description: '仅当用户当前消息明确要求将所选记忆发布给全体Bot时使用。先用read_memories读取当前场景确认条目，提交memoryId/当前完整正文/最新完整用户原话；不猜共享意图或范围，歧义先询问。不发布候选或归档项，不从群访问个人/其他群记忆；不复制原条来源、私聊原话或历史。仅正文形成独立团队副本，默认remember_explicit仍只写当前场景。不修改已发布团队条目；纠正/撤回仍由用户记忆页操作。',
+    inputSchema: memorySelection,
+  }, async input => {
+    try {
+      await scope.tasks?.requireActive(botId, agentId);
+      return toolResult(await scope.publishMemory!(botId, agentId, input));
+    } catch (error) { return toolFailure(error); }
+  });
   if (scope.correctMemory) server.registerTool('correct_memory', {
     description: '用户当前消息明确要求纠正长期记忆时，先读取条目，再引用完整原话修改。新内容须逐字来自本条用户消息；推断或改写使用候选。只改当前场景的记忆：私聊为本Bot，频道为本群；不擦除原生历史或备份。',
     inputSchema: { ...memorySelection, content: z.string().min(1).max(MAX_MEMORY_CHARS) },
@@ -382,6 +393,7 @@ export class BotMcp {
   private readonly rememberExplicit?: RememberExplicit;
   private readonly correctMemory?: BotMcpOptions['correctMemory'];
   private readonly forgetMemory?: BotMcpOptions['forgetMemory'];
+  private readonly publishMemory?: BotMcpOptions['publishMemory'];
   private readonly readHistory?: BotMcpOptions['readHistory'];
   private readonly office?: BotOfficeAccess;
   private readonly tasks?: TaskTracker;
@@ -409,6 +421,7 @@ export class BotMcp {
     this.rememberExplicit = options.rememberExplicit;
     this.correctMemory = options.correctMemory;
     this.forgetMemory = options.forgetMemory;
+    this.publishMemory = options.publishMemory;
     this.readHistory = options.readHistory;
     this.office = options.office;
     this.tasks = options.tasks;
@@ -586,6 +599,7 @@ export class BotMcp {
       rememberExplicit: this.rememberExplicit,
       correctMemory: this.correctMemory,
       forgetMemory: this.forgetMemory,
+      publishMemory: this.publishMemory,
       readHistory: this.readHistory,
       office: this.office,
       tasks: this.tasks,
