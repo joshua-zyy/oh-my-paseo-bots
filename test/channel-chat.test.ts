@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginRpcContract } from '@getpaseo/plugin';
 import type { PluginServerContext } from '@getpaseo/plugin/server';
-import type { PaseoApi, PaseoAgentCreateOptions } from '@getpaseo/client';
+import type { PaseoApi, PaseoAgentCreateOptions, PaseoAgentSendOptions } from '@getpaseo/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import contribute from '../index.server.js';
@@ -17,7 +17,9 @@ async function fixture() {
   process.env.OH_MY_PASEO_BOTS_DATA_DIR = directory;
   const handlers = new Map<string, { contract: PluginRpcContract; handler(input: unknown, context: unknown): unknown }>();
   const created: PaseoAgentCreateOptions[] = [];
-  const history = new Map<string, { type: string; text: string }[]>();
+  const history = new Map<string, { type: string; text?: string; agentMessage?: { event: string; sender: { id: string }; text: string } }[]>();
+  const sent: { agentId: string; text: string; options: PaseoAgentSendOptions }[] = [];
+  let loseReceipt = false;
   const archived = new Set<string>();
   const paseo = { workspaces: { create: async (input: { source: { path: string }; background: boolean }) => {
     assert.equal(input.background, true);
@@ -25,6 +27,11 @@ async function fixture() {
   } }, agents: { ref: (id: string) => ({
     refresh: async () => { const source = created.find(input => input.agentId === id); return source ? { agent: { id, title: source.title, labels: source.labels, cwd: source.cwd, provider: 'claude', model: 'synthetic', status: 'idle', pendingPermissions: [], archivedAt: archived.has(id) ? 'now' : null } } : null; },
     archive: async () => { archived.add(id); },
+    send: async (text: string, options: PaseoAgentSendOptions) => {
+      sent.push({ agentId: id, text, options });
+      const items = history.get(id) ?? []; items.push({ type: 'tool_call', agentMessage: { event: 'message', sender: { id: options.sourceAgentId! }, text } }); history.set(id, items);
+      if (loseReceipt) { loseReceipt = false; throw new Error('原生发送已接收但回执丢失'); }
+    },
     timeline: { refetch: async () => ({ epoch: 'one', entries: (history.get(id) ?? []).map((item, i) => ({ item, timestamp: new Date((i + 1) * 1000).toISOString(), seqStart: i + 1, seqEnd: i + 1 })), startCursor: null, endCursor: null, hasOlder: false, hasNewer: false, gap: false, staleCursor: false, error: null }) },
   }) } } as unknown as PaseoApi;
   const server = { registerSettings: (setting: { id: string }) => ({ read: async () => ({ status: 'ready', values: setting.id === 'office' ? { bots: {} } : { cwd: directory, provider: 'claude/synthetic' } }) }), addHook: () => () => {}, handle: (contract: PluginRpcContract, handler: (input: unknown, context: unknown) => unknown) => handlers.set(contract.name, { contract, handler }) } as unknown as PluginServerContext;
@@ -38,7 +45,7 @@ async function fixture() {
   }
   await invoke('bots.list', {});
   const channel = async (name: string) => invoke('bots.channels.create', { id: randomUUID(), name, memberIds: ['chief'], adminBotId: 'chief', cwd: join(directory, name), instructions: `${name}共同说明` }) as Promise<{ id: string }>;
-  return { directory, invoke, created, history, connect, channel, close: async () => { await Promise.all(clients.map(client => client.close())); await cleanup(); if (previous === undefined) delete process.env.OH_MY_PASEO_BOTS_DATA_DIR; else process.env.OH_MY_PASEO_BOTS_DATA_DIR = previous; await rm(directory, { recursive: true, force: true }); } };
+  return { directory, invoke, created, history, sent, loseNextReceipt: () => { loseReceipt = true; }, connect, channel, close: async () => { await Promise.all(clients.map(client => client.close())); await cleanup(); if (previous === undefined) delete process.env.OH_MY_PASEO_BOTS_DATA_DIR; else process.env.OH_MY_PASEO_BOTS_DATA_DIR = previous; await rm(directory, { recursive: true, force: true }); } };
 }
 function payload(value: any) { assert.notEqual(value.isError, true, value.content?.[0]?.text); return JSON.parse(value.content[0].text); }
 
@@ -182,6 +189,71 @@ test('群外、已归档同事及同名歧义不退回管理员或启动未获�
     await host.invoke('bots.channels.archive', { channelId: a.id, archived: true });
     await assert.rejects(host.invoke('bots.channels.route', { channelId: a.id, text: '普通消息' }), /归档/);
     assert.equal(host.created.length, before);
+  } finally { await host.close(); }
+});
+
+test('管理员通过原生来源交办，成员回报唤醒原发起者，重复和未知回执按原生历史回查', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: 'ADMIN-PRIVATE-RULE' });
+    await host.invoke('bots.memory.save', { botId: 'helper', kind: 'confirmed', content: 'HELPER-RULE' });
+    const id = randomUUID();
+    await host.invoke('bots.channels.create', { id, name: '协作群', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: host.directory, instructions: '共同范围' });
+    const admin = await host.invoke('bots.channels.open', { channelId: id }) as { agentId: string };
+    const privateChat = await host.invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
+    const tools = await host.connect(admin.agentId);
+    const input = { colleagueId: 'helper', requestId: 'verify-input', prompt: '只核对合成输入并回报核对依据' };
+    host.loseNextReceipt();
+    assert.equal((await tools.callTool({ name: 'ask_channel_member', arguments: input })).isError, true);
+    const receipt = payload(await tools.callTool({ name: 'ask_channel_member', arguments: input }));
+    assert.equal(host.sent.length, 1); assert.notEqual(receipt.agentId, privateChat.agentId);
+    assert.equal(host.sent[0].options.sourceAgentId, admin.agentId);
+    const request = JSON.parse(host.sent[0].text);
+    assert.equal(request.replyId, receipt.replyId); assert.equal(request.goal, input.prompt);
+    assert.deepEqual(request.context.personalConfirmedMemories, ['HELPER-RULE']);
+    assert(!host.sent[0].text.includes('ADMIN-PRIVATE-RULE'));
+    assert.equal((await tools.callTool({ name: 'ask_channel_member', arguments: { ...input, prompt: '偷偷替换原目标' } })).isError, true);
+    assert.equal(host.sent.length, 1);
+    const member = await host.connect(receipt.agentId);
+    assert(!(await member.listTools()).tools.some(tool => tool.name === 'ask_channel_member'));
+    assert.equal((await member.callTool({ name: 'remember_explicit', arguments: { content: input.prompt, userQuote: input.prompt } })).isError, true, '同事消息不能冒充最新原生用户记忆依据');
+    const report = { replyId: receipt.replyId, summary: '合成输入已核对', evidence: ['synthetic/result.json'] };
+    host.loseNextReceipt();
+    assert.equal((await member.callTool({ name: 'report_channel_result', arguments: report })).isError, true);
+    payload(await member.callTool({ name: 'report_channel_result', arguments: report }));
+    assert.equal(host.sent.length, 2); assert.equal(host.sent[1].agentId, admin.agentId);
+    assert.equal(host.sent[1].options.sourceAgentId, receipt.agentId);
+    assert.deepEqual(JSON.parse(host.sent[1].text).evidence, report.evidence);
+    assert.equal((await member.callTool({ name: 'report_channel_result', arguments: { ...report, summary: '不能改写旧回报' } })).isError, true);
+    assert.equal(host.sent.length, 2);
+    assert.deepEqual(await host.invoke('bots.memories', { botId: 'helper', channelId: id }), []);
+  } finally { await host.close(); }
+});
+
+test('群内交办不接受群外或自身，伪造和跨群回报不能传给任意接收者', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    const id = randomUUID();
+    const details = { name: '甲群', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: host.directory, instructions: '' };
+    await host.invoke('bots.channels.create', { id, ...details });
+    const admin = await host.invoke('bots.channels.open', { channelId: id }) as { agentId: string };
+    const tools = await host.connect(admin.agentId);
+    for (const colleagueId of ['chief', 'outsider']) assert.equal((await tools.callTool({ name: 'ask_channel_member', arguments: { colleagueId, requestId: 'nope', prompt: '不能派发' } })).isError, true);
+    assert.equal(host.sent.length, 0);
+    const receipt = payload(await tools.callTool({ name: 'ask_channel_member', arguments: { colleagueId: 'helper', requestId: 'one', prompt: '核对合成数据' } }));
+    const other = await host.channel('乙');
+    const otherAdmin = await host.invoke('bots.channels.open', { channelId: other.id }) as { agentId: string };
+    const otherTools = await host.connect(otherAdmin.agentId);
+    const report = { replyId: receipt.replyId, summary: '伪造回报', evidence: ['无实际来源'] };
+    assert.equal((await otherTools.callTool({ name: 'report_channel_result', arguments: report })).isError, true);
+    await host.invoke('bots.channels.update', { channelId: id, details: { ...details, adminBotId: 'helper' } });
+    assert(!(await tools.listTools()).tools.some(tool => tool.name === 'ask_channel_member'));
+    const helper = await host.connect(receipt.agentId);
+    await host.invoke('bots.channels.update', { channelId: id, details: { ...details, memberIds: ['helper'], adminBotId: 'helper' } });
+    assert.equal((await helper.callTool({ name: 'report_channel_result', arguments: report })).isError, true, '旧发起者退出群后不再外送回报');
+    assert.equal(host.sent.length, 1);
   } finally { await host.close(); }
 });
 

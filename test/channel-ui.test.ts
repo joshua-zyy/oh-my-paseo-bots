@@ -39,8 +39,10 @@ test('群消息框点名插入稳定标识，发送原文给解析成员并复�
   const calls: { agentId: string; text: string; options: any }[] = [], routes: unknown[] = [], checks: unknown[] = [];
   const api = { agents: { ref: (agentId: string) => ({ send: async (text: string, options: unknown) => { calls.push({ agentId, text, options }); } }) } };
   const targets = [{ botId: 'chief', agentId: 'group-chief', attachment }, { botId: 'helper', agentId: 'group-helper', attachment }];
+  let sessions: { botId: string; agentId: string }[] = [];
+  const observed: string[] = [], watches: (() => void)[] = [];
   const handlers: Record<string, (input: any) => Promise<any>> = {
-    'bots.channels.view': async () => ({ channel, members: bots, sessions: [] }),
+    'bots.channels.view': async () => ({ channel, members: bots, sessions }),
     'bots.channels.route': async input => { routes.push(input); return { targets }; },
     'bots.channels.context': async input => { checks.push(input); return attachment; },
     'bots.reply.stop': async () => ({}),
@@ -50,8 +52,8 @@ test('群消息框点名插入稳定标识，发送原文给解析成员并复�
   const useRef = (initial: any) => { const i = cursor++; if (!(i in values)) values[i] = { current: initial }; return values[i]; };
   const useEffect = (work: () => unknown, deps: unknown[]) => { const i = cursor++; if (!values[i] || deps.some((value, index) => value !== values[i][index])) effects.push(work); values[i] = deps; };
   const names = ['View', 'ScrollView', 'Copy', 'Actions', 'Button', 'Notice', 'Memories', 'ChatSegment', 'ChatTimeline', 'ChatPermission', 'TextInput'];
-  const component = new Function('h', 'Fragment', 'useState', 'useRef', 'useEffect', 'usePaseo', 'useHosts', 'useRpc', 'useUi', 'rpc', 'stopReply', 'observeChat', 'channelTimeline', 'deliverChannelMessage', ...names, body)(
-    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', useState, useRef, useEffect, () => api, () => [{ serverId: 'host', status: 'online' }], (contract: { name: string }) => { assert(handlers[contract.name], contract.name); return handlers[contract.name]; }, () => ({ colors: {}, compact: false }), rpc, { name: 'bots.reply.stop' }, () => assert.fail('空群不应订阅不存在的来源'), helpers.channelTimeline, helpers.deliverChannelMessage, ...names);
+  const component = new Function('h', 'Fragment', 'useState', 'useRef', 'useEffect', 'usePaseo', 'useHosts', 'useRpc', 'useUi', 'rpc', 'stopReply', 'observeChat', 'observeAgentChanges', 'channelTimeline', 'deliverChannelMessage', ...names, body)(
+    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', useState, useRef, useEffect, () => api, () => [{ serverId: 'host', status: 'online' }], (contract: { name: string }) => { assert(handlers[contract.name], contract.name); return handlers[contract.name]; }, () => ({ colors: {}, compact: false }), rpc, { name: 'bots.reply.stop' }, (_api: unknown, botId: string, agentId: string, changed: (state: unknown) => void) => { observed.push(agentId); changed({ entries: [], agent: { labels: { 'paseo-guys.bot': botId }, pendingPermissions: [] } }); return { release: async () => {}, refresh: async () => {} }; }, (_api: unknown, labels: unknown, changed: () => void) => { assert.deepEqual(labels, [{ 'paseo-guys.channel': channel.id }]); watches.push(changed); return { release: async () => {} }; }, helpers.channelTimeline, helpers.deliverChannelMessage, ...names);
   const render = () => { cursor = 0; const nodes = elements(component({ channel, hostId: 'host' })); effects.splice(0).forEach(work => work()); return nodes; };
   render(); await new Promise(resolve => setImmediate(resolve));
   let view = render(); view.find(node => node.type === 'Button' && node.props.label === '@资料同事')!.props.onPress();
@@ -64,6 +66,10 @@ test('群消息框点名插入稳定标识，发送原文给解析成员并复�
   assert.equal(calls[0].options.messageId, calls[1].options.messageId); assert.deepEqual(calls[0].options.attachments, [attachment]);
   assert.deepEqual(checks.map((input: any) => input.agentId), ['group-chief', 'group-helper']);
   assert.equal(render().find(node => node.type === 'TextInput')!.props.value, '');
+  assert.deepEqual(observed, [], '空群不订阅不存在的来源');
+  sessions = targets.map(({ botId, agentId }) => ({ botId, agentId }));
+  watches[0](); render(); await new Promise(resolve => setImmediate(resolve)); render();
+  assert.deepEqual(observed, ['group-chief', 'group-helper'], '原生新成员状态到达后自动发现来源，无需手动刷新');
 });
 
 test('频道表单选择成员和管理员、保存目录及共同说明，重试沿用创建标识', async () => {

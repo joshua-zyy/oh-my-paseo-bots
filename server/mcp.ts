@@ -10,6 +10,7 @@ import type { BotJournal } from './journal.js';
 import type { BotStore } from './store.js';
 import { ScopeAccessError } from './store-errors.js';
 import { MemorySourceError } from './memory.js';
+import type { ChannelAsk, ChannelReport } from './channel-chat.js';
 import type { BotOfficeAccess } from './office.js';
 import { registerOfficeTools } from './office-tools.js';
 import type { TaskTracker } from './tasks.js';
@@ -86,6 +87,8 @@ export interface BotMcpOptions {
 
 export interface BotMcpToolScope {
   channelId?: string;
+  askChannelMember?: (input: ChannelAsk) => Promise<unknown>;
+  reportChannelResult?: (input: ChannelReport) => Promise<unknown>;
   memoryStore?: Pick<BotStore, 'getContextMemories' | 'addMemory'>;
   botId: string;
   agentId: string;
@@ -154,10 +157,11 @@ function toolFailure(error: unknown) {
 
 /**
  * 构造绑定到一个 Bot 的 MCP server（不监听端口）。
- * 工具调用只能看到 `scope.botId` 的数据：工具参数里没有 botId，也没有 source/confirmed。
+ * 私聊与频道权限来自已绑定的Bot/Agent关联；模型参数不能自选场景或声明source/confirmed。
+ * 频道可显式交办其他本群成员，但不由此读取对方个人记忆或私聊。
  */
 export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
-  const { botId, agentId, store, journal, rememberExplicit } = scope;
+  const { botId, agentId, store, journal, rememberExplicit, askChannelMember, reportChannelResult } = scope;
   const memoryStore = scope.memoryStore ?? store;
   const server = new McpServer(SERVER_INFO);
   if (scope.readContext) server.registerTool('get_bot_context', {
@@ -294,6 +298,20 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
       await scope.tasks?.requireActive(botId, agentId);
       return toolResult(await scope.forgetMemory!(botId, agentId, input));
     } catch (error) { return toolFailure(error); }
+  });
+  if (askChannelMember) server.registerTool('ask_channel_member', {
+    description: '仅当前频道管理员可将当前用户目标中的必要部分交给其他本群成员；不是外发、扩权或复制私聊。colleagueId从get_bot_context.members选择；prompt写明确交付条件和必要上下文。保留原requestId及原输入，未知先重试回查，不换标识。返回sent/known不代表完成；只剩等待时说明已派发并结束本轮，不轮询、催促或新建heartbeat。成员原生回报会唤醒本会话，再核对产物与完成条件。',
+    inputSchema: { colleagueId: z.string().trim().min(1).max(64), requestId: z.string().trim().min(1).max(120), prompt: z.string().trim().min(1).max(20000) },
+  }, async input => {
+    try { return toolResult(await askChannelMember(input)); }
+    catch (error) { return toolFailure(error); }
+  });
+  if (reportChannelResult) server.registerTool('report_channel_result', {
+    description: '处理原生来源kind=paseo-guys:channel-request的群内交办后，用消息中replyId回报实际summary和evidence。服务端从本会话原生消息核对发起者，只送回仍有效的同群原发起会话；不接受任意接收者，不归档群会话。依据须可检查，失败/阻塞/未知如实写明，不能把轮次结束当完成。回执未知保留相同replyId、摘要和依据回查，不重复发新回报。',
+    inputSchema: { replyId: z.string().min(1).max(120), summary: z.string().trim().min(1).max(20000), evidence: z.array(z.string().trim().min(1).max(2000)).min(1) },
+  }, async input => {
+    try { return toolResult(await reportChannelResult(input)); }
+    catch (error) { return toolFailure(error); }
   });
   if (scope.readHistory) server.registerTool('read_bot_history', {
     description: scope.channelId ? '读取当前频道原生历史。从get_bot_context的history取得agentId，可读取本群原管理员/成员的来源，不读取私聊或其他群。tail读末页，before/startCursor查更早，after/endCursor查更晚；不恢复或重新派发旧工作。' : '读取本 Bot 已关联原生会话的历史。先从事项记录或会话目录取得 agentId；tail 读末页，before/startCursor 查更早，after/endCursor 查更晚。返回游标、epoch 和两侧边界；不恢复或重新派发旧工作，不读取未关联专家或其他 Bot。',

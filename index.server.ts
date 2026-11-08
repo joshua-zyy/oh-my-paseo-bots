@@ -72,7 +72,7 @@ export default function contribute(server: PluginServerContext) {
     if (!link.channelId) return {};
     if (!currentPaseo) throw new Error('频道宿主上下文尚未就绪');
     const channelId = link.channelId;
-    await channelState.authorize(channelId, botId, agentId, currentPaseo);
+    const channel = await channelState.authorize(channelId, botId, agentId, currentPaseo);
     const access = {
       addMemory: async (_owner: string, input: Parameters<BotStore['addMemory']>[1]) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.addMemory(channelId, input); },
       updateMemory: async (_owner: string, memoryId: string, input: Parameters<BotStore['updateMemory']>[2], expected?: string) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.updateMemory(channelId, memoryId, input, expected); },
@@ -82,6 +82,8 @@ export default function contribute(server: PluginServerContext) {
       channelId, memoryStore: { addMemory: access.addMemory, getContextMemories: () => channelState.confirmed(channelId) },
       tasks: undefined, office: undefined, startColleague: undefined, cancelExplicit: undefined,
       readContext: () => channelChat.frame(channelId, botId, agentId, currentPaseo!),
+      askChannelMember: channel.adminBotId === botId ? input => channelChat.ask(channelId, botId, agentId, input, currentPaseo!) : undefined,
+      reportChannelResult: input => channelChat.report(channelId, botId, agentId, input, currentPaseo!),
       rememberExplicit: (_bot, _agent, input) => rememberExplicit(store, currentPaseo!, botId, agentId, input, access, channelId),
       correctMemory: (_bot, _agent, input) => correctExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
       forgetMemory: (_bot, _agent, input) => forgetExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),

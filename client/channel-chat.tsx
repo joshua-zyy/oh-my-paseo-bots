@@ -8,6 +8,7 @@ import { stopReply } from '../shared/contracts.js';
 import type { Channel } from '../shared/channels.js';
 import { ChatSegment } from './chat.js';
 import { observeChat, type ChatState } from './chat-state.js';
+import { observeAgentChanges } from './agent-changes.js';
 import { channelTimeline, deliverChannelMessage, type ChannelTarget } from './channel-state.js';
 import { ChatTimeline } from './chat-timeline.js';
 import { ChatPermission } from './chat-permission.js';
@@ -44,6 +45,10 @@ export function ChannelChat({ channel, hostId }: { channel: Channel; hostId: str
     void read({ channelId: channel.id }).then(value => { if (active) { setView(value); setError(''); } }).catch(error => { if (active) setError(String(error)); });
     return () => { active = false; };
   }, [read, channel.id, revision]);
+  useEffect(() => {
+    const changes = observeAgentChanges(api, [{ 'paseo-guys.channel': channel.id }], () => setRevision(value => value + 1), error => setError(String(error)));
+    return () => { void changes.release().catch(error => console.error('频道状态订阅清理失败', error)); };
+  }, [api, channel.id]);
   useEffect(() => {
     setChats({});
     const handles = (view?.sessions ?? []).map(session => {
@@ -88,7 +93,7 @@ export function ChannelChat({ channel, hostId }: { channel: Channel; hostId: str
   }
   return <View style={{ flex: 1, minHeight: 0 }}>
     <View style={{ padding: 12, gap: 8 }}>
-      <Copy muted small>普通消息由管理员回应；@姓名或标识可点名多位成员，@all点名全群。群记忆仅留本群，个人确认约定只读。显式团队共享与管理员自动委派尚未接入。</Copy>
+      <Copy muted small>普通消息由管理员回应；@姓名或标识可点名多位成员，@all点名全群。群记忆仅留本群，个人确认约定只读。管理员可交办本群成员并核对回报；显式团队共享记忆尚未接入。</Copy>
       <Actions>{source && <Button label="返回频道" onPress={() => setSource(undefined)} />}<Button label={memories ? '返回频道对话' : '群记忆'} icon="Brain" disabled={!!draft.sending} onPress={() => { setMemories(value => !value); setSource(undefined); }} /><Button label="刷新频道" disabled={!!draft.sending || offline} onPress={() => setRevision(value => value + 1)} /></Actions>
       <Notice error={error} />
     </View>
