@@ -93,7 +93,7 @@ export function ChannelChat({ channel, hostId }: { channel: Channel; hostId: str
   }
   return <View style={{ flex: 1, minHeight: 0 }}>
     <View style={{ padding: 12, gap: 8 }}>
-      <Copy muted small>普通消息由管理员回应；@姓名或标识可点名多位成员，@all点名全群。群记忆仅留本群，个人确认约定只读。管理员可交办本群成员并核对回报；显式团队共享记忆尚未接入。</Copy>
+      <Copy muted small>普通消息由管理员回应；@姓名或标识可点名多位成员，@all点名全群。群记忆仅留本群，个人确认约定只读。管理员可交办本群成员并核对回报；团队共享记忆仅由用户在记忆页发布，Bot只读使用。</Copy>
       <Actions>{source && <Button label="返回频道" onPress={() => setSource(undefined)} />}<Button label={memories ? '返回频道对话' : '群记忆'} icon="Brain" disabled={!!draft.sending} onPress={() => { setMemories(value => !value); setSource(undefined); }} /><Button label="刷新频道" disabled={!!draft.sending || offline} onPress={() => setRevision(value => value + 1)} /></Actions>
       <Notice error={error} />
     </View>

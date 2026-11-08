@@ -257,6 +257,60 @@ test('群内交办不接受群外或自身，伪造和跨群回报不能传给�
   } finally { await host.close(); }
 });
 
+test('团队记忆显式发布后跨Bot/频道只读可用，不混入个人与群记忆', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: 'PERSONAL-ONLY' });
+    const a = await host.channel('甲');
+    await host.invoke('bots.memory.save', { botId: 'chief', channelId: a.id, kind: 'confirmed', content: 'GROUP-ONLY' });
+    const shared = await host.invoke('bots.memory.save', { botId: 'chief', team: true, kind: 'confirmed', content: 'TEAM-PUBLISHED', origin: { type: 'message', agentId: 'private-source', userQuote: 'PRIVATE-QUOTE' } }) as { id: string; origin: unknown };
+    assert.deepEqual(shared.origin, { type: 'manual' }, '发布只接受用户确认的内容，不复制私聊来源');
+    await host.invoke('bots.memory.save', { botId: 'chief', team: true, kind: 'candidate', content: 'TEAM-UNCONFIRMED' });
+    assert.deepEqual((await host.invoke('bots.memories', { botId: 'chief' }) as { content: string }[]).map(entry => entry.content), ['PERSONAL-ONLY']);
+    assert.deepEqual((await host.invoke('bots.memories', { botId: 'chief', channelId: a.id }) as { content: string }[]).map(entry => entry.content), ['GROUP-ONLY']);
+    assert.equal((await host.invoke('bots.memories', { botId: 'helper', team: true }) as unknown[]).length, 2);
+    const privateChat = await host.invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
+    const group = await host.invoke('bots.channels.open', { channelId: a.id }) as { agentId: string };
+    const privateFrame = await host.invoke('bots.conversation.context', { botId: 'helper', agentId: privateChat.agentId }) as { text: string };
+    const groupFrame = await host.invoke('bots.channels.context', { channelId: a.id, agentId: group.agentId }) as { text: string };
+    assert.match(privateFrame.text, /TEAM-PUBLISHED/); assert.doesNotMatch(privateFrame.text, /TEAM-UNCONFIRMED|PERSONAL-ONLY|GROUP-ONLY|PRIVATE-QUOTE/);
+    assert.match(groupFrame.text, /TEAM-PUBLISHED/); assert.doesNotMatch(groupFrame.text, /TEAM-UNCONFIRMED|PRIVATE-QUOTE/);
+    const tools = await host.connect(privateChat.agentId);
+    const context = payload(await tools.callTool({ name: 'get_bot_context', arguments: {} }));
+    assert.deepEqual(context.teamConfirmedMemories, ['TEAM-PUBLISHED']);
+    const selected = payload(await tools.callTool({ name: 'read_memories', arguments: { scope: 'team', memoryIds: [shared.id] } }));
+    assert.equal(selected.memories[0].content, 'TEAM-PUBLISHED');
+    assert.equal(selected.scope, 'team');
+    const task = await host.invoke('bots.start', { botId: 'helper', title: '独立合成工作', prompt: '仅核对当前共享约定' }) as { agentId: string };
+    const taskPrompt = host.created.find(native => native.agentId === task.agentId)!.config.systemPrompt!;
+    assert.match(taskPrompt, /TEAM-PUBLISHED/); assert.doesNotMatch(taskPrompt, /TEAM-UNCONFIRMED|PERSONAL-ONLY|GROUP-ONLY|PRIVATE-QUOTE/);
+    host.history.set(privateChat.agentId, [{ type: 'user_message', text: '请记住：只能存个人' }]);
+    assert.equal((await tools.callTool({ name: 'remember_explicit', arguments: { scope: 'team', content: '只能存个人', userQuote: '请记住：只能存个人' } })).isError, true, 'Agent不能将写入升级为团队共享');
+    assert.equal((await host.invoke('bots.memories', { botId: 'chief', team: true }) as unknown[]).length, 2);
+  } finally { await host.close(); }
+});
+
+test('团队记忆去重、纠正、归档恢复作用于共享副本，其他作用域保持原值', async () => {
+  const host = await fixture();
+  try {
+    const personal = await host.invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '原始个人约定' }) as { id: string };
+    const input = { botId: 'chief', team: true, kind: 'confirmed', content: '原始个人约定' };
+    const published = await host.invoke('bots.memory.save', input) as { id: string };
+    assert.notEqual(personal.id, published.id);
+    assert.equal((await host.invoke('bots.memory.save', input) as { id: string }).id, published.id);
+    await host.invoke('bots.memory.correct', { botId: 'chief', team: true, memoryId: published.id, content: '仅修改团队副本', kind: 'confirmed' });
+    assert.equal((await host.invoke('bots.memories', { botId: 'chief' }) as { content: string }[])[0].content, '原始个人约定');
+    await host.invoke('bots.memory.forget', { botId: 'chief', team: true, memoryId: published.id });
+    assert.deepEqual(await host.invoke('bots.memories', { botId: 'chief', team: true }), []);
+    await host.invoke('bots.memory.restore', { botId: 'chief', team: true, memoryId: published.id });
+    const entry = (await host.invoke('bots.memories', { botId: 'chief', team: true }) as { content: string; history: { action: string }[] }[])[0];
+    assert.equal(entry.content, '仅修改团队副本'); assert.deepEqual(entry.history.map(change => change.action), ['updated', 'archived', 'restored']);
+    const a = await host.channel('甲');
+    await assert.rejects(host.invoke('bots.memory.save', { ...input, channelId: a.id }), /团队|频道|scope|Unrecognized|invalid|Invalid/);
+  } finally { await host.close(); }
+});
+
 test('签名群工具不能查私聊或另一个群，私聊工具也不能读群历史', async () => {
   const host = await fixture();
   try {

@@ -8,6 +8,7 @@ import type { BotStore } from './store.js';
 import type { ChannelStore } from './channels.js';
 import type { ChannelContextStore } from './channel-context.js';
 import type { SessionInput } from './sessions.js';
+import type { TeamMemoryStore } from './team-memory.js';
 import { readBotHistory } from './history.js';
 
 type Start = (input: SessionInput, paseo: PaseoApi) => Promise<{ agentId: string; requestId: string }>;
@@ -20,7 +21,7 @@ const envelopeSchema = z.discriminatedUnion('kind', [
 
 /** Channel workflows over native sessions/history; no message store or execution queue. */
 export class ChannelChat {
-  constructor(private readonly bots: BotStore, private readonly channels: ChannelStore, private readonly state: ChannelContextStore, private readonly start: Start) {}
+  constructor(private readonly bots: BotStore, private readonly channels: ChannelStore, private readonly state: ChannelContextStore, private readonly start: Start, private readonly team: TeamMemoryStore) {}
 
   async view(channelId: ChannelId) {
     const channel = await this.channels.get(channelId);
@@ -66,6 +67,7 @@ export class ChannelChat {
       identity: { id: bot.id, name: bot.name, role: bot.role },
       confirmedMemories: (await this.state.confirmed(channelId)).map(memory => memory.content),
       personalConfirmedMemories: (await this.bots.getContextMemories(botId)).map(memory => memory.content),
+      teamConfirmedMemories: (await this.team.confirmed()).map(memory => memory.content),
       history: await this.state.sessions(channelId),
       note: '群记忆仅属本群；个人确认约定只读使用，不复制私聊或新增权限。历史只允许读取本群列出的原生来源。',
     };

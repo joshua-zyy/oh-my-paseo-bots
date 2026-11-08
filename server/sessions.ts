@@ -41,7 +41,7 @@ export async function startBotSession(
   store: BotStore,
   paseo: PaseoApi,
   input: SessionInput,
-  placement: { cwd: string; config: PaseoAgentConfig },
+  placement: { cwd: string; config: PaseoAgentConfig; teamConfirmedMemories?: readonly string[] },
   tools: Pick<BotMcp, 'mount'>,
 ): Promise<StartedSession> {
   const { cwd, config, systemPrompt: botSystemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive', input.execution);
@@ -103,7 +103,7 @@ export async function startBotSession(
 }
 
 /** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
-export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'routine' | 'conversation' | 'channel' = 'interactive', overrides?: BotDetails['execution']) {
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig; teamConfirmedMemories?: readonly string[] }, kind: 'interactive' | 'routine' | 'conversation' | 'channel' = 'interactive', overrides?: BotDetails['execution']) {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
   if (data.bot.archivedAt) throw new Error('同事已归档，请先恢复再派发工作');
@@ -115,7 +115,7 @@ export async function botSessionConfig(store: BotStore, botId: string, placement
   }
   // 持续聊天通过发送前附件或 get_bot_context 取得最新记忆，不固化到启动提示词。
   const memories = kind === 'conversation' || kind === 'channel' ? [] : await store.getContextMemories(botId);
-  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
+  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), teamConfirmedMemories: kind === 'conversation' || kind === 'channel' ? [] : placement.teamConfirmedMemories, kind });
   const execution = { ...data.bot.execution, ...overrides };
   const cwd = execution.cwd ?? placement.cwd;
   if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');

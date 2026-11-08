@@ -18,7 +18,7 @@ import { registerTaskTools, type ExplicitTaskCancel } from './task-tools.js';
 import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
 import type { MemoryCorrection, MemoryForget } from './memory.js';
 import type { BotHistoryInput } from './history.js';
-import { memoryEntrySchema } from '../shared/memory.js';
+import { memoryEntrySchema, type MemoryEntry } from '../shared/memory.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -83,6 +83,7 @@ export interface BotMcpOptions {
   readContext?: (botId: string, agentId: string) => Promise<unknown>;
   cancelExplicit?: ExplicitTaskCancel;
   resolveScope?: (botId: string, agentId: string) => Promise<Partial<BotMcpToolScope>>;
+  readTeamMemories?: () => Promise<MemoryEntry[]>;
 }
 
 export interface BotMcpToolScope {
@@ -90,6 +91,7 @@ export interface BotMcpToolScope {
   askChannelMember?: (input: ChannelAsk) => Promise<unknown>;
   reportChannelResult?: (input: ChannelReport) => Promise<unknown>;
   memoryStore?: Pick<BotStore, 'getContextMemories' | 'addMemory'>;
+  readTeamMemories?: BotMcpOptions['readTeamMemories'];
   botId: string;
   agentId: string;
   store: BotStore;
@@ -176,18 +178,21 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     'read_memories',
     {
       title: scope.channelId ? '读取当前频道的明确记忆' : '读取本 Bot 的明确记忆',
-      description: `${scope.channelId ? '当前绑定为频道场景：本工具只读本群记忆；Bot自身确认记忆可从get_bot_context只读取得。' : ''}读取当前场景已被用户确认的长期记忆，可按关键词或 memoryIds 查回最新正文。已有条目 ID 时优先按 ID 读取，不把可能过期的预览当查询词或当前事实。候选、归档及其他 Bot 的记忆不返回。total 和 nextOffset 针对匹配结果；query 和 memoryIds 同时提供时取交集，都省略时读取全部确认记忆。空结果不代表旧预览仍有效。`,
+      description: `scope=current默认读取当前场景；scope=team只读用户发布的团队共享确认记忆，不读取其他Bot个人记忆。${scope.channelId ? '当前绑定为频道场景：本工具只读本群记忆；Bot自身确认记忆可从get_bot_context只读取得。' : ''}读取当前场景已被用户确认的长期记忆，可按关键词或 memoryIds 查回最新正文。已有条目 ID 时优先按 ID 读取，不把可能过期的预览当查询词或当前事实。候选、归档及其他 Bot 的记忆不返回。total 和 nextOffset 针对匹配结果；query 和 memoryIds 同时提供时取交集，都省略时读取全部确认记忆。空结果不代表旧预览仍有效。`,
       annotations: { readOnlyHint: true },
       inputSchema: {
+        scope: z.enum(['current', 'team']).default('current'),
         limit: z.number().int().min(1).max(MAX_MEMORY_ITEMS).default(MAX_MEMORY_ITEMS),
         offset: z.number().int().min(0).default(0).describe('从最新记忆开始跳过的条数；用 nextOffset 继续读取更早记录'),
         query: z.string().trim().max(500).optional().describe('空白分隔的关键词，忽略大小写；内容须包含全部词。中文短语按原文匹配，空查询不筛选。'),
-        memoryIds: z.array(memoryEntrySchema.shape.id).min(1).max(MAX_MEMORY_ITEMS).optional().describe('从线索或之前读取结果取得的条目 ID；只返回仍属本 Bot 的活跃确认条目及当前正文，不匹配时不回退全量。'),
+        memoryIds: z.array(memoryEntrySchema.shape.id).min(1).max(MAX_MEMORY_ITEMS).optional().describe('从线索或之前读取结果取得的条目 ID；只返回仍属所选场景的活跃确认条目及当前正文，不匹配时不回退全量。'),
       },
     },
-    async ({ limit, offset, query, memoryIds }) => {
+    async ({ limit, offset, query, memoryIds, scope: memoryScope }) => {
       try {
-        const memories = await memoryStore.getContextMemories(botId);
+        const read = memoryScope === 'team' ? scope.readTeamMemories : () => memoryStore.getContextMemories(botId);
+        if (!read) throw new Error('团队记忆读取尚未配置，未回退个人记忆');
+        const memories = await read();
         const terms = (query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
         const matched = memories.filter(memory => {
           if (memoryIds && !memoryIds.includes(memory.id)) return false;
@@ -198,6 +203,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
         const shown = matched.slice(Math.max(0, end - limit), end);
         return toolResult({
           botId,
+          ...(memoryScope === 'team' ? { scope: 'team' } : {}),
           total: matched.length,
           offset,
           nextOffset: offset + shown.length < matched.length ? offset + shown.length : null,
@@ -222,7 +228,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
       title: '提交一条候选记忆',
       description:
         '把推断出的长期偏好提交为候选记忆，等待用户在插件界面确认。候选不会注入上下文；本工具无法声明用户已确认。',
-      inputSchema: { content: z.string().min(1).max(MAX_MEMORY_CHARS).describe('要记住的候选内容') },
+      inputSchema: { scope: z.literal('current').default('current'), content: z.string().min(1).max(MAX_MEMORY_CHARS).describe('要记住的候选内容') },
     },
     async ({ content }) => {
       try {
@@ -250,6 +256,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
         description:
           '仅在用户本条消息中明确要求记住某件事时使用；不要用于推断偏好。宿主会按原生最新用户消息核对 userQuote，核对通过才保存为明确记忆。',
         inputSchema: {
+          scope: z.literal('current').default('current'),
           content: z.string().min(1).max(MAX_MEMORY_CHARS).describe('逐字摘录用户明确要求记住的内容；推断或改写使用候选工具'),
           userQuote: z
             .string()
@@ -277,6 +284,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
   }
 
   const memorySelection = {
+    scope: z.literal('current').default('current'),
     memoryId: z.string().min(1).max(64),
     currentContent: z.string().min(1).max(MAX_MEMORY_CHARS).describe('read_memories 返回的当前内容，须逐字一致'),
     userQuote: z.string().min(1).max(MAX_MEMORY_CHARS).describe('最新完整用户消息；不得截取片段或引用旧消息'),
@@ -374,6 +382,7 @@ export class BotMcp {
   private readonly readContext?: BotMcpOptions['readContext'];
   private readonly cancelExplicit?: BotMcpOptions['cancelExplicit'];
   private readonly resolveScope?: BotMcpOptions['resolveScope'];
+  private readonly readTeamMemories?: BotMcpOptions['readTeamMemories'];
   private readonly stateFile: string;
   private server: Server | null = null;
   private port: number | null = null;
@@ -398,6 +407,7 @@ export class BotMcp {
     this.readContext = options.readContext;
     this.cancelExplicit = options.cancelExplicit;
     this.resolveScope = options.resolveScope;
+    this.readTeamMemories = options.readTeamMemories;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
 
@@ -570,6 +580,7 @@ export class BotMcp {
       tasks: this.tasks,
       startColleague: this.startColleague,
       readContext: this.readContext,
+      readTeamMemories: this.readTeamMemories,
       cancelExplicit: this.cancelExplicit,
       ...context,
     });

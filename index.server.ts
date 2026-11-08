@@ -29,6 +29,7 @@ import * as routineRpc from './shared/routines.js';
 import { ChannelStore } from './server/channels.js';
 import { ChannelContextStore } from './server/channel-context.js';
 import { ChannelChat } from './server/channel-chat.js';
+import { TeamMemoryStore } from './server/team-memory.js';
 import * as channelRpc from './shared/channels.js';
 
 export default function contribute(server: PluginServerContext) {
@@ -38,7 +39,8 @@ export default function contribute(server: PluginServerContext) {
   const store = new BotStore({ baseDir });
   const channels = new ChannelStore({ baseDir, bots: store });
   const channelState = new ChannelContextStore(baseDir, store, channels);
-  const channelChat = new ChannelChat(store, channels, channelState, startBoundSession);
+  const teamMemory = new TeamMemoryStore(baseDir);
+  const channelChat = new ChannelChat(store, channels, channelState, startBoundSession, teamMemory);
   server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
   server.handle(channelRpc.createChannel, input => channels.create(input));
   server.handle(channelRpc.updateChannel, input => channels.update(input.channelId, input.details));
@@ -65,7 +67,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, resolveScope: async (botId, agentId) => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
     const bot = await store.getBot(botId);
     const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
     if (!link) throw new Error('原生会话未关联到此Bot');
@@ -94,7 +96,7 @@ export default function contribute(server: PluginServerContext) {
         return readBotHistory(store, currentPaseo!, target.botId, input, channelId);
       },
     };
-  }, readContext: (botId, agentId) => routines.context(botId, agentId), startColleague: async input => {
+  }, readContext: async (botId, agentId) => ({ ...await routines.context(botId, agentId), teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }), startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
   }, cancelExplicit: async (botId, agentId, quote, targetAgentId) => {
@@ -139,7 +141,7 @@ export default function contribute(server: PluginServerContext) {
     const handoff = await prepareConversationHandoff(store, paseo, botId, agentId, previousAgentIds);
     return {
       type: 'text' as const, mimeType: 'text/plain' as const, title: handoff ? 'Bot 记忆与对话交接' : '最新确认记忆',
-      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}${handoff ?? ''}`,
+      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}\n用户显式发布的团队共享记忆（只读；空数组取代旧共享快照）：${JSON.stringify((await teamMemory.confirmed()).map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}${handoff ?? ''}`,
     };
   });
   server.handle(conversationWork, async ({ botId, agentId }, { paseo }) => {
@@ -249,7 +251,7 @@ export default function contribute(server: PluginServerContext) {
     }
     return store.updateBot(input.botId, patch);
   });
-  server.handle(rpc.listMemories, input => input.channelId ? channelState.listMemories(input.channelId, input.includeArchived) : store.listMemories(input.botId, { includeArchived: input.includeArchived }));
+  server.handle(rpc.listMemories, input => input.team ? teamMemory.listMemories(input.includeArchived) : input.channelId ? channelState.listMemories(input.channelId, input.includeArchived) : store.listMemories(input.botId, { includeArchived: input.includeArchived }));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
   server.handle(rpc.acknowledgeCreation, async input => { await store.acknowledgeCreation(input.botId, input.requestId); return {}; });
@@ -268,10 +270,10 @@ export default function contribute(server: PluginServerContext) {
     return journal.inspect(input.botId, { limit: input.limit, offset: input.offset });
   });
   // These RPCs are user-facing controls, never a tool automatically granted to Agents.
-  server.handle(rpc.saveMemory, input => input.channelId ? channelState.addMemory(input.channelId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.correctMemory, input => input.channelId ? channelState.updateMemory(input.channelId, input.memoryId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.forgetMemory, async input => ({ removed: input.channelId ? await channelState.removeMemory(input.channelId, input.memoryId, undefined, { type: 'manual' }) : await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
-  server.handle(rpc.restoreMemory, input => input.channelId ? channelState.restoreMemory(input.channelId, input.memoryId) : store.restoreMemory(input.botId, input.memoryId));
+  server.handle(rpc.saveMemory, input => input.team ? teamMemory.addMemory({ kind: input.kind, content: input.content }) : input.channelId ? channelState.addMemory(input.channelId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.correctMemory, input => input.team ? teamMemory.updateMemory(input.memoryId, { kind: input.kind, content: input.content }) : input.channelId ? channelState.updateMemory(input.channelId, input.memoryId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
+  server.handle(rpc.forgetMemory, async input => ({ removed: input.team ? await teamMemory.removeMemory(input.memoryId) : input.channelId ? await channelState.removeMemory(input.channelId, input.memoryId, undefined, { type: 'manual' }) : await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
+  server.handle(rpc.restoreMemory, input => input.team ? teamMemory.restoreMemory(input.memoryId) : input.channelId ? channelState.restoreMemory(input.channelId, input.memoryId) : store.restoreMemory(input.botId, input.memoryId));
   server.handle(rpc.startSession, async (input, { paseo }) => {
     return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
   });
@@ -355,7 +357,7 @@ export default function contribute(server: PluginServerContext) {
       if (parent?.agent.labels['paseo-guys.bot'] === input.botId && parent.agent.labels['paseo-guys.conversation'] === 'true') execution = conversationExecution(parent.agent);
     }
     const cwd = execution?.cwd ?? bot.bot.execution.cwd ?? (state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd);
-    return startBotSession(store, paseo, { ...input, execution }, { cwd, config: { provider, modeId, thinkingOptionId } }, {
+    return startBotSession(store, paseo, { ...input, execution }, { cwd, config: { provider, modeId, thinkingOptionId }, teamConfirmedMemories: input.kind ? [] : (await teamMemory.confirmed()).map(memory => memory.content) }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind ? { conversation: true } : {}) });
         if (input.channelId) await channelState.link(input.channelId, botId, agentId);
@@ -388,7 +390,7 @@ export default function contribute(server: PluginServerContext) {
     const state = await settings.read();
     if (state.status !== 'ready') throw new Error('Bot 执行设置无效');
     if (state.values.cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
-    return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId } };
+    return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) };
   } });
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {
     currentPaseo = context.paseo;
@@ -437,7 +439,7 @@ export default function contribute(server: PluginServerContext) {
       if (!routine) return;
       const bot = await store.getBot(routine.botId);
       if (!bot) throw new Error('例程绑定的 Bot 不存在');
-      const config = await botSessionConfig(store, routine.botId, { cwd: request.cwd, config: { provider: request.provider } }, 'routine');
+      const config = await botSessionConfig(store, routine.botId, { cwd: request.cwd, config: { provider: request.provider }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }, 'routine');
       return { ...request, mcpServers: { ...request.mcpServers, ...config.config.mcpServers, 'paseo-guys': await mcp.mount(routine.botId, request.agentId) } };
     }
     try {
