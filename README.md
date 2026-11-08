@@ -33,7 +33,9 @@
 - Paseo `0.15.3`（当前已验证基线；正式发版前只维护最新版本，不保留旧版兼容）
 - Node.js 22 与 npm（本地构建）
 - 邮件／飞书能力需自备并登录连接器：`gws 0.22.5`（Google Workspace）、`lark-mcp 0.5.1`（飞书）。插件不创建 OAuth 服务，也不代管凭据
-- 选定 Excel 流程需已有 Python/openpyxl；真实重算与检查 PDF 当前适配 Windows 已安装且可用的 Microsoft Excel，经已有授权的 Paseo 原生工作区终端执行。插件不自动安装 Office、不扩大命令或数据授权；条件不足时如实报告未重算。Word/PPT 的选定流程仍待后续增量
+- 选定 Excel 流程需已有 Python/openpyxl；真实重算与检查 PDF 当前适配 Windows 已安装且可用的 Microsoft Excel，经已有授权的 Paseo 原生工作区终端执行。插件不自动安装 Office、不扩大命令或数据授权；条件不足时如实报告未重算。
+
+Word、PDF、PPT 等文档操作优先复用 Agent 已有工具与技能，不另建专属 Office 执行层。可用性取决于 daemon 机器的依赖、账户与授权；条件不足时反馈实际缺口，不自动安装办公软件、代登录或扩大权限。当前 Word/PPT 尚未完成与上述 Excel 同等的真实流程验证。
 
 ## 安装
 
