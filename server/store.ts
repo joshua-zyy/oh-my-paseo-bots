@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { capabilityRequestSchema, type CapabilityRequest } from '../shared/capability-guidance.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { writeJsonFile } from './storage.js';
 import { StoreError } from './store-errors.js';
@@ -35,6 +36,7 @@ export interface BotIdentity extends BotDetails {
   createdAt: string;
   updatedAt: string;
   archivedAt?: string;
+  capabilityRequest?: CapabilityRequest;
 }
 
 /** Bot 关联的一个 Paseo 原生会话。只存标识与最小标注，不存会话内容。 */
@@ -145,6 +147,7 @@ const botIdentitySchema = botDetailsSchema.extend({
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   archivedAt: timestampSchema.optional(),
+  capabilityRequest: capabilityRequestSchema.optional(),
 });
 
 const sessionLinkSchema = z.object({
@@ -312,6 +315,49 @@ export class BotStore {
       document.bot = { ...document.bot, ...patch, updatedAt: new Date().toISOString() };
       await this.writeDocument(id, document);
       return document.bot;
+    });
+  }
+
+  /** 能力方案不改变绑定；模型不能通过普通配置工具写入审核结果。 */
+  async proposeCapabilities(botId: string, request: CapabilityRequest): Promise<CapabilityRequest> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    return this.withLock(id, async () => {
+      const document = await this.requireDocument(id);
+      if (document.bot.archivedAt) throw new Error('同事已归档');
+      const previous = document.bot.capabilityRequest;
+      if (previous?.id === request.id) {
+        if (previous.fingerprint !== request.fingerprint) throw new Error('同一请求的能力方案已经变化；核对新来源后，请用新requestId提出新方案');
+        return previous;
+      }
+      document.bot.capabilityRequest = request;
+      document.bot.updatedAt = new Date().toISOString();
+      await this.writeDocument(id, document);
+      return request;
+    });
+  }
+
+  /** 用户决定绑定被展示的精确方案；同一决策重试只回查，不再合并。 */
+  async decideCapabilities(botId: string, requestId: string, decision: 'apply' | 'reject', additions?: BotDetails['capabilities']): Promise<CapabilityRequest> {
+    const id = parseInput(botIdSchema, botId, 'botId');
+    return this.withLock(id, async () => {
+      const document = await this.requireDocument(id);
+      if (document.bot.archivedAt) throw new Error('同事已归档');
+      const request = document.bot.capabilityRequest;
+      if (!request || request.id !== requestId) throw new Error('能力方案已经变化，请刷新后核对');
+      if (request.state !== 'pending') return request;
+      if (decision === 'apply') {
+        if (!additions) throw new Error('未读取能力来源，未应用配置');
+        const current = document.bot.capabilities;
+        document.bot.capabilities = {
+          skills: [...current.skills.filter(skill => !additions.skills.some(item => item.path === skill.path)), ...additions.skills],
+          mcpServers: { ...current.mcpServers, ...additions.mcpServers },
+          ...(current.disabledMcpServers ? { disabledMcpServers: current.disabledMcpServers.filter(name => !(name in additions.mcpServers)) } : {}),
+        };
+      }
+      request.state = decision === 'apply' ? 'applied' : 'rejected';
+      request.decidedAt = document.bot.updatedAt = new Date().toISOString();
+      await this.writeDocument(id, document);
+      return request;
     });
   }
 

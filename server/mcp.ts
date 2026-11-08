@@ -16,6 +16,8 @@ import { registerOfficeTools } from './office-tools.js';
 import type { TaskTracker } from './tasks.js';
 import { registerTaskTools, type ExplicitTaskCancel } from './task-tools.js';
 import { registerColleagueTools, type ColleagueToolScope } from './colleague-tools.js';
+import { registerCapabilityTools } from './capability-tools.js';
+import type { CapabilityGuidance } from './capability-guidance.js';
 import type { MemoryCorrection, MemoryForget } from './memory.js';
 import type { BotHistoryInput } from './history.js';
 import { memoryEntrySchema, type MemoryEntry } from '../shared/memory.js';
@@ -84,6 +86,7 @@ export interface BotMcpOptions {
   cancelExplicit?: ExplicitTaskCancel;
   resolveScope?: (botId: string, agentId: string) => Promise<Partial<BotMcpToolScope>>;
   readTeamMemories?: () => Promise<MemoryEntry[]>;
+  capabilityGuidance?: CapabilityGuidance;
 }
 
 export interface BotMcpToolScope {
@@ -92,6 +95,7 @@ export interface BotMcpToolScope {
   reportChannelResult?: (input: ChannelReport) => Promise<unknown>;
   memoryStore?: Pick<BotStore, 'getContextMemories' | 'addMemory'>;
   readTeamMemories?: BotMcpOptions['readTeamMemories'];
+  capabilityGuidance?: CapabilityGuidance;
   botId: string;
   agentId: string;
   store: BotStore;
@@ -359,6 +363,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
   if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
   if (scope.tasks) registerTaskTools(server, scope.tasks, botId, agentId, scope.cancelExplicit);
   if (scope.tasks && scope.startColleague) registerColleagueTools(server, { store, tasks: scope.tasks, botId, agentId, start: scope.startColleague });
+  if (!scope.channelId && scope.tasks && scope.capabilityGuidance) registerCapabilityTools(server, { botId, agentId, service: scope.capabilityGuidance, authorize: () => scope.tasks!.requireActive(botId, agentId) });
   return server;
 }
 
@@ -383,6 +388,7 @@ export class BotMcp {
   private readonly cancelExplicit?: BotMcpOptions['cancelExplicit'];
   private readonly resolveScope?: BotMcpOptions['resolveScope'];
   private readonly readTeamMemories?: BotMcpOptions['readTeamMemories'];
+  private readonly capabilityGuidance?: CapabilityGuidance;
   private readonly stateFile: string;
   private server: Server | null = null;
   private port: number | null = null;
@@ -408,6 +414,7 @@ export class BotMcp {
     this.cancelExplicit = options.cancelExplicit;
     this.resolveScope = options.resolveScope;
     this.readTeamMemories = options.readTeamMemories;
+    this.capabilityGuidance = options.capabilityGuidance;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
 
@@ -581,6 +588,7 @@ export class BotMcp {
       startColleague: this.startColleague,
       readContext: this.readContext,
       readTeamMemories: this.readTeamMemories,
+      capabilityGuidance: this.capabilityGuidance,
       cancelExplicit: this.cancelExplicit,
       ...context,
     });

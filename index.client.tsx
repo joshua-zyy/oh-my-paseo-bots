@@ -12,13 +12,14 @@ import { Routines } from './client/routines.js';
 import { Work } from './client/work.js';
 import { Chat } from './client/chat.js';
 import { BotConfiguration } from './client/bot-config.js';
+import { CapabilityRequests } from './client/capability-requests.js';
 import { HostSettings } from './client/host-settings.js';
 import { Channels } from './client/channels.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
 import { Actions, Button, Copy, Field, Notice, PickerRow, UiProvider } from './client/ui.js';
 
-type Panel = 'menu' | 'settings' | 'host' | 'work' | 'memories' | 'routines' | 'archive' | 'archived' | 'channels';
-const panels = { menu: '同事', settings: '同事设置', host: '默认设置', work: '工作记录', memories: '记忆', routines: '例程', archive: '归档同事', archived: '已归档同事', channels: '项目频道' };
+type Panel = 'menu' | 'settings' | 'host' | 'work' | 'memories' | 'routines' | 'archive' | 'archived' | 'channels' | 'capabilities';
+const panels = { menu: '同事', settings: '同事设置', host: '默认设置', work: '工作记录', memories: '记忆', routines: '例程', archive: '归档同事', archived: '已归档同事', channels: '项目频道', capabilities: '能力待确认' };
 const menu = [
   { panel: 'settings', label: '设置', icon: 'Settings' },
   { panel: 'work', label: '工作记录', icon: 'ListTodo' },
@@ -65,6 +66,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
   useEffect(() => { void refresh().catch(failure => setError(String(failure))); }, [list, updates.revision]);
   const current = bots.find(bot => bot.id === selected && !bot.archivedAt);
   const archived = bots.filter(bot => bot.archivedAt);
+  const capabilityRequests = bots.filter(bot => !bot.archivedAt && bot.capabilityRequest?.state === 'pending');
   const shown = bots.filter(bot => !bot.archivedAt).sort((a, b) => a.id === CHIEF_BOT_ID ? -1 : b.id === CHIEF_BOT_ID ? 1 : a.name.localeCompare(b.name, 'zh-CN')).filter(bot => `${bot.name} ${bot.role}`.toLowerCase().includes(search.toLowerCase()));
   function choose(id: string) { select(id); setPanel(null); setPicker(false); setDetail(undefined); setError(''); }
   function openAgent(agentId: string, sourceBotId = selected) {
@@ -113,6 +115,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
           {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: '300', flex: 1 }}>{current?.name || '同事'}</Text>}
+          {capabilityRequests.length > 0 && <Button label={`能力待确认 · ${capabilityRequests.length}`} disabled={busy} onPress={() => setPanel('capabilities')} />}
           <Button label="新对话" icon="SquarePen" iconOnly size="xs" disabled={!current || busy} onPress={() => void newConversation()} />
           <Button label="同事菜单" icon="Ellipsis" iconOnly size="xs" disabled={!current || busy} onPress={() => setPanel('menu')} />
         </View>
@@ -122,12 +125,12 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
     </View>
     <Modal title="选择同事" open={picker} onOpenChange={setPicker}><Modal.Content>{roster}<Actions><Button label="项目频道" icon="Hash" onPress={() => { setPicker(false); setChannelTarget(undefined); setPanel('channels'); }} /><Button label="已归档同事" icon="Archive" onPress={() => { setPicker(false); setPanel('archived'); }} /><Button label="默认设置" icon="Settings2" onPress={() => { setPicker(false); setPanel('host'); }} /><Button label="添加同事" icon="Plus" onPress={() => { setPicker(false); setCreating(true); }} /></Actions></Modal.Content></Modal>
     <Modal title={panel === 'menu' ? current?.name || '同事' : panel ? panels[panel] : '同事'} open={panel !== null} onOpenChange={open => { if (!open) setPanel(null); }}><Modal.Content>
-      {panel && panel !== 'menu' && panel !== 'host' && panel !== 'archived' && panel !== 'channels' && <View style={{ alignItems: 'flex-start' }}><Button label="返回" icon="ArrowLeft" disabled={busy} onPress={() => setPanel('menu')} /></View>}
+      {panel && panel !== 'menu' && panel !== 'host' && panel !== 'archived' && panel !== 'channels' && panel !== 'capabilities' && <View style={{ alignItems: 'flex-start' }}><Button label="返回" icon="ArrowLeft" disabled={busy} onPress={() => setPanel('menu')} /></View>}
       <Notice error={error} />
       {panel === 'archive' && current && <><Copy>归档「{current.name}」后，它会从同事列表与委派目录移除。身份、记忆、聊天历史和工作区文件保留，可从「已归档同事」恢复。</Copy><Copy muted>未结束事项、正在回复、待授权或有效例程须先处理；归档不会替你停止或取消工作。</Copy><Actions><Button label="暂不归档" disabled={busy} onPress={() => setPanel('menu')} /><Button label="确认归档" primary disabled={busy || current.id === CHIEF_BOT_ID} onPress={() => void changeArchive(current.id, true)} /></Actions></>}
       {panel === 'archived' && <>{archived.length ? <SettingsCard>{archived.map(bot => <SettingsAction key={bot.id} label={bot.name} hint={bot.role} actionLabel="恢复" disabled={busy} onPress={() => void changeArchive(bot.id, false)} />)}</SettingsCard> : <Copy muted>没有已归档同事</Copy>}</>}
       {panel === 'menu' ? <>{menu.map(item => <Pressable key={item.panel} accessibilityRole="button" onPress={() => setPanel(item.panel)} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', padding: 12, gap: 12, minHeight: 44, backgroundColor: pressed ? colors.surface1 : 'transparent', borderRadius: 6 })}><Icon name={item.icon} size={18} color={colors.foregroundMuted} /><Text style={{ color: colors.foreground, flex: 1, fontSize: 15 }}>{item.label}</Text><Icon name="ChevronRight" size={16} color={colors.foregroundMuted} /></Pressable>)}{current && current.id !== CHIEF_BOT_ID && <Button label="归档同事" icon="Archive" disabled={busy} onPress={() => setPanel('archive')} />}</>
-        : panel === 'host' ? <HostSettings /> : panel === 'channels' ? <Channels bots={bots} hostId={host.id} initialChannelId={channelTarget} /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew, mcpImports) => {
+        : panel === 'capabilities' ? <CapabilityRequests bots={capabilityRequests} refresh={refresh} /> : panel === 'host' ? <HostSettings /> : panel === 'channels' ? <Channels bots={bots} hostId={host.id} initialChannelId={channelTarget} /> : current ? panel === 'settings' ? <BotConfiguration key={`${current.id}:${current.updatedAt}`} bot={current} botId={selected} disabled={busy} save={async (patch, startNew, mcpImports) => {
           if (guard.current) return;
           guard.current = true; setBusy(true); setError('');
           let saved = false;

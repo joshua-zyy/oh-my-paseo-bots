@@ -30,6 +30,8 @@ import { ChannelStore } from './server/channels.js';
 import { ChannelContextStore } from './server/channel-context.js';
 import { ChannelChat } from './server/channel-chat.js';
 import { TeamMemoryStore } from './server/team-memory.js';
+import { CapabilityGuidance } from './server/capability-guidance.js';
+import * as capabilityRpc from './shared/capability-guidance.js';
 import * as channelRpc from './shared/channels.js';
 
 export default function contribute(server: PluginServerContext) {
@@ -40,6 +42,9 @@ export default function contribute(server: PluginServerContext) {
   const channels = new ChannelStore({ baseDir, bots: store });
   const channelState = new ChannelContextStore(baseDir, store, channels);
   const teamMemory = new TeamMemoryStore(baseDir);
+  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; });
+  server.handle(capabilityRpc.inspectCapabilities, input => capabilityGuidance.inspect(input.botId));
+  server.handle(capabilityRpc.decideCapabilities, input => capabilityGuidance.decide(input.botId, input.requestId, input.decision));
   const channelChat = new ChannelChat(store, channels, channelState, startBoundSession, teamMemory);
   server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
   server.handle(channelRpc.createChannel, input => channels.create(input));
@@ -67,7 +72,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, capabilityGuidance, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
     const bot = await store.getBot(botId);
     const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
     if (!link) throw new Error('原生会话未关联到此Bot');

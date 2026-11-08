@@ -4,10 +4,11 @@ import { botDetailsSchema, botPatchSchema } from './bot.js';
 import { mcpImportSchema } from './capabilities.js';
 import { memoryChangeSchema, memoryEntrySchema, memoryContentSchema } from './memory.js';
 import { channelIdSchema } from './channels.js';
+import { capabilityRequestView } from './capability-guidance.js';
 
 const id = z.string().min(1).max(64);
 const botView = botDetailsSchema.extend({ id });
-const savedBotView = botView.extend({ updatedAt: z.string(), archivedAt: z.string().optional() });
+const savedBotView = botView.extend({ updatedAt: z.string(), archivedAt: z.string().optional(), capabilityRequest: capabilityRequestView.optional() });
 export const settings = defineSettings({
   id: 'bots', scope: 'host', version: 1,
   schema: z.object({

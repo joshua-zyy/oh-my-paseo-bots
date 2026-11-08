@@ -59,6 +59,26 @@ export async function readMcp(path: string) {
   return parsed.data.mcpServers;
 }
 
+/** Discover installed skill metadata, not bodies; no downloads or native configuration edits. */
+export async function discoverSkills(home = homedir(), cwd?: string) {
+  const roots = [join(home, '.agents', 'skills'), join(home, '.claude', 'skills'), join(home, '.codex', 'skills'), join(home, '.pi', 'agent', 'skills'), ...(cwd ? [join(cwd, '.agents', 'skills'), join(cwd, '.claude', 'skills')] : [])];
+  const skills: Awaited<ReturnType<typeof readSkill>>[] = [];
+  const errors: { path: string; error: string }[] = [];
+  async function visit(path: string, depth: number): Promise<void> {
+    let entries;
+    try { entries = await readdir(path, { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors.push({ path, error: '技能目录不可读取' }); return; }
+    if (entries.some(entry => entry.name === 'SKILL.md')) {
+      try { skills.push(await readSkill(join(path, 'SKILL.md'))); }
+      catch { errors.push({ path, error: 'SKILL.md不可读取或元数据无效' }); }
+    } else if (depth < 2) {
+      for (const entry of entries) if (entry.isDirectory() || entry.isSymbolicLink()) await visit(join(path, entry.name), depth + 1);
+    }
+  }
+  for (const root of roots) await visit(root, 0);
+  return { skills, errors };
+}
+
 /** Source locations adapted from oliexe/paseo-bots (MIT); credentials stay on the host. */
 export async function discoverMcpSources(options: { cwd?: string; home?: string; appData?: string; platform?: NodeJS.Platform } = {}) {
   const home = options.home ?? homedir();

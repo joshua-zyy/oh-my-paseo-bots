@@ -64,6 +64,14 @@ test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，�
     assert.equal(saved.skills[0].path, skillPath);
     await assert.rejects(() => invoke('bots.update', { botId: created.id, patch: { name: '修改' }, mcpImports: [{ path: mcpPath, names: ['missing'] }] }), /未找到/);
     assert.equal((await store.getBot(created.id))!.bot.name, '核对同事', '导入失败不能部分保存其他字段');
+    const { CapabilityGuidance } = await import('../server/capability-guidance.js');
+    const plan = await new CapabilityGuidance(store).propose(created.id, 'synthetic-chief-agent', { requestId: 'setup', summary: '用户核对已有连接', skills: [skillPath], mcpImports: [{ path: mcpPath, names: ['chosen'] }] });
+    const preview = await invoke('bots.capabilities.inspect', { botId: created.id }) as { request: { state: string } };
+    assert.equal(preview.request.state, 'pending'); assert.doesNotMatch(JSON.stringify(preview), /SYNTHETIC-NEW-SECRET|Authorization/);
+    assert.equal((await invoke('bots.capabilities.decide', { botId: created.id, requestId: plan.id, decision: 'apply' }) as { state: string }).state, 'applied');
+    const list = await invoke('bots.list', {}) as { bots: { id: string; capabilityRequest?: { fingerprint?: string; state: string } }[] };
+    assert.equal(list.bots.find(bot => bot.id === created.id)!.capabilityRequest!.state, 'applied');
+    assert.equal(list.bots.find(bot => bot.id === created.id)!.capabilityRequest!.fingerprint, undefined, '用户列表只返回公开方案字段');
     await writeFile(mcpPath, JSON.stringify({ mcpServers: { paseo: { command: 'forbidden' } } }));
     await assert.rejects(() => invoke('bots.mcp.inspect', { path: mcpPath }), /MCP/);
   } finally {
