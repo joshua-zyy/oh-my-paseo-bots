@@ -26,7 +26,7 @@ export class CapabilityGuidance {
     return { botId, skills: record.bot.capabilities.skills, mcpNames: Object.keys(record.bot.capabilities.mcpServers).filter(name => !record.bot.capabilities.disabledMcpServers?.includes(name)), ...(record.bot.capabilityRequest ? { request: requestView(record.bot.capabilityRequest) } : {}) };
   }
 
-  async propose(botId: string, sourceAgentId: string, input: CapabilityPlanInput) {
+  async configure(botId: string, sourceAgentId: string, input: CapabilityPlanInput) {
     if (input.skills.length + input.mcpImports.length === 0) throw new Error('至少选择一项已有能力');
     const resolved = await this.resolve(input);
     const request: CapabilityRequest = {
@@ -34,7 +34,7 @@ export class CapabilityGuidance {
       sourceAgentId, summary: input.summary, skills: resolved.additions.skills, mcp: resolved.mcp,
       fingerprint: resolved.fingerprint, state: 'pending', createdAt: new Date().toISOString(),
     };
-    return requestView(await this.store.proposeCapabilities(botId, request));
+    return requestView(await this.store.configureCapabilities(botId, request, resolved.additions));
   }
 
   async decide(botId: string, requestId: string, decision: 'apply' | 'reject') {

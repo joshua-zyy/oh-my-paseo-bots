@@ -87,6 +87,7 @@ export interface BotMcpOptions {
   resolveScope?: (botId: string, agentId: string) => Promise<Partial<BotMcpToolScope>>;
   readTeamMemories?: () => Promise<MemoryEntry[]>;
   capabilityGuidance?: CapabilityGuidance;
+  readUserMessage?: (agentId: string) => Promise<string>;
 }
 
 export interface BotMcpToolScope {
@@ -96,6 +97,7 @@ export interface BotMcpToolScope {
   memoryStore?: Pick<BotStore, 'getContextMemories' | 'addMemory'>;
   readTeamMemories?: BotMcpOptions['readTeamMemories'];
   capabilityGuidance?: CapabilityGuidance;
+  readUserMessage?: BotMcpOptions['readUserMessage'];
   botId: string;
   agentId: string;
   store: BotStore;
@@ -363,7 +365,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
   if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
   if (scope.tasks) registerTaskTools(server, scope.tasks, botId, agentId, scope.cancelExplicit);
   if (scope.tasks && scope.startColleague) registerColleagueTools(server, { store, tasks: scope.tasks, botId, agentId, start: scope.startColleague });
-  if (!scope.channelId && scope.tasks && scope.capabilityGuidance) registerCapabilityTools(server, { botId, agentId, service: scope.capabilityGuidance, authorize: () => scope.tasks!.requireActive(botId, agentId) });
+  if (!scope.channelId && scope.tasks && scope.capabilityGuidance && scope.readUserMessage) registerCapabilityTools(server, { botId, agentId, service: scope.capabilityGuidance, authorize: () => scope.tasks!.requireActive(botId, agentId), readUserMessage: () => scope.readUserMessage!(agentId) });
   return server;
 }
 
@@ -389,6 +391,7 @@ export class BotMcp {
   private readonly resolveScope?: BotMcpOptions['resolveScope'];
   private readonly readTeamMemories?: BotMcpOptions['readTeamMemories'];
   private readonly capabilityGuidance?: CapabilityGuidance;
+  private readonly readUserMessage?: BotMcpOptions['readUserMessage'];
   private readonly stateFile: string;
   private server: Server | null = null;
   private port: number | null = null;
@@ -415,6 +418,7 @@ export class BotMcp {
     this.resolveScope = options.resolveScope;
     this.readTeamMemories = options.readTeamMemories;
     this.capabilityGuidance = options.capabilityGuidance;
+    this.readUserMessage = options.readUserMessage;
     this.stateFile = nodePath.join(nodePath.resolve(baseDir), ENDPOINT_DIRECTORY, ENDPOINT_FILE);
   }
 
@@ -589,6 +593,7 @@ export class BotMcp {
       readContext: this.readContext,
       readTeamMemories: this.readTeamMemories,
       capabilityGuidance: this.capabilityGuidance,
+      readUserMessage: this.readUserMessage,
       cancelExplicit: this.cancelExplicit,
       ...context,
     });

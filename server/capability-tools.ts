@@ -7,11 +7,18 @@ import type { CapabilityGuidance } from './capability-guidance.js';
 
 /** Chief selects existing capabilities; only the separate user RPC can approve a plan. */
 export function registerCapabilityTools(server: McpServer, scope: {
-  botId: string; agentId: string; service: CapabilityGuidance; authorize(): Promise<unknown>;
+  botId: string; agentId: string; service: CapabilityGuidance; authorize(): Promise<unknown>; readUserMessage(): Promise<string>;
 }) {
   if (scope.botId !== CHIEF_BOT_ID) return;
-  const run = async (action: () => Promise<unknown>) => {
-    try { await scope.authorize(); return { content: [{ type: 'text' as const, text: JSON.stringify(await action()) }] }; }
+  const run = async (action: () => Promise<unknown>, userQuote?: string) => {
+    try {
+      await scope.authorize();
+      if (userQuote !== undefined) {
+        const userMessage = await scope.readUserMessage();
+        if (userQuote.trim() !== userMessage.trim()) return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: '配置依据与最新完整原生用户消息不符，未配置', userMessage }) }] };
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(await action()) }] };
+    }
     catch (error) { return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : '能力配置未完成' }] }; }
   };
   server.registerTool('list_available_capabilities', {
@@ -29,8 +36,8 @@ export function registerCapabilityTools(server: McpServer, scope: {
     description: 'Chief核对指定同事当前技能索引、MCP名称与最近能力方案的用户决定，不返回凭据。pending不是已配置；applied仅表示配置保存，之后的新对话/新任务才使用，不代表实际交付。',
     annotations: { readOnlyHint: true }, inputSchema: { colleagueId: botIdSchema },
   }, input => run(() => scope.service.inspect(input.colleagueId)));
-  server.registerTool('propose_colleague_capabilities', {
-    description: 'Chief按用户需求选择现有SKILL.md绝对路径和MCP来源文件/名称，为固定同事生成待确认方案。保持同一requestId重试，不传命令/env/密钥，不安装、不扩大账户权限。用户在同事页顶部「能力待确认」核对并确认后才保存；未确认不能假称配置成功，也不派发依赖这些能力的工作。只剩等待就结束本轮，不轮询、不重新提案催促；用户拒绝后不自行重提。',
-    inputSchema: capabilityPlanInput.safeExtend({ colleagueId: botIdSchema }),
-  }, input => run(() => scope.service.propose(input.colleagueId, scope.agentId, input)));
+  server.registerTool('configure_colleague_capabilities', {
+    description: 'Chief依据当前用户交办配置现有能力，userQuote引用最新完整原话，不拼附件。既有技能索引及接收方已经启用且配置完全相同的MCP直接保存，返回applied；未知、新增、变更或禁用MCP返回pending，用户确认后才保存，不能以本机存在配置视为已授权。混合请求若含待确认连接则整体pending，可先单独完成独立的技能配置。不传命令/env/密钥/authorized，不安装或扩权；保持同一requestId重试。只剩等待时结束本轮，不轮询、催促或派发依赖未批准能力的工作；拒绝后不自行重提。仅新会话/任务使用。',
+    inputSchema: capabilityPlanInput.safeExtend({ colleagueId: botIdSchema, userQuote: z.string().trim().min(1).max(8000) }),
+  }, input => run(() => scope.service.configure(input.colleagueId, scope.agentId, input), input.userQuote));
 }

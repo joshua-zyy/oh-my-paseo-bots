@@ -72,7 +72,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
     return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, capabilityGuidance, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, capabilityGuidance, readUserMessage: agentId => { if (!currentPaseo) throw new Error('原生上下文尚未就绪，未配置能力'); return latestUserMessage(currentPaseo, agentId); }, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
     const bot = await store.getBot(botId);
     const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
     if (!link) throw new Error('原生会话未关联到此Bot');

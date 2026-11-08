@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { capabilityRequestSchema, type CapabilityRequest } from '../shared/capability-guidance.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { writeJsonFile } from './storage.js';
@@ -221,6 +222,14 @@ export function selectInjectableMemories(memories: readonly MemoryEntry[]): Memo
   return memories.filter((memory) => memory.kind === 'confirmed' && !memory.archivedAt);
 }
 
+function mergeCapabilities(current: BotDetails['capabilities'], additions: BotDetails['capabilities']): BotDetails['capabilities'] {
+  return {
+    skills: [...current.skills.filter(skill => !additions.skills.some(item => item.path === skill.path)), ...additions.skills],
+    mcpServers: { ...current.mcpServers, ...additions.mcpServers },
+    ...(current.disabledMcpServers ? { disabledMcpServers: current.disabledMcpServers.filter(name => !Object.hasOwn(additions.mcpServers, name)) } : {}),
+  };
+}
+
 function propose(intent: CreationIntent): CreationProposal {
   return intent.status === 'created' ? { action: 'known', intent } : { action: 'retry_pending', intent };
 }
@@ -318,8 +327,8 @@ export class BotStore {
     });
   }
 
-  /** 能力方案不改变绑定；模型不能通过普通配置工具写入审核结果。 */
-  async proposeCapabilities(botId: string, request: CapabilityRequest): Promise<CapabilityRequest> {
+  /** 普通技能索引直接配置；只有接收方未批准或已禁用/改变的MCP需要确认。 */
+  async configureCapabilities(botId: string, request: CapabilityRequest, additions: BotDetails['capabilities']): Promise<CapabilityRequest> {
     const id = parseInput(botIdSchema, botId, 'botId');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
@@ -327,7 +336,15 @@ export class BotStore {
       const previous = document.bot.capabilityRequest;
       if (previous?.id === request.id) {
         if (previous.fingerprint !== request.fingerprint) throw new Error('同一请求的能力方案已经变化；核对新来源后，请用新requestId提出新方案');
-        return previous;
+        if (previous.state !== 'pending') return previous;
+        request = previous;
+      }
+      const current = document.bot.capabilities;
+      const authorized = Object.entries(additions.mcpServers).every(([name, config]) => !current.disabledMcpServers?.includes(name) && isDeepStrictEqual(current.mcpServers[name], config));
+      if (authorized) {
+        document.bot.capabilities = mergeCapabilities(current, additions);
+        request.state = 'applied';
+        request.decidedAt = new Date().toISOString();
       }
       document.bot.capabilityRequest = request;
       document.bot.updatedAt = new Date().toISOString();
@@ -347,12 +364,7 @@ export class BotStore {
       if (request.state !== 'pending') return request;
       if (decision === 'apply') {
         if (!additions) throw new Error('未读取能力来源，未应用配置');
-        const current = document.bot.capabilities;
-        document.bot.capabilities = {
-          skills: [...current.skills.filter(skill => !additions.skills.some(item => item.path === skill.path)), ...additions.skills],
-          mcpServers: { ...current.mcpServers, ...additions.mcpServers },
-          ...(current.disabledMcpServers ? { disabledMcpServers: current.disabledMcpServers.filter(name => !(name in additions.mcpServers)) } : {}),
-        };
+        document.bot.capabilities = mergeCapabilities(document.bot.capabilities, additions);
       }
       request.state = decision === 'apply' ? 'applied' : 'rejected';
       request.decidedAt = document.bot.updatedAt = new Date().toISOString();
