@@ -79,6 +79,17 @@ test('已归档Bot/旧聊天段及跨Bot委派不重复聚合；尚未报告的�
   assert(!f.queried.includes('never-read')); assert.deepEqual(view.botIds, ['chief']);
 }));
 
+test('新原生来源已有创建关联但尚未linkSession时，可建立能力行观察且不制造业务待办', async () => fixture(async f => {
+  const proposal = await f.store.prepareCreation('chief', { requestId: 'new-source', fingerprint: 'c'.repeat(64) });
+  const id = proposal.intent.agentId;
+  f.native.set(id, agent({ status: 'initializing', labels: { 'paseo-guys.bot': 'chief' } }));
+  const before = await readFile(join(f.dir, 'chief.json'), 'utf8');
+  const view = await f.read();
+  assert(view.capabilityAgentIds?.includes(id), '原生创建事件早于会话业务关联提交时，也能观察该真实来源');
+  assert.deepEqual(view.entries.map(entry => entry.source), ['creation']);
+  assert.equal(await readFile(join(f.dir, 'chief.json'), 'utf8'), before, '读取不完成创建或补登记');
+}));
+
 test('创建未知/heartbeat未知与能力待确认只读：不ack创建、不复制MCP密钥或记忆正文', async () => fixture(async f => {
   const proposal = await f.store.prepareCreation('chief', { requestId: randomUUID(), fingerprint: 'a'.repeat(64) });
   await f.store.configureCapabilities('helper', { id: 'a'.repeat(64), fingerprint: 'b'.repeat(64), createdAt: new Date().toISOString(), state: 'pending', sourceAgentId: 'chief-native', summary: '需配置现有MCP', skills: [], mcp: [{ path: 'synthetic-only', name: 'synthetic', type: 'stdio' }] }, { skills: [], mcpServers: { synthetic: { type: 'stdio', command: 'never-launch' } } });

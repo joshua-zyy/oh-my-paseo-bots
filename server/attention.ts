@@ -41,7 +41,15 @@ export async function readAttention(sources: AttentionSources): Promise<Attentio
         const document = await sources.store.getBot(bot.id);
         if (!document) throw new Error('同事记录未找到，未判定无待办');
         for (const intent of document.creationIntents) {
-          if (intent.status === 'pending') add(bot, 'creation', intent.requestId, 'unknown', '会话创建结果待回查', { panel: 'work' }, '只回查原请求，不换键重建；查看不确认创建。', notice('progress', 'inflight', intent.requestId));
+          if (intent.status === 'pending') {
+            add(bot, 'creation', intent.requestId, 'unknown', '会话创建结果待回查', { panel: 'work' }, '只回查原请求，不换键重建；查看不确认创建。', notice('progress', 'inflight', intent.requestId));
+            // Native creation can precede completeCreation/linkSession. Observe an
+            // already-existing, owned source without completing or retrying it.
+            await read(`capability-source:${intent.agentId}`, async () => {
+              const agent = await sources.agent(intent.agentId);
+              if (agent && !agent.archivedAt && agent.status !== 'closed' && agent.labels['paseo-guys.bot'] === bot.id) capabilityAgents.add(intent.agentId);
+            });
+          }
         }
         const tasks = await sources.tasks.list(bot.id);
         const taskById = new Map(tasks.map(task => [task.agentId, task]));
