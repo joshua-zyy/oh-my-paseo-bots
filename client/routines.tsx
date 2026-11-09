@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
-import { useRpc } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import { SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import { View } from 'react-native';
 import * as rpc from '../shared/routines.js';

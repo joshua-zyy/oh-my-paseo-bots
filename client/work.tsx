@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useRpc } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import type { RpcOutput } from '@getpaseo/plugin';
 import * as rpc from '../shared/contracts.js';
 import { Actions, Button, Copy, Disclosure, Notice } from './ui.js';

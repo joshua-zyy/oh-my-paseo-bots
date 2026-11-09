@@ -19,6 +19,7 @@ import { botIdPattern, type BotRecord, type BotStore } from './store.js';
  */
 
 const SCHEMA_VERSION = 1;
+export const TASK_STOPPING_IN_FLIGHT = '正在停止：原生 archive 进行中，期间不再接受新的推进';
 
 export type TaskStatus = 'active' | 'stopping' | 'canceled' | 'completed' | 'awaiting_review';
 export type FollowupStatus = 'pending' | 'active' | 'unknown' | 'inactive' | 'deleted';
@@ -470,7 +471,7 @@ export class TaskTracker {
           return task;
         }
         task.status = 'stopping';
-        task.detail = '正在停止：原生 archive 进行中，期间不再接受新的推进';
+        task.detail = TASK_STOPPING_IN_FLIGHT;
         // 先把用户上报的结果落盘，避免 archive 之后的写入失败丢掉交付证据。
         task.summary = value.summary;
         if (value.evidence) task.evidence = value.evidence;

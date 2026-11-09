@@ -1,7 +1,7 @@
 import type { PaseoAgent } from '@getpaseo/client';
 import type { AttentionEntry, AttentionView } from '../shared/attention.js';
 import type { BotIdentity, BotStore } from './store.js';
-import type { TaskRecord, TaskTracker } from './tasks.js';
+import { TASK_STOPPING_IN_FLIGHT, type TaskRecord, type TaskTracker } from './tasks.js';
 import type { MailOutbox } from './mail.js';
 import type { BotRoutines } from './routines.js';
 import type { GmailChecks } from './gmail-checks.js';
@@ -59,7 +59,7 @@ export async function readAttention(sources: AttentionSources): Promise<Attentio
           if (agent?.pendingPermissions.length) add(bot, 'work', id, 'decision', `${title} · 待原生授权或回答`, { panel: 'agent', agentId: id }, `${agent.pendingPermissions.length}项请求；打开会话核对，查看不批准。`, notice(nativeChannel, 'native_permission', id, agent.pendingPermissions.map(permission => permission.id).sort()));
           else if (agent && (agent.status === 'error' || agent.lastError && !['running', 'initializing'].includes(agent.status))) add(bot, 'work', id, 'failure', `${title} · 运行异常`, { panel: 'agent', agentId: id }, agent.lastError ?? undefined, notice(nativeChannel, 'native_error', id, agent.activeTurn?.turnId ?? task?.routine?.runId ?? null));
           else if (task?.status === 'awaiting_review') add(bot, 'work', id, 'decision', `${title} · 待核对交付`, { panel: 'work' }, task.detail ?? task.summary, notice('plugin', 'task_review', id, task.routine?.runId));
-          else if (task?.status === 'stopping') add(bot, 'work', id, 'unknown', `${title} · 停止待确认`, { panel: 'work' }, task.detail, notice('plugin', 'task_stop', id));
+          else if (task?.status === 'stopping') add(bot, 'work', id, 'unknown', `${title} · 停止待确认`, { panel: 'work' }, task.detail, notice(task.detail === TASK_STOPPING_IN_FLIGHT ? 'progress' : 'plugin', 'task_stop', id));
           else if (!agent || task && !task.conversation && (agent.archivedAt || agent.status === 'closed')) add(bot, 'work', id, 'unknown', `${title} · 工作结果待确认`, { panel: 'work' }, '原生回复结束或状态缺失不等于交付完成；核对原事项与产物。', notice('plugin', 'task_unreported', id, task?.routine?.runId));
         })));
       }),

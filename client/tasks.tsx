@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
-import { useRpc } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import * as rpc from '../shared/tasks.js';
 import { History } from './history.js';
 import { Usage } from './usage.js';

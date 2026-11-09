@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { usePaseo, useRpc } from '@getpaseo/plugin/client';
+import { usePaseo } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { Pressable, Text, View } from 'react-native';
 import { Icon } from '@getpaseo/plugin/client/ui';

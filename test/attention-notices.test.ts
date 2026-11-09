@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readAttention, type AttentionSources } from '../server/attention.js';
-import type { TaskRecord } from '../server/tasks.js';
+import { TASK_STOPPING_IN_FLIGHT, type TaskRecord } from '../server/tasks.js';
 
 const task = (agentId: string, patch: Partial<TaskRecord> = {}): TaskRecord => ({ agentId, title: agentId, status: 'active', followups: [], specialists: [], ...patch });
 function fixture() {
@@ -25,6 +25,14 @@ test('work分为原生提醒和业务核对，不整类排除；委派请求由�
   assert.equal(entries.find(e => e.sourceId === 'stop')!.notice?.reason, 'task_stop');
   f.agents.get('child').pendingPermissions = [{ id: 'another-request' }];
   assert.notEqual((await f.read()).entries.find(e => e.sourceId === 'child')!.notice!.episode, entries.find(e => e.sourceId === 'child')!.notice!.episode);
+});
+
+test('停止进行中使用已证实的生产阶段标记，不把正常完成/取消在途当异常提醒', async () => {
+  const f = fixture(); f.jobs.push(task('stop', { status: 'stopping', detail: TASK_STOPPING_IN_FLIGHT }));
+  const [inflight] = (await f.read()).entries; assert.equal(inflight.notice?.channel, 'progress');
+  f.jobs[0].detail = '原生 archive 失败（synthetic）；事项停在 stopping，可重试 stop';
+  const [failed] = (await f.read()).entries; assert.equal(failed.notice?.channel, 'plugin'); assert.equal(failed.notice?.reason, 'task_stop');
+  assert.equal(failed.notice!.episode, inflight.notice!.episode, '不是用失败文字生成新轮次');
 });
 
 test('正常草稿/发送在途不是重要未知，明确未知的事件键忽略标题详情，仅按请求/阶段/绑定区分', async () => {

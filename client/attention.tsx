@@ -1,40 +1,20 @@
-import { useEffect, useState } from 'react';
-import { usePaseo, useRpc } from '@getpaseo/plugin/client';
+import { useState } from 'react';
 import { Modal } from '@getpaseo/plugin/client/ui';
-import { listAttention, type AttentionEntry, type AttentionView } from '../shared/attention.js';
-import { observeAgentChanges } from './agent-changes.js';
+import type { AttentionEntry } from '../shared/attention.js';
+import { AttentionToast, useAttentionController, useAttentionSnapshot } from './attention-state.js';
 import { Button, Copy, Notice, Section } from './ui.js';
 
 /** Navigation only: decisions remain in their original, scope-checked interfaces. */
-export function Attention({ bots, onOpen }: { bots: { id: string; updatedAt: string }[]; onOpen(entry: AttentionEntry): void }) {
-  const api = usePaseo();
-  const read = useRpc(listAttention);
-  const [value, setValue] = useState<AttentionView>();
-  const [readError, setReadError] = useState('');
-  const [subscriptionError, setSubscriptionError] = useState('');
-  const error = [readError, subscriptionError].filter(Boolean).join('；');
+export function Attention({ onOpen, compact = false }: { onOpen(entry: AttentionEntry): void; compact?: boolean }) {
+  const controller = useAttentionController();
+  const { value, error } = useAttentionSnapshot();
   const [opened, setOpened] = useState(false);
-  const [revision, setRevision] = useState(0);
-  const signal = JSON.stringify(bots.map(bot => [bot.id, bot.updatedAt]));
-  const owners = [...new Set([...bots.map(bot => bot.id), ...(value?.botIds ?? [])])].sort();
-  const botIds = JSON.stringify(owners);
-  const scheduleIds = JSON.stringify(value?.scheduleIds ?? []);
-  useEffect(() => {
-    let active = true;
-    void read({}).then(result => { if (active) { setValue(result); setReadError(''); } }).catch(failure => { if (active) setReadError(`待办刷新失败，未判定已清空：${String(failure)}`); });
-    return () => { active = false; };
-  }, [read, signal, revision]);
-  useEffect(() => {
-    const labels = [...owners.map(id => ({ 'paseo-guys.bot': id })), ...(value?.scheduleIds ?? []).map(id => ({ 'paseo.schedule-id': id }))];
-    setSubscriptionError('');
-    const observer = observeAgentChanges(api, labels, () => setRevision(value => value + 1), failure => setSubscriptionError(`待办状态订阅失败，可手动刷新：${String(failure)}`));
-    return () => { void observer.release().catch(error => console.error('待办状态订阅清理失败', error)); };
-  }, [api, botIds, scheduleIds]);
   return <>
-    <Button label={value ? `待办 · ${value.entries.length}${value.issues.length || error ? ' · 待核对' : ''}` : '待办 · 读取中'} icon="CircleAlert" onPress={() => setOpened(true)} />
+    {compact && <AttentionToast />}
+    <Button label={value ? `待办 · ${value.entries.length}${value.issues.length || error ? ' · 待核对' : ''}` : error ? '待办 · 待核对' : '待办 · 读取中'} icon="CircleAlert" onPress={() => setOpened(true)} />
     <Modal title="集中待办" open={opened} onOpenChange={setOpened}><Modal.Content>
       <Copy muted>查看或收到提醒不代表已处理、已批准或已交付。只跳转原有入口核对；未知结果先回查，不盲目重试。</Copy>
-      <Button label="刷新待办" onPress={() => setRevision(value => value + 1)} />
+      <Button label="刷新待办" onPress={() => { void controller.refresh(); }} />
       <Notice error={error} />
       {!value && !error && <Copy muted>正在读取待办…</Copy>}
       {value && error && <Copy muted>下面保留上次读取结果，不代表当前状态。</Copy>}

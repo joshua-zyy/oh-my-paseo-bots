@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
-import { useRpc, useSettings } from '@getpaseo/plugin/client';
+import { useSettings } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import { View } from 'react-native';
 import * as rpc from '../shared/office.js';
 import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';

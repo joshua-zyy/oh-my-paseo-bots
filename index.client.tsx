@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
-import type { PluginClientContext, PluginScreenProps } from '@getpaseo/plugin/client';
-import { usePaseo, useRpc } from '@getpaseo/plugin/client';
+import type { PluginClientContext, PluginScreenProps, PluginSidebarItemProps } from '@getpaseo/plugin/client';
+import { usePaseo } from '@getpaseo/plugin/client';
 import { Pressable, Text, View } from 'react-native';
 import { Icon, Modal, ScrollView, SettingsAction, SettingsCard, SidebarRow, TextInput } from '@getpaseo/plugin/client/ui';
 import * as rpc from './shared/contracts.js';
@@ -14,6 +14,9 @@ import { Chat } from './client/chat.js';
 import { BotConfiguration } from './client/bot-config.js';
 import { CapabilityRequests } from './client/capability-requests.js';
 import { Attention } from './client/attention.js';
+import { createAttentionController } from './client/attention-controller.js';
+import { AttentionContext, AttentionToast, useAttentionSnapshot, useBotRpc as useRpc } from './client/attention-state.js';
+import { listAttention } from './shared/attention.js';
 import { HostSettings } from './client/host-settings.js';
 import { Channels } from './client/channels.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
@@ -116,7 +119,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
           {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: '300', flex: 1 }}>{current?.name || '同事'}</Text>}
-          <Attention bots={bots.filter(bot => !bot.archivedAt)} onOpen={entry => {
+          <Attention compact={compact} onOpen={entry => {
             const target = entry.target;
             if (target.panel === 'agent') { openAgent(target.agentId, entry.botId); return; }
             void refresh().then(() => { choose(entry.botId); setPanel(target.panel); }).catch(failure => setError(String(failure)));
@@ -167,8 +170,17 @@ function NewBot({ busy, submit, error }: { busy: boolean; submit(values: { name:
   return <><Notice error={error} /><Field label="名称" value={name} onChangeText={setName} maxLength={200} disabled={busy} /><Field label="职责" value={role} onChangeText={setRole} maxLength={200} multiline disabled={busy} /><Actions><Button label="添加同事" primary disabled={busy || !name.trim() || !role.trim()} onPress={() => void submit({ name: name.trim(), role: role.trim() })} /></Actions></>;
 }
 
+function BotSidebar({ openScreen, currentScreen }: PluginSidebarItemProps) {
+  const { value, error } = useAttentionSnapshot();
+  const label = `同事${value?.entries.length ? ` · ${value.entries.length}` : ''}${error || value?.issues.length ? ' · 待核对' : ''}`;
+  return <><AttentionToast /><SidebarRow icon="Users" label={label} active={currentScreen?.screenId === 'bots'} onPress={() => openScreen({ screenId: 'bots' })} /></>;
+}
+
 export default function contribute(client: PluginClientContext) {
-  const screen = client.addScreen({ id: 'bots', title: '同事', Component: Bots });
-  const sidebar = client.addSidebarHeaderItem({ id: 'bots', title: '同事', Component: ({ openScreen, currentScreen }) => <SidebarRow icon="Users" label="同事" active={currentScreen?.screenId === 'bots'} onPress={() => openScreen({ screenId: 'bots' })} /> });
-  return () => { sidebar(); screen(); };
+  const controller = createAttentionController(client.paseo, () => client.rpc(listAttention, {}));
+  const Screen = (props: PluginScreenProps) => <AttentionContext.Provider value={controller}><Bots {...props} /></AttentionContext.Provider>;
+  const Sidebar = (props: PluginSidebarItemProps) => <AttentionContext.Provider value={controller}><BotSidebar {...props} /></AttentionContext.Provider>;
+  const screen = client.addScreen({ id: 'bots', title: '同事', Component: Screen });
+  const sidebar = client.addSidebarHeaderItem({ id: 'bots', title: '同事', Component: Sidebar });
+  return async () => { sidebar(); screen(); await controller.release(); };
 }

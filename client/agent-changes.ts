@@ -1,9 +1,11 @@
 import type { PaseoApi, PaseoAgent } from '@getpaseo/client';
 
 /** Own only native metadata subscriptions; reread business data when observable work state changes. */
-export function observeAgentChanges(api: PaseoApi, labels: Record<string, string>[], changed: () => void, failed: (error: unknown) => void) {
+export function observeAgentChanges(api: PaseoApi, labels: Record<string, string>[], changed: () => void, failed: (error: unknown) => void, restored?: () => void) {
   let disposed = false;
-  const subscriptions = labels.map(async labels => {
+  const healthy = new Set<number>(), expected = labels.length;
+  if (!expected) restored?.();
+  const subscriptions = labels.map(async (labels, index) => {
     const result = await api.agents.list({ includeBackground: true, filter: { labels, includeArchived: true }, subscribe: {} });
     const agents = new Map<string, PaseoAgent>();
     let subscriptionId: string | null | undefined;
@@ -20,7 +22,8 @@ export function observeAgentChanges(api: PaseoApi, labels: Record<string, string
         subscriptionId = snapshot.subscriptionId;
         agents.clear();
         for (const { agent } of snapshot.entries) agents.set(agent.id, agent);
-        notify();
+        healthy.add(index); notify();
+        if (!disposed && healthy.size === expected) restored?.();
       },
       update: message => {
         if (message.type !== 'agent_update') return;
@@ -28,7 +31,7 @@ export function observeAgentChanges(api: PaseoApi, labels: Record<string, string
         else agents.delete(message.payload.agentId);
         notify();
       },
-      error: error => { if (!disposed) failed(error); },
+      error: error => { healthy.delete(index); if (!disposed) failed(error); },
     });
     return { subscription: result.subscription, unsubscribe };
   });
@@ -37,7 +40,7 @@ export function observeAgentChanges(api: PaseoApi, labels: Record<string, string
     disposed = true;
     await Promise.all(subscriptions.map(async request => {
       const { subscription, unsubscribe } = await request;
-      unsubscribe(); await subscription.release();
+      unsubscribe(); return subscription.release();
     }));
   } };
 }

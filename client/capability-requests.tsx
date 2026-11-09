@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { View } from 'react-native';
-import { useRpc } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import type { RpcOutput } from '@getpaseo/plugin';
 import { decideCapabilities } from '../shared/capability-guidance.js';
 import type { listBots } from '../shared/contracts.js';

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useRpc } from '@getpaseo/plugin/client';
+import { useBotRpc as useRpc } from './attention-state.js';
 import * as rpc from '../shared/gmail-checks.js';
 import { Actions, Button, Copy, Field, Notice, Section } from './ui.js';
 
