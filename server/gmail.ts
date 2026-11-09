@@ -28,7 +28,7 @@ export type GmailExecute = (
   options: { env: NodeJS.ProcessEnv; cwd: string; maxBuffer: number },
 ) => Promise<GmailExecResult>;
 
-export type GmailErrorCode = 'not_found' | 'unknown';
+export type GmailErrorCode = 'not_found' | 'history_expired' | 'unknown';
 
 /** Recognizable failure for callers; never carries gws stderr or credential material. */
 export class GmailError extends Error {
@@ -49,6 +49,11 @@ export interface GmailMessageRef {
 export interface GmailListMessagesResult {
   messages: GmailMessageRef[];
   nextPageToken?: string;
+}
+
+/** Only the last page's cursor may be persisted, after all event dispatches are acknowledged. */
+export interface GmailAddedMessagesPage extends GmailListMessagesResult {
+  historyId: string;
 }
 
 /** Gmail resource JSON passed through after validating the identity fields used here. */
@@ -141,6 +146,11 @@ function requiredId(value: unknown, label: string): string {
   return value;
 }
 
+function requiredHistoryId(value: unknown): string {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new GmailError('unknown', 'Gmail historyId 必须是数字字符串');
+  return value;
+}
+
 /** Normalizes an RFC 5322 Message-ID to its bare `local@domain` form for queries and comparison. */
 function messageIdValue(value: string, label: string): string {
   if (typeof value !== 'string') throw new Error(`${label} 必须是字符串`);
@@ -218,6 +228,51 @@ export class GmailClient {
   async listMessages(pageToken?: string): Promise<GmailListMessagesResult> {
     await this.assertAccount();
     return this.listPage('gmail.users.messages.list', this.config.query, pageToken);
+  }
+
+  /** Caller must have approval for mailbox event-ID metadata; this does not authorize reading other messages. */
+  async getHistoryCursor(): Promise<string> {
+    return requiredHistoryId((await this.assertAccount()).historyId);
+  }
+
+  /** Returns only messageAdded IDs currently visible through the approved query, never mailbox history/body data. */
+  async listAddedMessages(startHistoryId: string, pageToken?: string): Promise<GmailAddedMessagesPage> {
+    const params: Record<string, unknown> = { userId: 'me', startHistoryId: requiredHistoryId(startHistoryId), historyTypes: ['messageAdded'] };
+    if (pageToken !== undefined) params.pageToken = requiredId(pageToken, 'Gmail history pageToken');
+    await this.assertAccount();
+    let payload: unknown;
+    try {
+      payload = await this.call('gmail.users.history.list', ['gmail', 'users', 'history', 'list'], params);
+    } catch (error) {
+      if (error instanceof GmailError && error.code === 'not_found') throw new GmailError('history_expired', 'Gmail 增量游标已失效，需要重新同步；未自动跳过未检查的邮件');
+      throw error;
+    }
+    if (!isRecord(payload)) throw new GmailError('unknown', 'gmail.users.history.list 返回结构不可识别');
+    const result: GmailAddedMessagesPage = { historyId: requiredHistoryId(payload.historyId), messages: [] };
+    if (payload.nextPageToken !== undefined) result.nextPageToken = requiredId(payload.nextPageToken, 'Gmail history nextPageToken');
+    const changes = payload.history === undefined ? [] : payload.history;
+    if (!Array.isArray(changes)) throw new GmailError('unknown', 'Gmail history 不是数组');
+    const candidates = new Map<string, GmailMessageRef>();
+    for (const change of changes) {
+      if (!isRecord(change)) throw new GmailError('unknown', 'Gmail history 项结构不可识别');
+      const added = change.messagesAdded === undefined ? [] : change.messagesAdded;
+      if (!Array.isArray(added)) throw new GmailError('unknown', 'Gmail messagesAdded 不是数组');
+      for (const item of added) {
+        if (!isRecord(item) || !isRecord(item.message)) throw new GmailError('unknown', 'Gmail messagesAdded 项结构不可识别');
+        const id = requiredId(item.message.id, 'Gmail added message id');
+        const ref: GmailMessageRef = { id };
+        if (typeof item.message.threadId === 'string' && item.message.threadId !== '') ref.threadId = item.message.threadId;
+        if (!candidates.has(id)) candidates.set(id, ref);
+      }
+    }
+    if (candidates.size === 0) return result;
+    const visible = new Set<string>();
+    for await (const page of this.pages('gmail.users.messages.list', this.config.query)) {
+      for (const message of page.messages) if (candidates.has(message.id)) visible.add(message.id);
+      if (visible.size === candidates.size) break;
+    }
+    result.messages = [...candidates.values()].filter(message => visible.has(message.id));
+    return result;
   }
 
   /** Reads a message only after paging the approved query proves the id is visible. */
@@ -370,7 +425,7 @@ export class GmailClient {
     return sent;
   }
 
-  private async assertAccount(): Promise<void> {
+  private async assertAccount(): Promise<Record<string, unknown>> {
     const payload = await this.call('gmail.users.getProfile', ['gmail', 'users', 'getProfile'], { userId: 'me' });
     if (!isRecord(payload) || typeof payload.emailAddress !== 'string' || payload.emailAddress.trim() === '') {
       throw new GmailError('unknown', 'gws 未返回可核对的账户邮箱，未执行操作');
@@ -378,6 +433,7 @@ export class GmailClient {
     if (payload.emailAddress.trim().toLowerCase() !== this.config.account.toLowerCase()) {
       throw new GmailError('unknown', '当前 gws 登录账户与配置的 account 不一致，未执行操作');
     }
+    return payload;
   }
 
   private async isVisible(messageId: string): Promise<boolean> {
