@@ -88,6 +88,19 @@ test('独立例程沿同一 Bot 配置映射，不复制记忆/MCP秘密；重�
   assert.notEqual((await f.routines.create('chief', { ...f.input, requestId: undefined })).id, created.id, '新的执行设置能创建新例程');
 }));
 
+test('待办只读例程列举不回查未决创建、不补写关联，原入口仍可显式回查', async () => fixture(async f => {
+  f.failCreate();
+  const unknown = await f.routines.create('chief', f.input);
+  assert.equal(unknown.state, 'unknown');
+  const file = join(f.dir, 'routines', 'state.json');
+  const before = await readFile(file, 'utf8'), calls = f.calls.length;
+  const rows = await f.routines.list('chief', { reconcile: false });
+  assert.equal(rows[0].routine.state, 'unknown'); assert.equal(rows[0].native, null);
+  assert.equal(f.calls.length, calls); assert.equal(await readFile(file, 'utf8'), before);
+  assert.equal((await f.routines.list('chief'))[0].routine.state, 'ready');
+  assert.equal(f.calls.filter(call => call.args[1] === 'create').length, 1);
+}));
+
 test('创建回执丢失只回查权威 schedule 名称，取消后拒绝触发', async () => fixture(async f => {
   f.failCreate();
   const unknown = await f.routines.create('chief', f.input);

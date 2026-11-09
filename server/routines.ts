@@ -75,12 +75,12 @@ export class BotRoutines {
     }
   }
 
-  async list(botId: string) {
+  async list(botId: string, options: { reconcile?: boolean } = {}) {
     if (!await this.options.store.getBot(botId)) throw new Error(`Bot 不存在：${botId}`);
     const records = (await this.read()).routines.filter(item => item.botId === botId);
     return Promise.all(records.map(async item => {
       try {
-        const routine = await this.reconcile(item);
+        const routine = options.reconcile === false ? item : await this.reconcile(item);
         const native = routine.nativeId ? await this.inspect(routine.nativeId) : null;
         return { routine, native };
       } catch (error) { return { routine: item, native: null, error: message(error) }; }

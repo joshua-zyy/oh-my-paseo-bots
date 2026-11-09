@@ -13,6 +13,7 @@ import { Work } from './client/work.js';
 import { Chat } from './client/chat.js';
 import { BotConfiguration } from './client/bot-config.js';
 import { CapabilityRequests } from './client/capability-requests.js';
+import { Attention } from './client/attention.js';
 import { HostSettings } from './client/host-settings.js';
 import { Channels } from './client/channels.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
@@ -115,7 +116,11 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
           {compact ? <View style={{ flex: 1 }}><Button label={current?.name || '选择同事'} icon="ChevronDown" disabled={busy} onPress={() => setPicker(true)} /></View> : <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: '300', flex: 1 }}>{current?.name || '同事'}</Text>}
-          {capabilityRequests.length > 0 && <Button label={`能力待确认 · ${capabilityRequests.length}`} disabled={busy} onPress={() => setPanel('capabilities')} />}
+          <Attention bots={bots.filter(bot => !bot.archivedAt)} onOpen={entry => {
+            const target = entry.target;
+            if (target.panel === 'agent') { openAgent(target.agentId, entry.botId); return; }
+            void refresh().then(() => { choose(entry.botId); setPanel(target.panel); }).catch(failure => setError(String(failure)));
+          }} />
           <Button label="新对话" icon="SquarePen" iconOnly size="xs" disabled={!current || busy} onPress={() => void newConversation()} />
           <Button label="同事菜单" icon="Ellipsis" iconOnly size="xs" disabled={!current || busy} onPress={() => setPanel('menu')} />
         </View>

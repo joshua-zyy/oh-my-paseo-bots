@@ -37,6 +37,8 @@ import { CapabilityGuidance } from './server/capability-guidance.js';
 import { provisionOfficeSkills } from './server/office-skills.js';
 import * as capabilityRpc from './shared/capability-guidance.js';
 import * as channelRpc from './shared/channels.js';
+import { listAttention } from './shared/attention.js';
+import { readAttention } from './server/attention.js';
 
 export default function contribute(server: PluginServerContext) {
   const legacyDir = join(homedir(), '.paseo-guys');
@@ -147,6 +149,7 @@ export default function contribute(server: PluginServerContext) {
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
+  server.handle(listAttention, (_, { paseo }) => readAttention({ store, tasks, mail: office.mail, routines, gmail: gmailChecks, agent: async id => (await paseo.agents.ref(id).refresh())?.agent ?? null }));
   server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
   server.handle(conversationContext, async ({ botId, agentId }, { paseo }) => {
     const task = await tasks.get(botId, agentId);

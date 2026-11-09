@@ -82,6 +82,9 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.deepEqual(await invoke('bots.reply.stop', { botId: 'chief', agentId: conversation.agentId }), { agentId: conversation.agentId, status: 'idle' });
     assert.match(created[0].config.systemPrompt!, /持续聊天/);
     assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), []);
+    const attention = await invoke('bots.attention', {}) as { entries: unknown[]; issues: unknown[]; botIds: string[] };
+    assert.deepEqual(attention.entries, []); assert.deepEqual(attention.issues, []); assert.deepEqual(attention.botIds, ['chief', 'helper']);
+    assert.equal(created.length, 2); assert.equal(archived.size, 0); assert.equal(messages.length, 0, '读取待办不派发/确认/归档/发送');
     const client = await connect(conversation.agentId);
     const checkTools = await client.listTools();
     const checkTool = checkTools.tools.find(tool => tool.name === 'check_gmail_events');
