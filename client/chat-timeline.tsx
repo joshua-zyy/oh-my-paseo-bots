@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import { Text, View } from 'react-native';
 import { Markdown, StreamedText } from '@getpaseo/plugin/client/ui';
 import type { ToolCallDetail } from '@getpaseo/protocol/agent-types';
 import type { ChatEntry } from './chat-state.js';
 import { Button, Copy, Disclosure, Notice, useUi } from './ui.js';
+import { readCapabilityStatus } from '../shared/capability-timeline.js';
+import { CapabilityNavigationContext, CapabilityStatusCard } from './capability-status.js';
 
 export function ToolDetails({ detail }: { detail: ToolCallDetail }) {
   if (detail.type === 'plain_text' || detail.type === 'plan') return detail.text ? <Markdown>{detail.text}</Markdown> : null;
@@ -40,11 +42,12 @@ function Activity({ entries, openAgent }: { entries: ChatEntry[]; openAgent(id: 
 
 export function ChatTimeline({ entries, activeTurnId, openAgent }: { entries: ChatEntry[]; activeTurnId?: string; openAgent(id: string): void }) {
   const { colors, compact } = useUi();
+  const openCapability = useContext(CapabilityNavigationContext);
   const rows: ({ entry: ChatEntry } | { activity: ChatEntry[] })[] = [];
   let activity: ChatEntry[] = [];
   for (const entry of entries) {
     const item = entry.item;
-    if (item.type === 'user_message' || item.type === 'assistant_message' || item.type === 'error' || (item.type === 'notification' && item.level !== 'info')) {
+    if (readCapabilityStatus(item) || item.type === 'user_message' || item.type === 'assistant_message' || item.type === 'error' || (item.type === 'notification' && item.level !== 'info')) {
       if (activity.length) { rows.push({ activity }); activity = []; }
       rows.push({ entry });
     } else activity.push(entry);
@@ -54,6 +57,8 @@ export function ChatTimeline({ entries, activeTurnId, openAgent }: { entries: Ch
     if ('activity' in row) return <Activity key={`activity:${row.activity[0].seqStart}`} entries={row.activity} openAgent={openAgent} />;
     const { entry } = row;
     const { item } = entry;
+    const capability = readCapabilityStatus(item);
+    if (capability) return <CapabilityStatusCard key={entry.seqStart} data={capability} onOpen={openCapability} />;
     if (item.type === 'error') return <Notice key={entry.seqStart} error={item.message} />;
     if (item.type === 'notification') return <Text key={entry.seqStart} selectable style={{ color: item.level === 'error' ? colors.statusDanger : colors.foregroundMuted, fontSize: 13, lineHeight: 20 }}>{item.message}</Text>;
     if (item.type === 'user_message') return <View key={entry.seqStart} style={{ alignSelf: 'flex-end', maxWidth: compact ? '92%' : '85%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.surface2 }}><Text selectable style={{ color: colors.foreground, fontSize: compact ? 16 : 15, lineHeight: 24 }}>{item.text}</Text></View>;

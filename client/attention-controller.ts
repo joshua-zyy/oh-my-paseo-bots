@@ -2,6 +2,7 @@ import type { PaseoApi } from '@getpaseo/client';
 import type { AttentionEntry, AttentionView } from '../shared/attention.js';
 import { observeAgentChanges } from './agent-changes.js';
 import { AttentionNotices } from './attention-notices.js';
+import { readCapabilityStatus } from '../shared/capability-timeline.js';
 
 export interface AttentionSnapshot { value?: AttentionView; error: string; loading: boolean }
 export interface AttentionController {
@@ -21,6 +22,7 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
   const listeners = new Set<() => void>(), presenters = new Set<(entries: AttentionEntry[]) => void>();
   const errors = new Map<string, string>(), retiring = new Set<Promise<void>>(), releaseErrors: unknown[] = [];
   const notices = new AttentionNotices();
+  const capabilitySources = new Map<string, { ready: Promise<void>; release(): Promise<void> }>();
   function publish(patch: Partial<AttentionSnapshot> = {}) {
     if (disposed) return;
     snapshot = { ...snapshot, ...patch, error: [...errors.values()].join('；') };
@@ -34,7 +36,35 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
     const pending = observer.release().catch(error => { releaseErrors.push(error); issue('旧订阅释放', error); }).finally(() => { retiring.delete(pending); });
     retiring.add(pending);
   }
+  function capabilityMembers(view: AttentionView) {
+    const ids = new Set(view.capabilityAgentIds ?? []);
+    for (const [id, source] of capabilitySources) if (!ids.has(id)) {
+      capabilitySources.delete(id); issue(`能力记录订阅:${id}`);
+      const pending = source.release().catch(error => { releaseErrors.push(error); issue('旧能力记录订阅释放', error); }).finally(() => { retiring.delete(pending); });
+      retiring.add(pending);
+    }
+    for (const id of ids) {
+      if (capabilitySources.has(id)) continue;
+      let active = true;
+      const name = `能力记录订阅:${id}`;
+      try {
+        const subscription = api.agents.ref(id).timeline.subscribe(({ event }) => {
+          if (disposed || !active) return;
+          if (event.type === 'error') { issue(name, event.error); return; }
+          if (event.type === 'subscription_restored' || event.type === 'replacement') {
+            issue(name); seed = true; void refresh();
+          } else if (event.type === 'timeline' && readCapabilityStatus(event.item)) void refresh();
+        });
+        const ready = subscription.ready.then(() => {
+          if (disposed || !active) return;
+          issue(name); void refresh(); // Close the establishment window with an authoritative reread.
+        }, error => { if (active && !disposed) issue(name, error); });
+        capabilitySources.set(id, { ready, async release() { active = false; await subscription.release(); } });
+      } catch (error) { issue(name, error); }
+    }
+  }
   function members(view: AttentionView) {
+    capabilityMembers(view);
     const key = JSON.stringify([view.botIds, view.scheduleIds]);
     if (key === memberKey) return;
     memberKey = key;
@@ -78,7 +108,8 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
   });
   const ready = (async () => {
     await events.ready.catch(error => issue('原生事件订阅', error));
-    await refresh(); await agents?.ready; await refresh();
+    await refresh(); await agents?.ready;
+    await Promise.all([...capabilitySources.values()].map(source => source.ready)); await refresh();
   })();
   return {
     ready, getSnapshot: () => snapshot,
@@ -87,7 +118,8 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
     refresh,
     async release() {
       disposed = true; listeners.clear(); presenters.clear(); unsubscribe();
-      const results = await Promise.allSettled([events.release(), agents?.release(), ...retiring]);
+      const results = await Promise.allSettled([events.release(), agents?.release(), ...[...capabilitySources.values()].map(source => source.release()), ...retiring]);
+      capabilitySources.clear();
       for (const result of results) if (result.status === 'rejected') releaseErrors.push(result.reason);
       if (releaseErrors.length) throw new AggregateError(releaseErrors, '待办订阅清理未确认');
     },

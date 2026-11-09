@@ -5,6 +5,7 @@ import type { AttentionEntry, AttentionView } from '../shared/attention.js';
 import { createAttentionController, attentionMutation } from '../client/attention-controller.js';
 import { AttentionNotices } from '../client/attention-notices.js';
 import { observeAgentChanges } from '../client/agent-changes.js';
+import { capabilityStatusItem, CAPABILITY_TIMELINE } from '../shared/capability-timeline.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const entry = (episode: string, channel: 'plugin' | 'host' | 'progress' = 'plugin'): AttentionEntry => ({ id: 'stable', sourceId: 'request', botId: 'chief', botName: '主Bot', source: 'capability', kind: 'decision', title: '标题', target: { panel: 'capabilities' }, notice: { channel, reason: 'capability', episode } });
@@ -22,20 +23,34 @@ function subscription(name: string) {
     released: () => released, failRelease: () => { failRelease = true; },
   };
 }
+function nativeTimeline() {
+  const handlers = new Set<(message: any) => void>();
+  let ready: Promise<void> = Promise.resolve(), starts = 0, released = 0;
+  return {
+    subscribe(handler: (message: any) => void) {
+      starts++; handlers.add(handler);
+      return Object.assign(() => { handlers.delete(handler); }, { ready, async release() { released++; handlers.delete(handler); } });
+    },
+    emit(event: any) { for (const handler of handlers) handler({ agentId: 'real-source', event }); },
+    setReady(value: Promise<void>) { ready = value; }, starts: () => starts, released: () => released,
+  };
+}
 function fixture() {
   const events = subscription('events'), metadata: ReturnType<typeof subscription>[] = [];
+  const timelines = new Map<string, ReturnType<typeof nativeTimeline>>();
+  const timeline = (id: string) => { if (!timelines.has(id)) timelines.set(id, nativeTimeline()); return timelines.get(id)!; };
   let current = view(), fail = false, reads = 0, active = 0, maxActive = 0, globalDisposal = 0;
   let override: (() => Promise<AttentionView>) | undefined;
   const api = {
     observeEvents: (names: string[], options: { notifications: boolean }) => { assert.deepEqual(names, ['agent_attention_required', 'status.plugin_settings_changed']); assert.equal(options.notifications, false); return events; },
-    agents: { list: async (options: any) => { assert.equal(options.includeBackground, true); assert.equal(options.filter.includeArchived, true); const item = subscription(`meta-${metadata.length}`); metadata.push(item); return { ...await item.ready, subscription: item }; } },
+    agents: { ref: (id: string) => ({ timeline: timeline(id) }), list: async (options: any) => { assert.equal(options.includeBackground, true); assert.equal(options.filter.includeArchived, true); const item = subscription(`meta-${metadata.length}`); metadata.push(item); return { ...await item.ready, subscription: item }; } },
     dispose: async () => { globalDisposal++; },
   } as unknown as PaseoApi;
   const read = async () => {
     reads++; active++; maxActive = Math.max(maxActive, active);
     try { if (fail) throw new Error('offline'); return override ? await override() : current; } finally { active--; }
   };
-  return { events, metadata, api, read, set: (next: AttentionView) => { current = next; }, fail: (next = true) => { fail = next; }, override: (next: typeof override) => { override = next; }, reads: () => reads, maxActive: () => maxActive, globalDisposal: () => globalDisposal };
+  return { events, metadata, timeline, api, read, set: (next: AttentionView) => { current = next; }, fail: (next = true) => { fail = next; }, override: (next: typeof override) => { override = next; }, reads: () => reads, maxActive: () => maxActive, globalDisposal: () => globalDisposal };
 }
 
 test('一份安装观察由两个UI共享，首次不Toast，普通重绘不读取，清理不dispose宿主API', async () => {
@@ -117,4 +132,37 @@ test('局部缺失恢复只建该来源基线，其他来源新的重要事项�
   n.collect({ ...view(), issues: [{ botId: 'chief', source: 'store', detail: 'offline' }] });
   const other = { ...entry('new-other'), id: 'other', botId: 'helper' };
   const result = n.collect(view([entry('recovered'), other])); assert.deepEqual(result, [other]);
+});
+
+const capabilityRow = (state: 'pending' | 'applied' | 'rejected') => ({ ...capabilityStatusItem('chief', '主Bot', { id: 'a'.repeat(64), sourceAgentId: 'real-source', summary: '合成', state, skills: [], mcp: [], createdAt: 'synthetic' }), pluginId: CAPABILITY_TIMELINE.pluginId });
+const sourceView = (entries: AttentionEntry[] = []): AttentionView => ({ ...view(entries), capabilityAgentIds: ['real-source'] });
+
+test('能力状态行精确订阅驱动自动形成与清除；普通token/其他插件/非法数据不扫描', async () => {
+  const f = fixture(); f.set(sourceView()); const c = createAttentionController(f.api, f.read); await c.ready;
+  const notices: AttentionEntry[][] = []; c.present(items => notices.push(items));
+  const timeline = f.timeline('real-source'), before = f.reads();
+  timeline.emit({ type: 'timeline', item: { type: 'assistant_message', text: 'token' } });
+  timeline.emit({ type: 'timeline', item: { ...capabilityRow('pending'), pluginId: 'unrelated' } });
+  timeline.emit({ type: 'timeline', item: { ...capabilityRow('pending'), data: { state: 'pending' } } });
+  await tick(); assert.equal(f.reads(), before);
+  f.set(sourceView([entry('new-decision')])); timeline.emit({ type: 'timeline', item: capabilityRow('pending') });
+  await tick(); assert(f.reads() > before); assert.equal(c.getSnapshot().value!.entries.length, 1); assert.equal(notices.length, 1);
+  f.set(sourceView()); timeline.emit({ type: 'timeline', item: capabilityRow('rejected') });
+  await tick(); assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(notices.length, 1, '解决不是新的重要提醒');
+  assert.equal(timeline.starts(), 1); await c.release(); assert.equal(timeline.released(), 1);
+});
+
+test('能力来源建立期间的变化不丢，来源复用/移除与恢复不由UI生命周期管理', async () => {
+  const f = fixture(); f.set(sourceView()); let ack!: () => void;
+  const ready = new Promise<void>(resolve => { ack = resolve; }); f.timeline('real-source').setReady(ready);
+  const c = createAttentionController(f.api, f.read); await tick();
+  f.set(sourceView([entry('during-ack')])); f.timeline('real-source').emit({ type: 'timeline', item: capabilityRow('pending') });
+  ack(); await c.ready; assert.equal(c.getSnapshot().value!.entries[0].notice!.episode, 'during-ack');
+  await c.refresh(); assert.equal(f.timeline('real-source').starts(), 1);
+  f.timeline('real-source').emit({ type: 'error', error: 'lost capability stream' });
+  await c.refresh(); assert.match(c.getSnapshot().error, /lost capability stream/, '一次读取不抹掉订阅错误');
+  f.set(sourceView()); f.timeline('real-source').emit({ type: 'subscription_restored' }); await tick();
+  assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(c.getSnapshot().error, '');
+  f.set(view()); await c.refresh(); assert.equal(f.timeline('real-source').released(), 1);
+  await c.release(); const count = f.reads(); f.timeline('real-source').emit({ type: 'timeline', item: capabilityRow('pending') }); await tick(); assert.equal(f.reads(), count);
 });

@@ -39,6 +39,7 @@ import * as capabilityRpc from './shared/capability-guidance.js';
 import * as channelRpc from './shared/channels.js';
 import { listAttention } from './shared/attention.js';
 import { readAttention } from './server/attention.js';
+import { capabilityStatusItem } from './shared/capability-timeline.js';
 
 export default function contribute(server: PluginServerContext) {
   const legacyDir = join(homedir(), '.paseo-guys');
@@ -51,9 +52,14 @@ export default function contribute(server: PluginServerContext) {
   const officeSkills = provisionOfficeSkills(baseDir);
   void officeSkills.catch(error => console.error('内置Office资源准备失败', error));
   server.handle(filesRpc.listBuiltinSkills, () => officeSkills);
-  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; }, () => officeSkills);
+  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; }, () => officeSkills, async (botId, request) => {
+    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error('同事记录未找到');
+    await currentPaseo.agents.ref(request.sourceAgentId).timeline.append(capabilityStatusItem(botId, bot.bot.name, request));
+  });
   server.handle(capabilityRpc.inspectCapabilities, input => capabilityGuidance.inspect(input.botId));
-  server.handle(capabilityRpc.decideCapabilities, input => capabilityGuidance.decide(input.botId, input.requestId, input.decision));
+  server.handle(capabilityRpc.decideCapabilities, (input, { paseo }) => { currentPaseo = paseo; return capabilityGuidance.decide(input.botId, input.requestId, input.decision); });
   const channelChat = new ChannelChat(store, channels, channelState, startBoundSession, teamMemory);
   server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
   server.handle(channelRpc.createChannel, input => channels.create(input));
@@ -149,7 +155,7 @@ export default function contribute(server: PluginServerContext) {
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
-  server.handle(listAttention, (_, { paseo }) => readAttention({ store, tasks, mail: office.mail, routines, gmail: gmailChecks, agent: async id => (await paseo.agents.ref(id).refresh())?.agent ?? null }));
+  server.handle(listAttention, (_, { paseo }) => readAttention({ store, tasks, mail: office.mail, routines, gmail: gmailChecks, recordIssues: () => capabilityGuidance.recordIssues(), agent: async id => (await paseo.agents.ref(id).refresh())?.agent ?? null }));
   server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
   server.handle(conversationContext, async ({ botId, agentId }, { paseo }) => {
     const task = await tasks.get(botId, agentId);

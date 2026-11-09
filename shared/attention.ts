@@ -23,6 +23,8 @@ export const attentionView = z.object({
   entries: z.array(attentionEntry),
   issues: z.array(z.object({ botId: z.string().optional(), source: z.string(), detail: z.string() })),
   botIds: z.array(z.string()), scheduleIds: z.array(z.string()),
+  /** Existing native sources for readable capability records, never carrier agents. */
+  capabilityAgentIds: z.array(z.string()).optional(),
 });
 export type AttentionView = z.infer<typeof attentionView>;
 

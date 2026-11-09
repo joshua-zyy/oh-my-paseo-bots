@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RpcOutput } from '@getpaseo/plugin';
-import type { PluginClientContext, PluginScreenProps, PluginSidebarItemProps } from '@getpaseo/plugin/client';
+import type { PluginClientContext, PluginScreenProps, PluginSidebarItemProps, PluginTimelineItemProps } from '@getpaseo/plugin/client';
 import { usePaseo } from '@getpaseo/plugin/client';
 import { Pressable, Text, View } from 'react-native';
 import { Icon, Modal, ScrollView, SettingsAction, SettingsCard, SidebarRow, TextInput } from '@getpaseo/plugin/client/ui';
@@ -17,6 +17,8 @@ import { Attention } from './client/attention.js';
 import { createAttentionController } from './client/attention-controller.js';
 import { AttentionContext, AttentionToast, useAttentionSnapshot, useBotRpc as useRpc } from './client/attention-state.js';
 import { listAttention } from './shared/attention.js';
+import { CAPABILITY_TIMELINE, capabilityStatusSchema, type CapabilityStatus } from './shared/capability-timeline.js';
+import { CapabilityNavigationContext, CapabilityStatusCard } from './client/capability-status.js';
 import { HostSettings } from './client/host-settings.js';
 import { Channels } from './client/channels.js';
 import { useBotUpdates } from './client/use-bot-updates.js';
@@ -31,7 +33,7 @@ const menu = [
   { panel: 'routines', label: '例程', icon: 'CalendarClock' },
 ] as const;
 
-function Bots({ theme, layout, host }: PluginScreenProps) {
+function Bots({ theme, layout, host, params }: PluginScreenProps) {
   const api = usePaseo();
   const list = useRpc(rpc.listBots);
   const create = useRpc(rpc.createBot);
@@ -73,6 +75,10 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
   const capabilityRequests = bots.filter(bot => !bot.archivedAt && bot.capabilityRequest?.state === 'pending');
   const shown = bots.filter(bot => !bot.archivedAt).sort((a, b) => a.id === CHIEF_BOT_ID ? -1 : b.id === CHIEF_BOT_ID ? 1 : a.name.localeCompare(b.name, 'zh-CN')).filter(bot => `${bot.name} ${bot.role}`.toLowerCase().includes(search.toLowerCase()));
   function choose(id: string) { select(id); setPanel(null); setPicker(false); setDetail(undefined); setError(''); }
+  function openCapabilities(botId: string) {
+    void refresh().then(() => { choose(botId); setPanel('capabilities'); }).catch(failure => setError(String(failure)));
+  }
+  useEffect(() => { if (params?.panel === 'capabilities' && params.botId) openCapabilities(params.botId); }, [params?.panel, params?.botId]);
   function openAgent(agentId: string, sourceBotId = selected) {
     void api.agents.ref(agentId).refresh().then(snapshot => {
       if (!snapshot) throw new Error('原生会话未找到');
@@ -109,7 +115,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
     {shown.map(bot => <PickerRow key={bot.id} label={bot.name} icon={bot.id === CHIEF_BOT_ID ? 'Users' : 'UserRound'} selected={selected === bot.id} disabled={busy} onPress={() => choose(bot.id)} />)}
     {!shown.length && <Copy muted>没有匹配的同事</Copy>}
   </>;
-  return <UiProvider value={{ colors, compact }}>
+  return <CapabilityNavigationContext.Provider value={openCapabilities}><UiProvider value={{ colors, compact }}>
     <View onLayout={event => setSize(event.nativeEvent.layout)} style={{ flex: 1, flexDirection: compact ? 'column' : 'row', backgroundColor: colors.surface0 }}>
       {!compact && <View style={{ width: 220, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.surface1 }}>
         <View style={{ padding: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Copy>同事</Copy><Button label="添加同事" icon="Plus" iconOnly size="xs" disabled={busy} onPress={() => setCreating(true)} /></View>
@@ -161,7 +167,7 @@ function Bots({ theme, layout, host }: PluginScreenProps) {
       catch (failure) { setError(String(failure)); }
       finally { guard.current = false; setBusy(false); }
     }} error={error} />}</Modal.Content></Modal>
-  </UiProvider>;
+  </UiProvider></CapabilityNavigationContext.Provider>;
 }
 
 function NewBot({ busy, submit, error }: { busy: boolean; submit(values: { name: string; role: string }): Promise<void>; error: string }) {
@@ -182,5 +188,9 @@ export default function contribute(client: PluginClientContext) {
   const Sidebar = (props: PluginSidebarItemProps) => <AttentionContext.Provider value={controller}><BotSidebar {...props} /></AttentionContext.Provider>;
   const screen = client.addScreen({ id: 'bots', title: '同事', Component: Screen });
   const sidebar = client.addSidebarHeaderItem({ id: 'bots', title: '同事', Component: Sidebar });
-  return async () => { sidebar(); screen(); await controller.release(); };
+  const timeline = client.addTimelineRenderer({
+    kind: CAPABILITY_TIMELINE.kind, version: CAPABILITY_TIMELINE.version, schema: capabilityStatusSchema,
+    Component: ({ item, theme, layout }: PluginTimelineItemProps<CapabilityStatus>) => <UiProvider value={{ colors: theme.colors, compact: layout.compact }}><CapabilityStatusCard data={item.data} onOpen={botId => client.openScreen({ screenId: 'bots', params: { botId, panel: 'capabilities' } })} /></UiProvider>,
+  });
+  return async () => { timeline(); sidebar(); screen(); await controller.release(); };
 }

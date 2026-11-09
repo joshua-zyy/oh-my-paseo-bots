@@ -13,6 +13,7 @@ export interface AttentionSources {
   routines: Pick<BotRoutines, 'list'>;
   gmail: Pick<GmailChecks, 'inspect'>;
   agent(id: string): Promise<Pick<PaseoAgent, 'title' | 'status' | 'pendingPermissions' | 'lastError' | 'archivedAt' | 'labels' | 'activeTurn'> | null>;
+  recordIssues?(): AttentionView['issues'];
 }
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const finished = (task: TaskRecord) => task.status === 'completed' || task.status === 'canceled';
@@ -22,7 +23,7 @@ const notice = (channel: NonNullable<AttentionEntry['notice']>['channel'], reaso
 export async function readAttention(sources: AttentionSources): Promise<AttentionView> {
   const result: AttentionView = { entries: [], issues: [], botIds: [], scheduleIds: [] };
   const entries = new Map<string, AttentionEntry>();
-  const schedules = new Set<string>();
+  const schedules = new Set<string>(), capabilityAgents = new Set<string>();
   const bots = await sources.store.listBots((id, error) => result.issues.push({ botId: id, source: 'store', detail: message(error) }));
   result.botIds = bots.filter(bot => !bot.archivedAt).map(bot => bot.id).sort();
   function add(bot: BotIdentity, source: AttentionEntry['source'], sourceId: string, kind: AttentionEntry['kind'], title: string, target: AttentionEntry['target'], detail?: string, reminder?: AttentionEntry['notice']) {
@@ -33,6 +34,7 @@ export async function readAttention(sources: AttentionSources): Promise<Attentio
     async function read(source: string, work: () => Promise<void>) {
       try { await work(); } catch (error) { result.issues.push({ botId: bot.id, source, detail: message(error) }); }
     }
+    if (bot.capabilityRequest) capabilityAgents.add(bot.capabilityRequest.sourceAgentId);
     if (bot.capabilityRequest?.state === 'pending') add(bot, 'capability', bot.capabilityRequest.id, 'decision', '能力方案待确认', { panel: 'capabilities' }, bot.capabilityRequest.summary, notice('plugin', 'capability', bot.capabilityRequest.id));
     return Promise.all([
       read('work', async () => {
@@ -52,6 +54,7 @@ export async function readAttention(sources: AttentionSources): Promise<Attentio
           const task = taskById.get(id);
           const agent = await sources.agent(id);
           if (agent?.labels['paseo-guys.bot'] && agent.labels['paseo-guys.bot'] !== bot.id) return;
+          if (agent && !agent.archivedAt && agent.status !== 'closed' && (task || document.sessions.some(session => session.sessionId === id))) capabilityAgents.add(id);
           // Old conversation segments and archived unmanaged specialists are not unresolved work.
           if (agent?.archivedAt && (task?.conversation || !task)) return;
           const title = task?.title ?? agent?.title ?? id;
@@ -92,7 +95,9 @@ export async function readAttention(sources: AttentionSources): Promise<Attentio
   }));
   const order = { decision: 0, failure: 1, unknown: 2 };
   result.entries = [...entries.values()].sort((a, b) => order[a.kind] - order[b.kind] || a.botId.localeCompare(b.botId) || a.id.localeCompare(b.id));
+  result.issues.push(...sources.recordIssues?.() ?? []);
   result.issues.sort((a, b) => `${a.botId}:${a.source}`.localeCompare(`${b.botId}:${b.source}`));
   result.scheduleIds = [...schedules].sort();
+  result.capabilityAgentIds = [...capabilityAgents].sort();
   return result;
 }

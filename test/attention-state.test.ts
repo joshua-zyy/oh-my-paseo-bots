@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 import { attentionMutation } from '../client/attention-controller.js';
 import { listAttention } from '../shared/attention.js';
+import { CAPABILITY_TIMELINE, capabilityStatusSchema } from '../shared/capability-timeline.js';
 
 const transpile = (source: string) => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h' } }).outputText.replace(/export default |export /g, '');
 async function stateSource() { return ts.createSourceFile('attention-state.tsx', await readFile(new URL('../../client/attention-state.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); }
@@ -27,11 +28,13 @@ test('同事页和侧栏绑定同一安装实例，清理释放安装订阅；�
   const code = transpile(declaration.getText(source) + '\nreturn contribute;');
   let created = 0, released = 0; const registered: any[] = [], removed: string[] = [];
   const controller = { release: async () => { released++; } }, api = {};
-  const contribute = new Function('h', 'createAttentionController', 'AttentionContext', 'Bots', 'BotSidebar', 'listAttention', code)((type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), (received: unknown, read: () => Promise<unknown>) => { assert.equal(received, api); created++; void read(); return controller; }, { Provider: 'Context.Provider' }, 'Bots', 'BotSidebar', listAttention);
-  const client = { paseo: api, rpc: async (contract: { name: string }, input: unknown) => { assert.equal(contract.name, 'bots.attention'); assert.deepEqual(input, {}); }, addScreen: (value: unknown) => { registered.push(value); return () => { removed.push('screen'); }; }, addSidebarHeaderItem: (value: unknown) => { registered.push(value); return () => { removed.push('sidebar'); }; } };
+  const contribute = new Function('h', 'createAttentionController', 'AttentionContext', 'Bots', 'BotSidebar', 'listAttention', 'CAPABILITY_TIMELINE', 'capabilityStatusSchema', 'UiProvider', 'CapabilityStatusCard', code)((type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), (received: unknown, read: () => Promise<unknown>) => { assert.equal(received, api); created++; void read(); return controller; }, { Provider: 'Context.Provider' }, 'Bots', 'BotSidebar', listAttention, CAPABILITY_TIMELINE, capabilityStatusSchema, 'UiProvider', 'CapabilityStatusCard');
+  let renderer: any;
+  const client = { paseo: api, rpc: async (contract: { name: string }, input: unknown) => { assert.equal(contract.name, 'bots.attention'); assert.deepEqual(input, {}); }, addScreen: (value: unknown) => { registered.push(value); return () => { removed.push('screen'); }; }, addSidebarHeaderItem: (value: unknown) => { registered.push(value); return () => { removed.push('sidebar'); }; }, addTimelineRenderer: (value: unknown) => { renderer = value; return () => { removed.push('timeline'); }; } };
   const cleanup = contribute(client); assert.equal(created, 1);
   for (const registration of registered) assert.equal(registration.Component({}).props.value, controller);
-  await cleanup(); assert.equal(released, 1); assert.deepEqual(removed, ['sidebar', 'screen']);
+  assert.equal(renderer.kind, CAPABILITY_TIMELINE.kind); assert.equal(renderer.schema, capabilityStatusSchema);
+  await cleanup(); assert.equal(released, 1); assert.deepEqual(removed, ['timeline', 'sidebar', 'screen']);
 });
 
 test('Toast只在挂载期间接收派生提示，清理注销；消息不复制办公标题/正文', async () => {
