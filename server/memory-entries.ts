@@ -3,6 +3,17 @@ import type { MemoryEntry, MemoryOrigin } from '../shared/memory.js';
 import type { AddMemoryInput, UpdateMemoryInput } from './store.js';
 import { StoreError } from './store-errors.js';
 
+/** 当前正文最近一次写入操作的记录来源，不是确认者或最后状态操作。
+ * 只按现有写入器追加的操作数组派生；不恢复未记录的改写。
+ */
+export function memoryContentOrigin(entry: Pick<MemoryEntry, 'content' | 'origin' | 'history'>): MemoryOrigin | null {
+  for (let index = entry.history.length - 1; index >= 0; index--) {
+    const event = entry.history[index];
+    if (event.action === 'updated' && event.before.content !== entry.content) return event.origin ?? null;
+  }
+  return entry.origin ?? null;
+}
+
 /** 共用既有记忆生命周期；容器负责作用域、边界校验和持久化。 */
 export function addMemoryEntry(entries: MemoryEntry[], value: AddMemoryInput) {
   const existing = entries.find(entry => !entry.archivedAt && entry.kind === value.kind && entry.content === value.content);

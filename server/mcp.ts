@@ -21,6 +21,7 @@ import type { CapabilityGuidance } from './capability-guidance.js';
 import type { MemoryCorrection, MemoryForget } from './memory.js';
 import type { BotHistoryInput } from './history.js';
 import { memoryEntrySchema, type MemoryEntry } from '../shared/memory.js';
+import { memoryContentOrigin } from './memory-entries.js';
 
 /**
  * Bot 工具面：插件进程内的回环 HTTP MCP 服务。
@@ -187,7 +188,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     'read_memories',
     {
       title: scope.channelId ? '读取当前频道的明确记忆' : '读取本 Bot 的明确记忆',
-      description: `scope=current默认读取当前场景；scope=team只读用户发布的团队共享确认记忆，不读取其他Bot个人记忆。${scope.channelId ? '当前绑定为频道场景：本工具只读本群记忆；Bot自身确认记忆可从get_bot_context只读取得。' : ''}读取当前场景已被用户确认的长期记忆，可按关键词或 memoryIds 查回最新正文。已有条目 ID 时优先按 ID 读取，不把可能过期的预览当查询词或当前事实。候选、归档及其他 Bot 的记忆不返回。total 和 nextOffset 针对匹配结果；query 和 memoryIds 同时提供时取交集，都省略时读取全部确认记忆。空结果不代表旧预览仍有效。`,
+      description: `scope=current默认读取当前场景；scope=team只读用户发布的团队共享确认记忆，不读取其他Bot个人记忆。${scope.channelId ? '当前绑定为频道场景：本工具只读本群记忆；Bot自身确认记忆可从get_bot_context只读取得。' : ''}读取当前场景已被用户确认的长期记忆，可按关键词或 memoryIds 查回最新正文。已有条目 ID 时优先按 ID 读取，不把可能过期的预览当查询词或当前事实。候选、归档及其他 Bot 的记忆不返回。total 和 nextOffset 针对匹配结果；query 和 memoryIds 同时提供时取交集，都省略时读取全部确认记忆。空结果不代表旧预览仍有效。origin是创建时记录的来源；contentOrigin是最近实际写入当前正文版本的操作出处，null表示未知。仅确认、归档或恢复不改变正文出处。出处不等于确认者、引文覆盖全文或现实事实为真；未知出处不撤销已确认状态。`,
       annotations: { readOnlyHint: true },
       inputSchema: {
         scope: z.enum(['current', 'team']).default('current'),
@@ -219,6 +220,7 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
           memories: shown.map((memory) => ({
             id: memory.id,
             content: memory.content,
+            contentOrigin: memoryContentOrigin(memory),
             createdAt: memory.createdAt,
             confirmedAt: memory.confirmedAt,
             ...(memory.origin ? { origin: memory.origin } : {}),

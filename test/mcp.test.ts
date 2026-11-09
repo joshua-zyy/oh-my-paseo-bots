@@ -171,7 +171,7 @@ test('read_memories 只返回本 Bot 的已确认记忆，不含候选或其他 
       const payload = parse<{ botId: string; memories: { id: string; content: string }[]; truncated: boolean }>(text);
       assert.equal(payload.botId, 'chief');
       assert.deepEqual(payload.memories, [
-        { id: confirmed.id, content: '用户明确记忆', createdAt: confirmed.createdAt, confirmedAt: confirmed.confirmedAt },
+        { id: confirmed.id, content: '用户明确记忆', contentOrigin: null, createdAt: confirmed.createdAt, confirmedAt: confirmed.confirmedAt },
       ]);
       assert.equal(payload.truncated, false);
       assert.equal(text.includes('推断候选内容'), false);
