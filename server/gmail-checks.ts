@@ -26,7 +26,10 @@ function requestId(routineId: string, messageId: string) {
   bytes[6] = (bytes[6]! & 15) | 80; bytes[8] = (bytes[8]! & 63) | 128;
   const hex = bytes.toString('hex'); return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-function view({ fingerprint: _fingerprint, cursor: _cursor, batch: _batch, ...visible }: Record): GmailCheckView { return visible; }
+function view({ fingerprint: _fingerprint, cursor, batch, noticeEpisode: _episode, ...visible }: Record): GmailCheckView {
+  const noticeEpisode = createHash('sha256').update(JSON.stringify([visible.state, cursor, batch?.historyId, batch?.events.map(event => event.requestId)])).digest('hex');
+  return { ...visible, noticeEpisode };
+}
 
 /** Minimal Gmail cursor/dispatch associations. Paseo owns all cadence, sessions and task execution. */
 export class GmailChecks {

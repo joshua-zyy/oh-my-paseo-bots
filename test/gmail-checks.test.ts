@@ -47,6 +47,24 @@ test('用户启用才读基线；相同启用幂等，不隐式读邮件或启�
   await assert.rejects(() => x.service.check(botId, 'other-agent'), /当前活跃/);
 }));
 
+test('提醒轮次只从实际游标/批次请求派生：同批次稳定，不存新字段或暴露ID，下一批次不同', () => fixture(async x => {
+  await x.service.enable(botId, x.routineId, prompt);
+  x.dispatchWith(async () => { throw Error('lost receipt'); });
+  await assert.rejects(() => x.service.check(botId, agentId), /lost receipt/);
+  const first = await x.service.inspect(botId, x.routineId); assert.match(first!.noticeEpisode!, /^[a-f0-9]{64}$/);
+  const file = join(x.directory, 'gmail-checks.json'), before = await readFile(file, 'utf8'), calls = x.pages.length;
+  assert.equal((await x.service.inspect(botId, x.routineId))!.noticeEpisode, first!.noticeEpisode);
+  assert.equal(await readFile(file, 'utf8'), before); assert.equal(x.pages.length, calls); assert(!('noticeEpisode' in await x.state()));
+  const pending = await x.state(); x.known.set(pending.batch.events[0].requestId, 'recovered');
+  x.dispatchWith(async input => { x.known.set(input.requestId, 'second'); return { agentId: 'second' }; });
+  await x.service.check(botId, agentId);
+  x.readPages(async () => ({ historyId: '300', messages: [{ id: 'new-mail' }] }));
+  x.dispatchWith(async () => { throw Error('new lost receipt'); });
+  await assert.rejects(() => x.service.check(botId, agentId), /new lost receipt/);
+  const next = await x.service.inspect(botId, x.routineId); assert.notEqual(next!.noticeEpisode, first!.noticeEpisode);
+  assert(!JSON.stringify(next).includes('new-mail')); assert.equal((await x.state()).cursor, '200');
+}));
+
 test('完整分页去重、稳定请求键派发后推进末页游标，跨周期重复ID复用已知事项', () => fixture(async x => {
   await x.service.enable(botId, x.routineId, prompt);
   x.readPages(async (_cursor, token) => token ? { historyId: '900719925474099312345', messages: [{ id: 'a' }, { id: 'b' }] } : { historyId: '150', nextPageToken: 'second', messages: [{ id: 'a' }] });

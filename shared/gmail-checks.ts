@@ -5,6 +5,7 @@ export const gmailCheck = z.object({
   botId: z.string(), routineId: z.uuid(), prompt: z.string().trim().min(1).max(1500),
   enabled: z.boolean(), account: z.email(), query: z.string(),
   state: z.enum(['ready', 'needs_sync', 'dispatch_unknown']), detail: z.string().optional(),
+  noticeEpisode: z.string().optional(),
 });
 export type GmailCheckView = z.infer<typeof gmailCheck>;
 const owner = { botId: z.string(), routineId: z.uuid() };
