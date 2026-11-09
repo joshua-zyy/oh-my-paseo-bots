@@ -6,6 +6,7 @@ import { View } from 'react-native';
 import * as rpc from '../shared/routines.js';
 import { listTasks } from '../shared/tasks.js';
 import { History } from './history.js';
+import { GmailRoutineCheck } from './gmail-checks.js';
 import { Usage } from './usage.js';
 import { Actions, Button, Copy, Disclosure, Field, Notice, Section } from './ui.js';
 import { useBotUpdates } from './use-bot-updates.js';
@@ -91,6 +92,7 @@ export function Routines({ botId, openAgent }: { botId: string; openAgent?: (id:
     {items?.length === 0 && !creating && <Copy muted>暂无例程</Copy>}
     {items?.map(({ routine, native, error: nativeError }) => <Disclosure key={routine.id} title={routine.name} status={routine.state === 'canceled' ? '已取消' : native ? statuses[native.status] : '原生状态待确认'} open={opened === routine.id} onPress={() => setOpened(opened === routine.id ? undefined : routine.id)}>
       <Copy>{routine.prompt}</Copy>
+      {opened === routine.id && <GmailRoutineCheck key={routine.id} botId={botId} routineId={routine.id} disabled={busy || routine.state !== 'ready' || !native || native.status === 'completed'} />}
       <Copy muted>{native?.cadence.type === 'cron' ? `${describeRoutineCron(native.cadence.expression)} · ${native.cadence.timezone || 'UTC'}` : `${describeRoutineCron(routine.cron)} · ${routine.timezone}`}</Copy>
       <Notice error={nativeError || ''} />
       {routine.detail && <Copy muted small>{routine.detail}</Copy>}

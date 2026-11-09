@@ -83,6 +83,14 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     assert.match(created[0].config.systemPrompt!, /持续聊天/);
     assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), []);
     const client = await connect(conversation.agentId);
+    const checkTools = await client.listTools();
+    const checkTool = checkTools.tools.find(tool => tool.name === 'check_gmail_events');
+    assert(checkTool); assert.deepEqual(checkTool.inputSchema.properties ?? {}, {});
+    assert(!checkTools.tools.some(tool => tool.name === 'enable_gmail_check'));
+    assert.equal((await client.callTool({ name: 'check_gmail_events', arguments: {} })).isError, true, '普通聊天不是已启用的原生例程，不检查或派发邮件');
+    assert.equal(await invoke('bots.gmail_check', { botId: 'chief', routineId: randomUUID() }), null);
+    await assert.rejects(() => invoke('bots.gmail_check.enable', { botId: 'chief', routineId: randomUUID(), prompt: '核对合成邮件' }), /原生例程/);
+    assert.equal(created.length, 2, '配置/检查失败不得创建Agent');
     const context = () => invoke('bots.conversation.context', { botId: 'chief', agentId: conversation.agentId }) as Promise<{ type: string; mimeType: string; title: string; text: string }>;
     assert.doesNotMatch(created[0].config.systemPrompt!, /报告使用中文|会话创建时的确认记忆快照/);
     assert.match((await context()).text, /报告使用中文/);

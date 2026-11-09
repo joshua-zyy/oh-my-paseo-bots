@@ -22,6 +22,9 @@ import { readConversation, conversationExecution, prepareConversationHandoff } f
 import { CHIEF_BOT_ID } from './shared/bot.js';
 import * as officeRpc from './shared/office.js';
 import { BotOfficeAccess } from './server/office.js';
+import { GmailClient } from './server/gmail.js';
+import { GmailChecks } from './server/gmail-checks.js';
+import * as gmailCheckRpc from './shared/gmail-checks.js';
 import { TaskTracker } from './server/tasks.js';
 import * as taskRpc from './shared/tasks.js';
 import { BotRoutines } from './server/routines.js';
@@ -80,7 +83,7 @@ export default function contribute(server: PluginServerContext) {
     const bot = await store.getBot(botId);
     const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
     if (!link) throw new Error('原生会话未关联到此Bot');
-    if (!link.channelId) return {};
+    if (!link.channelId) return { checkGmailEvents: () => gmailChecks.check(botId, agentId) };
     if (!currentPaseo) throw new Error('频道宿主上下文尚未就绪');
     const channelId = link.channelId;
     const channel = await channelState.authorize(channelId, botId, agentId, currentPaseo);
@@ -106,7 +109,7 @@ export default function contribute(server: PluginServerContext) {
         return readBotHistory(store, currentPaseo!, target.botId, input, channelId);
       },
     };
-  }, readContext: async (botId, agentId) => ({ ...await routines.context(botId, agentId), teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }), startColleague: async input => {
+  }, readContext: async (botId, agentId) => ({ ...await routines.context(botId, agentId), gmailCheck: await gmailChecks.context(botId, agentId), teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }), startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
   }, cancelExplicit: async (botId, agentId, quote, targetAgentId) => {
@@ -405,6 +408,36 @@ export default function contribute(server: PluginServerContext) {
     if (state.values.cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
     return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) };
   } });
+  const gmailChecks = new GmailChecks({ baseDir,
+    getConfig: async botId => {
+      const bot = await store.getBot(botId);
+      if (!bot || bot.bot.archivedAt) throw new Error('同事不存在或已归档');
+      const state = await officeSettings.read();
+      const config = state.status === 'ready' ? state.values.bots[botId]?.gmail : undefined;
+      if (!config || !isAbsolute(config.configDir)) throw new Error('请先配置本同事的Gmail账户与批准查询，以及宿主绝对登录目录');
+      return config;
+    }, client: config => new GmailClient(config),
+    validateRoutine: async (botId, routineId) => {
+      const row = (await routines.list(botId)).find(item => item.routine.id === routineId);
+      if (!row?.native || row.error || row.routine.state !== 'ready' || row.native.status === 'completed') throw new Error('只可绑定本同事已确认且未结束的原生例程');
+    },
+    activeRoutine: async (botId, agentId) => (await tasks.requireActive(botId, agentId)).routine?.id,
+    dispatch: async input => { if (!currentPaseo) throw new Error('原生宿主未就绪，未派发'); return startBoundSession(input, currentPaseo); },
+    lookup: async (botId, requestId) => {
+      const intent = (await store.getBot(botId))?.creationIntents.find(item => item.requestId === requestId);
+      if (!intent) return undefined;
+      if (intent.status === 'created') return intent.agentId;
+      if (!currentPaseo) return undefined;
+      const snapshot = await currentPaseo.agents.ref(intent.agentId).refresh();
+      if (!snapshot) return undefined;
+      if (snapshot.agent.labels['paseo-guys.bot'] !== botId || snapshot.agent.labels['paseo-guys.request'] !== requestId) throw new Error('原生创建来源与邮件事件登记不符');
+      await store.completeCreation(botId, requestId, { sessionId: snapshot.agent.id, title: snapshot.agent.title, workspaceId: snapshot.agent.workspaceId });
+      return snapshot.agent.id;
+    },
+  });
+  server.handle(gmailCheckRpc.inspectGmailCheck, input => gmailChecks.inspect(input.botId, input.routineId));
+  server.handle(gmailCheckRpc.enableGmailCheck, input => gmailChecks.enable(input.botId, input.routineId, input.prompt));
+  server.handle(gmailCheckRpc.disableGmailCheck, input => gmailChecks.disable(input.botId, input.routineId));
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {
     currentPaseo = context.paseo;
     const snapshot = await context.paseo.agents.ref(agent.id).refresh();

@@ -92,6 +92,7 @@ export interface BotMcpOptions {
 }
 
 export interface BotMcpToolScope {
+  checkGmailEvents?: () => Promise<unknown>;
   channelId?: string;
   askChannelMember?: (input: ChannelAsk) => Promise<unknown>;
   reportChannelResult?: (input: ChannelReport) => Promise<unknown>;
@@ -373,6 +374,9 @@ export function createBotMcpServer(scope: BotMcpToolScope): McpServer {
     },
   );
 
+  if (!scope.channelId && scope.checkGmailEvents) server.registerTool('check_gmail_events', {
+    description: '仅检查当前原生例程中用户已经启用的Gmail增量。账户/query/工作要求服务端绑定，参数不能启用或扩大范围。稳定派发新邮件事项，未知回查原创建，不手动重建；派发回执不等于交付。',
+  }, async () => { try { return toolResult(await scope.checkGmailEvents!()); } catch (error) { return toolFailure(error); } });
   if (scope.office) registerOfficeTools(server, scope.office, botId, agentId);
   if (scope.tasks) registerTaskTools(server, scope.tasks, botId, agentId, scope.cancelExplicit);
   if (scope.tasks && scope.startColleague) registerColleagueTools(server, { store, tasks: scope.tasks, botId, agentId, start: scope.startColleague });
