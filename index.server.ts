@@ -490,20 +490,39 @@ export default function contribute(server: PluginServerContext) {
   const opened = server.addHook('agent.open.before', async ({ request }, context) => {
     currentPaseo = context.paseo;
     if (request.labels?.['paseo.schedule-id']) {
+      // 历史读取只核对已保存的例程归属，不 bind/ensure 或恢复取消的执行。
+      if (request.purpose === 'history') {
+        const botId = await routines.owner(request.agentId);
+        if (botId && await store.getBot(botId) && request.provider === 'claude') {
+          return { ...request, env: { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } };
+        }
+        return;
+      }
       const routine = await routines.bind(request);
       if (!routine) return;
       const bot = await store.getBot(routine.botId);
       if (!bot) throw new Error('例程绑定的 Bot 不存在');
       const config = await botSessionConfig(store, routine.botId, { cwd: request.cwd, config: { provider: request.provider }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }, 'routine');
-      return { ...request, mcpServers: { ...request.mcpServers, ...config.config.mcpServers, 'paseo-guys': await mcp.mount(routine.botId, request.agentId) } };
+      return { ...request, ...(request.provider === 'claude' ? { env: { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } } : {}), mcpServers: { ...request.mcpServers, ...config.config.mcpServers, 'paseo-guys': await mcp.mount(routine.botId, request.agentId) } };
     }
+    let env: Record<string, string> | undefined;
+    let botId: string | undefined = request.labels?.['paseo-guys.bot'];
     try {
-      const snapshot = await context.paseo.agents.ref(request.agentId).refresh();
-      const botId = snapshot?.agent.labels?.['paseo-guys.bot'];
-      if (botId && await store.getBot(botId)) await mcp.mount(botId, request.agentId);
+      // 已登记 Bot 标签是既有生命周期的自动纳管入口；首次无需等待关联或原生回查。
+      botId ??= (await context.paseo.agents.ref(request.agentId).refresh())?.agent.labels?.['paseo-guys.bot'];
+      const bot = botId ? await store.getBot(botId) : null;
+      if (botId && bot) {
+        if (request.provider === 'claude') env = { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+        await mcp.mount(botId, request.agentId);
+      }
     } catch (error) {
+      if (request.provider === 'claude' && botId && !env) {
+        throw new Error('Claude Bot 的原生自动记忆关闭未能核实，未打开会话', { cause: error });
+      }
       console.error(`原生会话 ${request.agentId} 的 Bot 工具恢复失败；继续打开会话`, error);
     }
+    // 工具预热失败不撤销已核实 Bot 的关闭策略；不修改普通会话或宿主全局环境。
+    if (env) return { ...request, env };
   });
   const started = server.addHook('agent.turn.before', async (event, context) => {
     const botId = await associate(event.agent, context);
