@@ -74,7 +74,7 @@ test('原生/真实设置事件刷新，finished不直接提醒；只通知一�
   await c.release();
 });
 
-test('刷新在途合并后读，单并发且不丢失新失效，不添加timer轮询', async () => {
+test('刷新在途合并后读，单并发且不丢失新失效，不按重绘高频扫描', async () => {
   const f = fixture(), c = createAttentionController(f.api, f.read); await c.ready;
   let resolve!: (value: AttentionView) => void; let first = true;
   const pending = new Promise<AttentionView>(done => { resolve = done; });
@@ -165,4 +165,62 @@ test('能力来源建立期间的变化不丢，来源复用/移除与恢复不�
   assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(c.getSnapshot().error, '');
   f.set(view()); await c.refresh(); assert.equal(f.timeline('real-source').released(), 1);
   await c.release(); const count = f.reads(); f.timeline('real-source').emit({ type: 'timeline', item: capabilityRow('pending') }); await tick(); assert.equal(f.reads(), count);
+});
+
+test('无原生事件的另一客户端提交由有界重读自动形成/清除，同项与普通进展不重复提醒', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(), c = createAttentionController(f.api, f.read); await c.ready;
+  t.after(() => c.release());
+  const notices: AttentionEntry[][] = []; c.present(items => notices.push(items));
+  const before = f.reads(); f.set(view([entry('remote-decision')]));
+  t.mock.timers.tick(14_999); await tick(); assert.equal(f.reads(), before);
+  t.mock.timers.tick(1); await tick(); assert.equal(f.reads(), before + 1);
+  assert.equal(c.getSnapshot().value!.entries.length, 1); assert.equal(notices.length, 1);
+  t.mock.timers.tick(15_000); await tick(); assert.equal(notices.length, 1, '重读不是新的episode');
+  f.set(view()); t.mock.timers.tick(15_000); await tick();
+  assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(notices.length, 1, '已决定不提醒');
+  f.set(view([entry('ordinary-inflight', 'progress')])); t.mock.timers.tick(15_000); await tick();
+  assert.equal(notices.length, 1, '没有新进展不等于重要异常');
+});
+
+test('无Agent的例程失败无需伪造注意事件即可自动发现', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(), c = createAttentionController(f.api, f.read); await c.ready;
+  t.after(() => c.release());
+  const notices: AttentionEntry[][] = []; c.present(items => notices.push(items));
+  const failed: AttentionEntry = { ...entry('failed-run'), source: 'routine', kind: 'failure', target: { panel: 'routines' }, notice: { channel: 'plugin', reason: 'routine_failed', episode: 'failed-run' } };
+  f.set(view([failed])); t.mock.timers.tick(15_000); await tick();
+  assert.deepEqual(c.getSnapshot().value!.entries, [failed]); assert.deepEqual(notices, [[failed]]);
+  f.set(view()); t.mock.timers.tick(15_000); await tick(); assert.equal(c.getSnapshot().value!.entries.length, 0);
+});
+
+test('慢自动重读不堆积，原生失效仍合并后读，完成后才安排下一次且卸载释放', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(), c = createAttentionController(f.api, f.read); await c.ready;
+  t.after(() => c.release());
+  let resolve!: (value: AttentionView) => void; let first = true;
+  const pending = new Promise<AttentionView>(done => { resolve = done; });
+  f.override(async () => { if (first) { first = false; return pending; } return view([entry('after-slow-read')]); });
+  const before = f.reads(); t.mock.timers.tick(15_000); await tick(); assert.equal(f.reads(), before + 1);
+  t.mock.timers.tick(60_000); await tick(); assert.equal(f.reads(), before + 1); assert.equal(f.maxActive(), 1);
+  f.events.update({ type: 'agent_attention_required', payload: {} });
+  resolve(view()); await tick(); assert.equal(f.reads(), before + 2); assert.equal(f.maxActive(), 1);
+  const count = f.reads(); t.mock.timers.tick(14_999); await tick(); assert.equal(f.reads(), count);
+  t.mock.timers.tick(1); await tick(); assert.equal(f.reads(), count + 1);
+  await c.release(); const after = f.reads(); t.mock.timers.tick(60_000); await tick(); assert.equal(f.reads(), after);
+});
+
+test('自动读失败保旧值/错误，继续核对不批准或重派，原生读仍即时并重置延迟', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); f.set(view([entry('initial')])); const c = createAttentionController(f.api, f.read); await c.ready;
+  t.after(() => c.release());
+  const previous = c.getSnapshot().value; f.fail(); t.mock.timers.tick(15_000); await tick();
+  assert.equal(c.getSnapshot().value, previous); assert.match(c.getSnapshot().error, /保留上次结果/);
+  f.fail(false); f.set(view()); t.mock.timers.tick(15_000); await tick();
+  assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(c.getSnapshot().error, '');
+  t.mock.timers.tick(14_999); f.set(view([entry('immediate-native')]));
+  f.events.update({ type: 'agent_attention_required', payload: {} }); await tick();
+  assert.equal(c.getSnapshot().value!.entries[0].notice!.episode, 'immediate-native');
+  const count = f.reads(); t.mock.timers.tick(1); await tick(); assert.equal(f.reads(), count, '原截止时刻不再重复读');
+  t.mock.timers.tick(14_999); await tick(); assert.equal(f.reads(), count + 1);
 });

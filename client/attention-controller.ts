@@ -14,10 +14,11 @@ export interface AttentionController {
   release(): Promise<void>;
 }
 
-/** One installed client instance owns observations; UI mounting does not own their lifetime. */
+/** One installed client owns observations and a bounded reread for sources without events. */
 export function createAttentionController(api: PaseoApi, read: () => Promise<AttentionView>): AttentionController {
   let snapshot: AttentionSnapshot = { error: '', loading: false };
   let disposed = false, dirty = false, seed = true, inFlight: Promise<void> | undefined;
+  let reread: ReturnType<typeof setTimeout> | undefined;
   let memberKey = '', agents: ReturnType<typeof observeAgentChanges> | undefined;
   const listeners = new Set<() => void>(), presenters = new Set<(entries: AttentionEntry[]) => void>();
   const errors = new Map<string, string>(), retiring = new Set<Promise<void>>(), releaseErrors: unknown[] = [];
@@ -76,6 +77,7 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
   }
   function refresh(): Promise<void> {
     if (disposed) return Promise.resolve();
+    clearTimeout(reread); reread = undefined;
     dirty = true;
     if (inFlight) return inFlight;
     inFlight = (async () => {
@@ -95,7 +97,12 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
           seed = true; errors.set('待办读取', `待办读取未确认，保留上次结果：${String(error)}`); publish({ loading: false });
         }
       }
-    })().finally(() => { inFlight = undefined; if (dirty && !disposed) void refresh(); });
+    })().finally(() => {
+      inFlight = undefined;
+      if (dirty && !disposed) void refresh();
+      // Fixed delay after completion: no overlapping reads or queued timer ticks.
+      else if (!disposed) reread = setTimeout(() => { reread = undefined; void refresh(); }, 15_000);
+    });
     return inFlight;
   }
   const events = api.observeEvents(['agent_attention_required', 'status.plugin_settings_changed'], { notifications: false });
@@ -117,7 +124,8 @@ export function createAttentionController(api: PaseoApi, read: () => Promise<Att
     present(listener) { presenters.add(listener); return () => { presenters.delete(listener); }; },
     refresh,
     async release() {
-      disposed = true; listeners.clear(); presenters.clear(); unsubscribe();
+      disposed = true; clearTimeout(reread); reread = undefined;
+      listeners.clear(); presenters.clear(); unsubscribe();
       const results = await Promise.allSettled([events.release(), agents?.release(), ...[...capabilitySources.values()].map(source => source.release()), ...retiring]);
       capabilitySources.clear();
       for (const result of results) if (result.status === 'rejected') releaseErrors.push(result.reason);
