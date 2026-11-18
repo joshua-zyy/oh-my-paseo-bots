@@ -7,7 +7,7 @@ import { join, isAbsolute } from 'node:path';
 import { BotStore } from './server/store.js';
 import { archiveBot } from './server/bot-archive.js';
 import { BotJournal } from './server/journal.js';
-import { botSessionConfig, startBotSession, type SessionInput } from './server/sessions.js';
+import { botSessionConfig, botWorkspaceKey, findRegisteredCheckoutProject, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
 import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory, publishExplicitTeamMemory } from './server/memory.js';
 import { readBotHistory } from './server/history.js';
@@ -477,6 +477,13 @@ export default function contribute(server: PluginServerContext) {
     return botId;
   }
   const hidden = server.addHook('workspace.create.before', async ({ request }, { paseo }) => {
+    // 在原生创建 hook 内选项目，避免改掉既有 workspace receipt 的输入指纹。
+    const managedBot = /^oh-my-paseo-bots:([a-z0-9][a-z0-9-]*)$/.exec(request.title ?? '')?.[1];
+    if (request.background && request.source.kind === 'directory' && !request.source.projectId && isAbsolute(request.source.path)
+      && managedBot && request.idempotencyKey === botWorkspaceKey(managedBot, request.source.path) && await store.getBot(managedBot)) {
+      const projectId = await findRegisteredCheckoutProject(paseo, request.source.path);
+      if (projectId) return { ...request, source: { ...request.source, projectId } };
+    }
     const botId = request.agent?.labels?.['paseo-guys.bot'];
     if (botId && await store.getBot(botId)) return { ...request, background: true };
     const scheduleId = request.agent?.labels?.['paseo.schedule-id'];

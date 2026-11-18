@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { lstat, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import type { PaseoApi, PaseoAgentConfig } from '@getpaseo/client';
 import type { BotStore } from './store.js';
 import { botPrompt } from './prompt.js';
@@ -83,12 +83,11 @@ export async function startBotSession(
       labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.channelId ? { 'paseo-guys.channel': input.channelId } : {}), ...(input.kind ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
-    const workspaceKey = createHash('sha256').update(stable({ bot: input.botId, cwd })).digest('hex');
     const workspace = await paseo.workspaces.create({
       source: { kind: 'directory', path: cwd },
       title: `oh-my-paseo-bots:${input.botId}`,
       background: true,
-      idempotencyKey: `oh-my-paseo-bots:workspace:${workspaceKey}`,
+      idempotencyKey: botWorkspaceKey(input.botId, cwd),
     });
     agent = await workspace.agents.create(options);
   }
@@ -100,6 +99,32 @@ export async function startBotSession(
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
   });
   return { agentId: agent.id, requestId: proposal.intent.requestId };
+}
+
+export function botWorkspaceKey(botId: string, cwd: string): string {
+  return `oh-my-paseo-bots:workspace:${createHash('sha256').update(stable({ bot: botId, cwd })).digest('hex')}`;
+}
+
+/** 只复用当前 checkout 的已登记项目；不把独立目录或嵌套 checkout 挂到外层项目。 */
+export async function findRegisteredCheckoutProject(paseo: PaseoApi, cwd: string): Promise<string | undefined> {
+  const directory = await realpath(cwd);
+  let root = directory;
+  for (;;) {
+    try {
+      const git = await lstat(join(root, '.git'));
+      if (!git.isDirectory() && !git.isFile()) return;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = dirname(root);
+      if (parent === root) return;
+      root = parent;
+    }
+  }
+  if (!relative(root, directory)) return; // Paseo 自己会复用同目录登记。
+  const { projects } = await paseo.projects.list();
+  if (projects.some(project => !relative(directory, project.projectRootPath))) return;
+  return projects.find(project => project.projectKind === 'git' && !relative(root, project.projectRootPath))?.projectId;
 }
 
 /** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */

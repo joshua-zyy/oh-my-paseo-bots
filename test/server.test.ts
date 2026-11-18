@@ -291,6 +291,26 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     assert.deepEqual(await hooks.get('workspace.create.before')!({ request: botWorkspace }, { paseo }), { ...botWorkspace, background: true });
     const unknownBot = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'missing' } } };
     assert.equal(await hooks.get('workspace.create.before')!({ request: unknownBot }, { paseo }), undefined, '未登记标签不能改变正常工作区');
+    const repo = join(directory, 'checkout');
+    const work = join(repo, 'fixture');
+    const nested = join(work, 'independent');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await mkdir(join(nested, '.git'), { recursive: true });
+    const projects = [{ projectId: 'repo', projectKind: 'git', projectRootPath: repo }];
+    const withCatalog = { ...paseo, projects: { list: async () => ({ projects }) } };
+    function managedWorkspace(cwd: string) {
+      const hash = createHash('sha256').update(JSON.stringify({ bot: 'chief', cwd })).digest('hex');
+      return { source: { kind: 'directory', path: cwd }, title: 'oh-my-paseo-bots:chief', background: true, idempotencyKey: `oh-my-paseo-bots:workspace:${hash}` };
+    }
+    const beforeWorkspace = hooks.get('workspace.create.before')!;
+    const request = managedWorkspace(work);
+    assert.deepEqual(await beforeWorkspace({ request }, { paseo: withCatalog }), { ...request, source: { ...request.source, projectId: 'repo' } }, '同一已登记 checkout 下的 Bot 目录继承项目，工作目录和请求键不变');
+    assert.equal(await beforeWorkspace({ request: { ...request, idempotencyKey: 'ordinary' } }, { paseo: withCatalog }), undefined, '普通后台工作区不被插件改写');
+    assert.equal(await beforeWorkspace({ request: managedWorkspace(nested) }, { paseo: withCatalog }), undefined, '嵌套独立 checkout 不误挂外层仓库');
+    const explicitProject = { ...request, source: { ...request.source, projectId: 'explicit' } };
+    assert.equal(await beforeWorkspace({ request: explicitProject }, { paseo: withCatalog }), undefined, '宿主显式传入的项目不被覆盖');
+    projects.push({ projectId: 'exact', projectKind: 'non_git', projectRootPath: work });
+    assert.equal(await beforeWorkspace({ request }, { paseo: withCatalog }), undefined, '同目录已有独立登记时保留宿主本来会选的项目');
     assert.deepEqual(await invoke('bots.list', {}), seeded, '再次打开沿用同一 Chief');
     await invoke('bots.update', { botId: 'chief', patch: { name: '主 Bot', role: '核对' } });
     await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '用户明确记忆' });
