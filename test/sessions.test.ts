@@ -6,9 +6,19 @@ import { dirname, join, resolve } from 'node:path';
 import type { PaseoApi, PaseoAgentCreateOptions, PaseoWorkspaceCreateOptions } from '@getpaseo/client';
 import { BotStore, StoreError } from '../server/store.js';
 import { botSessionConfig, startBotSession } from '../server/sessions.js';
+import { botPrompt } from '../server/prompt.js';
 
 const placement = (cwd: string) => ({ cwd, config: { provider: 'configured-provider/model' } });
 const tools = { mount: async (botId: string, agentId: string) => ({ type: 'http' as const, url: `http://127.0.0.1:1/bots/${botId}/${agentId}` }) };
+
+test('Chief 默认按任务性质分流，不把一次性工作都绑定为本 Bot 子事项', () => {
+  const prompt = botPrompt({ id: 'chief', name: 'Chief', role: '协调', kind: 'conversation', confirmedMemories: [] });
+  assert.match(prompt, /一次性独立执行.*create_agent/);
+  assert.match(prompt, /长期职责、独立记忆或专属能力.*delegate_to_colleague/);
+  assert.match(prompt, /需要本 Bot 身份.*start_task/);
+  assert.doesNotMatch(prompt, /先复用现有同事/);
+  assert.match(prompt, /不扩大审批模式/);
+});
 
 test('持续聊天创建不重复读取或注入全量记忆，事项和例程仍保留自己的确认记忆', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-conversation-memory-'));
