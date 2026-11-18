@@ -46,6 +46,8 @@ export interface TaskRecord {
   status: TaskStatus;
   summary?: string;
   evidence?: string[];
+  /** 交付已保存，等待原生轮次结束后归档；不是新的交付或运行许可。 */
+  completionPending?: true;
   detail?: string;
   followups: TaskFollowup[];
   /** 只记录原生父子 id 关系，不复制专家历史或记忆。 */
@@ -163,6 +165,7 @@ const taskSchema = z.object({
   status: z.enum(TASK_STATUSES),
   summary: text(4000).optional(),
   evidence: evidenceSchema.optional(),
+  completionPending: z.literal(true).optional(),
   detail: text(2000).optional(),
   followups: z.array(followupSchema),
   specialists: z.array(agentIdSchema),
@@ -442,17 +445,19 @@ export class TaskTracker {
   }
 
   /**
-   * 停止事项：先持久 stopping，再 archive 原生会话（会中断轮次并完成该 Agent 全部 heartbeat），
-   * 最后尽量删除已知原生 id。archive 失败留在 stopping，可幂等重试。
+   * 停止事项：先持久 stopping，再 archive 原生会话，最后尽量删除已知原生 id。
+   * complete_task 自上报时只保存完成报告；延至 turn.after 收尾，避免中断自己的工具回执。
+   * archive 失败保留原结果与待收尾状态，可幂等重试。
    */
   async stop(
     botId: string,
     agentId: string,
     input: { outcome: 'canceled' | 'completed'; summary: string; evidence?: string[] },
+    options: { deferArchive?: boolean } = {},
   ): Promise<TaskRecord> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const aid = parseInput(agentIdSchema, agentId, 'agentId');
-    const value = parseInput(stopSchema, input, 'stop');
+    let value = parseInput(stopSchema, input, 'stop');
     await this.requireAgent(id, aid);
 
     return this.withActionLock(`stop:${id}:${aid}`, async () => {
@@ -483,15 +488,28 @@ export class TaskTracker {
         await this.getPaseo().agents.ref(aid).archive();
         return view(prepared);
       }
-      if (prepared.status === 'canceled' || prepared.status === 'completed') return view(prepared);
-
-      // 当前子轮次会被归档中断，交付证据先回报；取消则在停止确认后回报。
-      if (value.outcome === 'completed') await this.reportToParent(id, prepared, 'completed');
+      if (prepared.status === 'canceled' || (prepared.status === 'completed' && !prepared.completionPending)) return view(prepared);
+      if (prepared.completionPending) {
+        // 后续停止只收尾，不覆盖已保存的交付；重复工具调用不提前中断当前轮次。
+        if (options.deferArchive) return view(prepared);
+        value = parseInput(stopSchema, { outcome: 'completed', summary: prepared.summary, evidence: prepared.evidence }, 'completion');
+      } else if (value.outcome === 'completed') {
+        await this.reportToParent(id, prepared, 'completed');
+        if (options.deferArchive) return this.withFileLock(id, async () => {
+          const document = await this.readDocument(id);
+          const current = requireTask(document, aid, id);
+          current.status = 'completed';
+          current.completionPending = true;
+          current.detail = '交付报告已保存并回报；当前轮次结束后归档并停止原生跟进';
+          await this.writeDocument(id, document);
+          return view(current);
+        });
+      }
 
       try {
         await this.getPaseo().agents.ref(aid).archive();
       } catch (error) {
-        const detail = `原生 archive 失败（${reason(error)}）；事项停在 stopping，可重试 stop`;
+        const detail = `原生 archive 失败（${reason(error)}）；${prepared.completionPending ? '交付已保存但归档未确认' : '事项停在 stopping'}，可重试 stop`;
         await this.updateTaskDetail(id, aid, detail).catch(() => undefined);
         throw new TaskError('archive_failed', detail);
       }
@@ -517,6 +535,7 @@ export class TaskTracker {
         const document = await this.readDocument(id);
         const current = requireTask(document, aid, id);
         current.status = value.outcome;
+        delete current.completionPending;
         current.summary = value.summary;
         if (value.evidence) current.evidence = value.evidence;
         for (const followup of current.followups) {
@@ -541,6 +560,13 @@ export class TaskTracker {
       if (value.outcome === 'canceled') await this.reportToParent(id, stopped, 'canceled');
       return stopped;
     });
+  }
+
+  /** 仅收尾已上报的普通事项；成功、失败或取消的轮次结束都不改写交付证据。 */
+  async settleCompletion(botId: string, agentId: string): Promise<void> {
+    const task = await this.get(botId, agentId);
+    if (!task?.completionPending || task.status !== 'completed') return;
+    await this.stop(botId, agentId, { outcome: 'completed', summary: task.summary!, evidence: task.evidence });
   }
 
   /** SDK parent 只建立归属；通过原生通信回报实际登记且仍在进行的父事项或聊天。 */

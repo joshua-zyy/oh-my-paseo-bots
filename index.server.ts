@@ -554,6 +554,7 @@ export default function contribute(server: PluginServerContext) {
       agentId: event.agent.id, turnId: event.turnId, kind: 'turn_ended', outcome: event.outcome.kind,
       ...(event.outcome.kind === 'failed' ? { error: event.outcome.error.message.trim().slice(0, 4000) || '原生轮次失败（无详细信息）' } : {}),
     });
+    if (botId) await tasks.settleCompletion(botId, event.agent.id);
     if (!botId || event.outcome.kind !== 'failed') return;
     const child = await context.paseo.agents.ref(event.agent.id).refresh();
     if (child?.agent.labels?.['paseo-guys.bot'] !== botId || child.agent.archivedAt) return;

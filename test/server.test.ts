@@ -123,7 +123,10 @@ test('同事页持续聊天复用原生会话，可接多个子事项且定向�
     assert.equal(created[2].labels?.['paseo-guys.bot'], 'chief');
     assert.equal(created[2].labels?.['paseo-guys.conversation'], undefined);
     const worker = await connect(child.agentId);
-    payload(await worker.callTool({ name: 'complete_task', arguments: { summary: '数字已核对', evidence: ['findings.md'] } }));
+    const delivery = payload(await worker.callTool({ name: 'complete_task', arguments: { summary: '数字已核对', evidence: ['findings.md'] } }));
+    assert.equal(delivery.status, 'completed');
+    assert.equal(archived.has(child.agentId), false, '完成工具必须先返回回执，不能在 MCP 调用中归档自身');
+    await hooks.get('agent.turn.after')!({ agent: { id: child.agentId }, turnId: 'delivered', outcome: { kind: 'completed' } }, { paseo });
     assert.equal(archived.has(child.agentId), true);
     assert.equal(archived.has(conversation.agentId), false);
     assert.equal(messages[0].agentId, conversation.agentId);
@@ -427,6 +430,8 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.equal((await finisher.callTool({ name: 'complete_task', arguments: { summary: '仅轮次结束', evidence: [] } })).isError, true);
       assert.equal(archived.length, 1);
       assert.equal((await finisher.callTool({ name: 'complete_task', arguments: { summary: '已核对交付物', evidence: ['report.md'] } })).isError, undefined);
+      assert.deepEqual(archived, [started.agentId], '交付工具返回前不归档当前会话');
+      await hooks.get('agent.turn.after')!({ agent: { id: next.agentId }, turnId: 'receipt-returned', outcome: { kind: 'completed' } }, { paseo });
       assert.deepEqual(archived, [started.agentId, next.agentId]);
       const finished = (await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string; evidence: string[] }[]).find(task => task.agentId === next.agentId)!;
       assert.equal(finished.status, 'completed');
@@ -647,8 +652,12 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
       assert.equal(result.isError, undefined);
       assert.equal(payload(result).status, 'completed');
       assert.deepEqual(nativeEvents.map(({ kind, agentId }) => ({ kind, agentId })), [
+        { kind: 'send', agentId: root.agentId },
+      ], '固定同事先回报 Chief 并正常返回工具回执，不在调用中归档');
+      await hooks.get('agent.turn.after')!({ agent: { id: next.agentId }, turnId: 'completed-delivery', outcome: { kind: 'completed' } }, { paseo });
+      assert.deepEqual(nativeEvents.map(({ kind, agentId }) => ({ kind, agentId })), [
         { kind: 'send', agentId: root.agentId }, { kind: 'archive', agentId: next.agentId },
-      ], '固定同事的实际交付先通过原生通信回报 Chief，再归档');
+      ]);
       assert.deepEqual(nativeEvents[0].options, { sourceAgentId: next.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:delivery:${next.agentId}` });
       const returned = JSON.parse(nativeEvents[0].text!.split('\n')[1]);
       assert.deepEqual(returned, { agentId: next.agentId, title: request.title, ...report });

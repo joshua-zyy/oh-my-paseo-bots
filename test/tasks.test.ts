@@ -450,6 +450,63 @@ describe('原生跟进关联', () => {
     assert.equal((await unconfigured.requireActive('chief', 'agent-chief')).status, 'active');
   });
 
+  it('工具交付先返回，重开追踪器后才收尾；重复完成、取消和并发观察不覆盖报告', async () => {
+    const { tracker, restart, paseo, cli } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '合成交付' });
+    await tracker.follow('chief', 'agent-chief', followup);
+    const report = { outcome: 'completed' as const, summary: '已核对 42', evidence: ['report.md'] };
+    const saved = await tracker.stop('chief', 'agent-chief', report, { deferArchive: true });
+    assert.equal(saved.status, 'completed');
+    assert.equal(saved.completionPending, true);
+    assert.deepEqual(paseo.archived, []);
+    assert.deepEqual(cli.deleted, []);
+    await expectTaskError(() => tracker.requireActive('chief', 'agent-chief'), 'task_not_active');
+    const duplicate = await restart().stop('chief', 'agent-chief', { ...report, summary: '覆盖尝试' }, { deferArchive: true });
+    assert.equal(duplicate.summary, report.summary);
+    assert.deepEqual(paseo.archived, [], '重复工具调用不能提前归档');
+    const restored = restart();
+    await Promise.all([
+      restored.settleCompletion('chief', 'agent-chief'),
+      restored.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '停止剩余执行' }),
+    ]);
+    const final = await restored.get('chief', 'agent-chief');
+    assert.equal(final?.status, 'completed');
+    assert.equal(final?.summary, report.summary);
+    assert.equal(final?.completionPending, undefined);
+    assert.deepEqual(final?.evidence, report.evidence);
+    assert.deepEqual(paseo.archived, ['agent-chief']);
+    assert.deepEqual(cli.deleted, ['hb_1']);
+    await restored.settleCompletion('chief', 'agent-chief');
+    assert.deepEqual(paseo.archived, ['agent-chief'], '重复结束事件不重复归档');
+  });
+
+  it('交付后的归档失败保留证据和明确待收尾状态，重试只收尾', async () => {
+    const { tracker, restart, paseo } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '合成交付' });
+    const report = { outcome: 'completed' as const, summary: '已核对', evidence: ['report.md'] };
+    await tracker.stop('chief', 'agent-chief', report, { deferArchive: true });
+    paseo.behavior.archive = async () => { throw new Error('offline'); };
+    await expectTaskError(() => tracker.settleCompletion('chief', 'agent-chief'), 'archive_failed');
+    const stuck = await restart().get('chief', 'agent-chief');
+    assert.equal(stuck?.status, 'completed');
+    assert.equal(stuck?.completionPending, true);
+    assert.match(stuck?.detail ?? '', /交付已保存但归档未确认/);
+    assert.deepEqual(stuck?.evidence, report.evidence);
+    paseo.behavior.archive = undefined;
+    await restart().settleCompletion('chief', 'agent-chief');
+    assert.equal((await restart().get('chief', 'agent-chief'))?.completionPending, undefined);
+    assert.equal((await restart().get('chief', 'agent-chief'))?.summary, report.summary);
+  });
+
+  it('独立原生例程上报后不参与普通事项的延迟归档', async () => {
+    const { tracker, paseo } = await setup();
+    await tracker.ensure('chief', 'agent-chief', { title: '例程', routine: { id: randomUUID(), runId: randomUUID(), prompt: '合成核对' } });
+    const saved = await tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '例程已核对', evidence: ['report.md'] }, { deferArchive: true });
+    assert.equal(saved.completionPending, undefined);
+    await tracker.settleCompletion('chief', 'agent-chief');
+    assert.deepEqual(paseo.archived, [], '由原生调度负责例程收尾');
+  });
+
   it('stop 先持久 stopping 再 archive，期间拒绝新推进', async () => {
     const { tracker, restart, cli, paseo } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '跟进' });

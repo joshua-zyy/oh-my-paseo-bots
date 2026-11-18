@@ -41,9 +41,9 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     inputSchema: { name: z.string().min(1), prompt: z.string().min(1), cron: z.string().min(1), timezone: z.string().min(1) },
   }, input => run(() => tasks.follow(botId, agentId, input)));
   server.registerTool('complete_task', {
-    description: '仅当约定交付条件已满足时保存 summary 和 evidence。持续聊天不能调用，请在独立执行事项中完成。普通子事项先经原生通信向仍进行中的委派事项或聊天回报摘要与证据，随后停止跟进并归档。独立例程只保存本次报告，随后正常回复让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据。',
+    description: '仅当约定交付条件已满足时保存 summary 和 evidence。持续聊天不能调用，请在独立执行事项中完成。普通子事项先经原生通信回报摘要与证据并返回成功回执，当前轮次结束后停止跟进并归档；收到回执后正常回复，不继续新工作。独立例程只保存本次报告，随后正常回复让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据。',
     inputSchema: { summary: z.string().trim().min(1), evidence: z.array(z.string().trim().min(1)).min(1) },
-  }, input => run(() => tasks.stop(botId, agentId, { ...input, outcome: 'completed' })));
+  }, input => run(() => tasks.stop(botId, agentId, { ...input, outcome: 'completed' }, { deferArchive: true })));
   if (cancelExplicit) server.registerTool('cancel_task', {
     description: '仅在用户本条消息明确取消具体事项时使用，引用完整用户消息供服务端核对。持续聊天必须提供 targetAgentId，且只能取消自己实际交办的子事项；不会关闭聊天。独立事项不填目标时取消自身。资源告警、费用或暂时无进展不是取消授权；自然语言意图由 Bot 判断。',
     inputSchema: { userQuote: z.string().trim().min(1).max(8000), targetAgentId: z.string().trim().min(1).max(200).optional() },
