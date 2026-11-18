@@ -62,7 +62,7 @@ async function setup() {
   const request = (nativeId: string, agentId = randomUUID(), runId = randomUUID()) => {
     const schedule = native.get(nativeId)!;
     schedule.runs.push({ id: runId, agentId, workspaceId: 'native-ws', status: 'running', scheduledFor: new Date().toISOString(), startedAt: new Date().toISOString(), endedAt: null, output: null, error: null });
-    return { agentId, workspaceId: 'native-ws', provider: 'pi', cwd: dir, title: '标题不决定 Bot', labels: { 'paseo.schedule-id': nativeId, 'paseo.schedule-run': runId }, reason: 'create', purpose: 'interactive', tools: [], env: {}, mcpServers: {} } satisfies PluginSessionOpenRequest;
+    return { agentId, workspaceId: 'native-ws', provider: 'pi', cwd: dir, title: '标题不决定 Bot', background: true, labels: { 'paseo.schedule-id': nativeId, 'paseo.schedule-run': runId }, metadata: {}, reason: 'create', purpose: 'interactive', tools: [], env: {}, mcpServers: {} } satisfies PluginSessionOpenRequest;
   };
   return { dir, store, tasks, routines, reopen, native, calls, archives, input, request, failCreate: () => { failCreate = true; }, failArchive: () => { failArchive = true; }, onCreate: (handler: () => Promise<void>) => { afterCreate = handler; }, onManual: (handler: () => Promise<void>) => { manual = handler; } };
 }

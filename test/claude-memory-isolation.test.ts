@@ -30,7 +30,7 @@ async function fixture(t: TestContext, run: (f: { store: BotStore; open: Open; a
   const request: PluginSessionOpenRequest = {
     agentId: randomUUID(), workspaceId: null, provider: 'claude', cwd: dir,
     reason: 'create', purpose: 'interactive', title: '合成开口',
-    labels: { 'paseo-guys.bot': 'chief' }, tools: [], mcpServers: {},
+    background: true, labels: { 'paseo-guys.bot': 'chief' }, metadata: {}, tools: [], mcpServers: {},
     env: { EXISTING_SESSION_VALUE: 'keep', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' },
   };
   const paseo = { agents: { ref: () => ({ refresh: async () => ({ agent: { labels: request.labels } }) }) } } as unknown as PaseoApi;

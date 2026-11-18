@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useSyncExternalStore
 import { useRpc as useNativeRpc } from '@getpaseo/plugin/client';
 import { useToast } from '@getpaseo/plugin/client/ui';
 import type { PluginRpcContract } from '@getpaseo/plugin';
-import type { ZodType, input as ZodInput, output as ZodOutput } from 'zod';
+import type { ZodType } from 'zod';
 import type { AttentionEntry } from '../shared/attention.js';
 import { attentionMutation, type AttentionController } from './attention-controller.js';
 
@@ -28,7 +28,7 @@ const mutations = new Set([
 /** Only this client's known actions invalidate this view; this is not a server push channel. */
 export function useBotRpc<Input extends ZodType, Output extends ZodType>(contract: PluginRpcContract<Input, Output>) {
   const call = useNativeRpc(contract), controller = useContext(AttentionContext);
-  return useCallback((input: ZodInput<Input>): Promise<ZodOutput<Output>> => mutations.has(contract.name)
+  return useCallback((input: Parameters<typeof call>[0]) => mutations.has(contract.name)
     ? attentionMutation(controller, () => call(input)) : call(input), [call, controller, contract.name]);
 }
 const reasons: Record<NonNullable<AttentionEntry['notice']>['reason'], string> = {
