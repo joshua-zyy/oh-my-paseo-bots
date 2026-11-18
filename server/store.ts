@@ -131,12 +131,15 @@ export { StoreError, type StoreErrorCode } from './store-errors.js';
 
 /** Windows 设备名即使带 `.json` 扩展名仍会被当作设备，不能作为存档文件名。 */
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+// These root files belong to the existing auxiliary stores, never to a Bot identity.
+const AUXILIARY_STORE_IDS = new Set(['gmail-checks', 'team-memories']);
 
 export const botIdSchema = z
   .string()
   .max(64)
   .regex(BOT_ID_PATTERN, 'must start with [a-z0-9], use only [a-z0-9_-]')
-  .refine((value) => !WINDOWS_RESERVED_NAME.test(value), { message: 'must not be a Windows device name' });
+  .refine((value) => !WINDOWS_RESERVED_NAME.test(value), { message: 'must not be a Windows device name' })
+  .refine((value) => !AUXILIARY_STORE_IDS.has(value), { message: 'must not use a plugin metadata filename' });
 const sessionIdSchema = z.string().max(200).regex(SESSION_ID_PATTERN, 'must use only [A-Za-z0-9._:@-]');
 const labelSchema = z.string().min(1).max(200);
 const timestampSchema = z.string().min(1).max(64);

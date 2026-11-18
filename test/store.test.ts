@@ -87,6 +87,31 @@ describe('固定 Bot 身份', () => {
       ['chief', 'writer'],
     );
   });
+  it('辅助Gmail和团队记忆文件不作为Bot枚举或损坏身份，不能由Bot写入覆盖', async () => {
+    const { baseDir, store } = await makeStore();
+    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
+    const auxiliary = {
+      'gmail-checks': JSON.stringify({ version: 1, checks: [] }),
+      'team-memories': JSON.stringify({ version: 1, memories: [] }),
+    };
+    for (const [id, raw] of Object.entries(auxiliary)) await writeFile(path.join(baseDir, id + '.json'), raw);
+    const corrupt: string[] = [];
+    assert.deepEqual((await store.listBots()).map(bot => bot.id), ['chief']);
+    assert.deepEqual((await store.listBots(id => corrupt.push(id))).map(bot => bot.id), ['chief']);
+    assert.deepEqual(corrupt, []);
+    for (const [id, raw] of Object.entries(auxiliary)) {
+      await assert.rejects(() => store.createBot({ id, name: '冲突身份', role: '不得覆盖辅助存档' }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
+      await assert.rejects(() => store.getBot(id), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
+      assert.equal(await readFile(path.join(baseDir, id + '.json'), 'utf8'), raw);
+    }
+    // 已知辅助文件即使坏了也由自身模块报告；不变成另一个Bot或被重建。
+    await writeFile(path.join(baseDir, 'gmail-checks.json'), '{broken');
+    assert.deepEqual((await store.listBots()).map(bot => bot.id), ['chief']);
+    assert.equal(await readFile(path.join(baseDir, 'gmail-checks.json'), 'utf8'), '{broken');
+    await assert.rejects(() => new BotStore({ baseDir }).createBot({ id: 'gmail-checks', name: '冲突', role: '不得重建' }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
+    assert.equal(await readFile(path.join(baseDir, 'gmail-checks.json'), 'utf8'), '{broken');
+  });
+
   it('聚合可报告损坏存档并继续列出其他 Bot，单独读取仍严格报错', async () => {
     const { baseDir, store } = await makeStore();
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });

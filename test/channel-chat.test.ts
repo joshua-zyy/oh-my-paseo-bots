@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginRpcContract } from '@getpaseo/plugin';
@@ -120,6 +120,22 @@ test('更换管理员后保留本群记忆与原生来源，移除成员的旧�
     assert.equal(payload(await tools.callTool({ name: 'read_memories', arguments: {} })).memories[0].content, '本群保留的约定');
     const history = payload(await tools.callTool({ name: 'read_bot_history', arguments: { agentId: old.agentId } }));
     assert.equal(history.entries[0].item.text, '本群之前的讨论原文');
+  } finally { await host.close(); }
+});
+
+test('生产Gmail/团队辅助文件不会阻塞普通群消息或点名路由，辅助文件不改写', async () => {
+  const host = await fixture();
+  try {
+    await host.invoke('bots.create', { id: 'helper', name: '资料同事', role: '核对资料' });
+    const auxiliary = { 'gmail-checks.json': JSON.stringify({ version: 1, checks: [] }), 'team-memories.json': JSON.stringify({ version: 1, memories: [] }) };
+    for (const [name, raw] of Object.entries(auxiliary)) await writeFile(join(host.directory, name), raw);
+    const id = randomUUID();
+    await host.invoke('bots.channels.create', { id, name: '合成频道', memberIds: ['chief', 'helper'], adminBotId: 'chief', cwd: host.directory, instructions: '合成普通问答' });
+    const normal = await host.invoke('bots.channels.route', { channelId: id, text: '普通合成问题' }) as { targets: { botId: string }[] };
+    assert.deepEqual(normal.targets.map(target => target.botId), ['chief']);
+    const mentioned = await host.invoke('bots.channels.route', { channelId: id, text: '@资料同事 请核对' }) as typeof normal;
+    assert.deepEqual(mentioned.targets.map(target => target.botId), ['helper']);
+    for (const [name, raw] of Object.entries(auxiliary)) assert.equal(await readFile(join(host.directory, name), 'utf8'), raw);
   } finally { await host.close(); }
 });
 
