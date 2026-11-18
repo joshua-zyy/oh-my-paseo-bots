@@ -14,7 +14,7 @@ import { BotStore } from '../server/store.js';
 import { TaskTracker } from '../server/tasks.js';
 import { MailOutbox, type GmailClient } from '../server/mail.js';
 
-test('同事页持续聊天复用原生会话，自身子事项完成和定向取消均不关闭聊天', async () => {
+test('同事页持续聊天复用原生会话，可接多个子事项且定向取消不影响其他事项', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-conversation-'));
   const previous = process.env.PASEO_GUYS_DATA_DIR;
   process.env.PASEO_GUYS_DATA_DIR = directory;
@@ -221,6 +221,28 @@ test('同事页持续聊天复用原生会话，自身子事项完成和定向�
     await invoke('bots.mail.notify', { botId: 'chief', actionId: mainMail.id });
     assert.equal(messages.at(-1)!.agentId, conversation.agentId);
     assert.match(messages.at(-1)!.text, /"status":"revoked"/);
+
+    const a = payload(await client.callTool({ name: 'start_task', arguments: { requestId: 'parallel-a', title: '数字核对 A', prompt: '核对合成数字，交付 a.md' } }));
+    const b = payload(await client.callTool({ name: 'start_task', arguments: { requestId: 'parallel-b', title: '资料整理 B', prompt: '整理独立合成资料，交付 b.md' } }));
+    assert.notEqual(a.agentId, b.agentId);
+    for (const child of [a, b]) assert.equal(created.find(agent => agent.agentId === child.agentId)?.parent, conversation.agentId);
+    const running = async () => await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string }[];
+    assert.deepEqual((await running()).filter(item => [a.agentId, b.agentId].includes(item.agentId)).map(item => item.status), ['active', 'active']);
+    const previousArchives = [...archived];
+    const notifications = messages.length;
+    await invoke('bots.task.cancel', { botId: 'chief', agentId: a.agentId });
+    assert.deepEqual([...archived].filter(id => !previousArchives.includes(id)), [a.agentId]);
+    assert.equal((await running()).find(item => item.agentId === b.agentId)?.status, 'active');
+    const independentWorker = await connect(b.agentId);
+    payload(await independentWorker.callTool({ name: 'complete_task', arguments: { summary: '独立资料已整理 B', evidence: ['b.md'] } }));
+    const returned = messages.slice(notifications);
+    assert.equal(returned.length, 2);
+    assert.ok(returned.every(entry => entry.agentId === conversation.agentId));
+    assert.equal(returned[0].options?.sourceAgentId, a.agentId);
+    assert.equal(returned[1].options?.sourceAgentId, b.agentId);
+    assert.match(returned[1].text, /独立资料已整理 B/);
+    assert.equal(archived.has(conversation.agentId), false, '原对话仍可接收自己事项的回报');
+    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), fresh, '原对话回报不改写当前选中的新对话');
   } finally {
     for (const client of clients) await client.close();
     await cleanup();
