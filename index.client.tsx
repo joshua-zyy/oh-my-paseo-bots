@@ -130,6 +130,7 @@ function Bots({ theme, layout, host, params }: PluginScreenProps) {
             if (target.panel === 'agent') { openAgent(target.agentId, entry.botId); return; }
             void refresh().then(() => { choose(entry.botId); setPanel(target.panel); }).catch(failure => setError(String(failure)));
           }} />
+          <Button label="同事配置" icon="Settings" iconOnly size="xs" disabled={!current || busy} onPress={() => setPanel('settings')} />
           <Button label="新对话" icon="SquarePen" iconOnly size="xs" disabled={!current || busy} onPress={() => void newConversation()} />
           <Button label="同事菜单" icon="Ellipsis" iconOnly size="xs" disabled={!current || busy} onPress={() => setPanel('menu')} />
         </View>

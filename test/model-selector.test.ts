@@ -54,6 +54,21 @@ test('思考选择仅提供真实等级和模型默认，桌面锚定、窄屏�
   assert.equal(compact.thinking({ ...props, options: [] }).length, 0, '不为未支持思考的模型添加假控件');
 });
 
+test('同名模型在触发器和跨Provider搜索中有明确文字标识，仍选择原始ID', async () => {
+  const f = await selector();
+  f.props.catalog.models[1] = { value: 'codex/alpha', label: 'Alpha', providerLabel: 'Codex' };
+  const trigger = f.view().find(node => node.props.accessibilityLabel === '模型：pi/vendor/alpha')!;
+  assert.ok(JSON.stringify(trigger.children).includes('Pi · Alpha'), '触发器不只用图标区分Provider');
+  trigger.props.onPress();
+  f.state[0] = { x: 100, y: 650, width: 100, height: 28 };
+  f.view().find(node => node.props.label === '全部 Provider')!.props.onPress();
+  f.view().find(node => node.type === 'TextInput')!.props.onChangeText('alpha');
+  const rows = f.view().filter(node => node.type === 'Pressable' && node.props.accessibilityLabel?.startsWith('Alpha，'));
+  assert.deepEqual(rows.map(row => row.props.accessibilityLabel), ['Alpha，Pi · pi/vendor/alpha', 'Alpha，Codex · codex/alpha']);
+  rows[1].props.onPress();
+  assert.deepEqual(f.selected, ['codex/alpha']);
+});
+
 test('模型弹层锚定输入触发器，受视口限制，优先向上展开', async () => {
   const { frame } = await selector();
   const above = frame({ x: 200, y: 650, width: 120, height: 28 }, { width: 1000, height: 800 }, 30);

@@ -11,6 +11,23 @@ import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
 import { mcpNameSchema, mcpServerSchema } from '../shared/capabilities.js';
 
+test('Bot栏直接配置图标打开既有设置，不创建或切换对话', async () => {
+  const source = ts.createSourceFile('index.client.tsx', await readFile(new URL('../../index.client.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let button: ts.JsxSelfClosingElement | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button' && node.attributes.properties.some(p => ts.isJsxAttribute(p) && p.name.getText(source) === 'label' && p.initializer?.getText(source) === '"同事配置"')) button = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source); assert.ok(button);
+  const props = button.attributes.properties.filter(ts.isJsxAttribute);
+  assert.equal(props.find(p => p.name.getText(source) === 'icon')?.initializer?.getText(source), '"Settings"');
+  assert(props.some(p => p.name.getText(source) === 'iconOnly'));
+  const callback = props.find(p => p.name.getText(source) === 'onPress')!.initializer as ts.JsxExpression;
+  const panels: string[] = [];
+  new Function('setPanel', `return (${callback.expression!.getText(source)});`)((panel: string) => panels.push(panel))();
+  assert.deepEqual(panels, ['settings']);
+});
+
 test('配置选择读取宿主目录和技能，只导入明确选择的 MCP，不向目录传递凭据', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-configuration-'));
   const previous = process.env.OH_MY_PASEO_BOTS_DATA_DIR;

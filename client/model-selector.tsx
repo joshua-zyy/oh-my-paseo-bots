@@ -73,8 +73,10 @@ export function ModelSelector({ catalog, value, disabled, onSelect }: { catalog:
   const query = search.trim().toLowerCase();
   const models = catalog.models.filter(model => (!provider || model.value.startsWith(`${provider}/`)) && `${model.label} ${model.providerLabel} ${model.value}`.toLowerCase().includes(query));
   const browseProviders = !provider && !query;
-  const options = browseProviders ? providers.map(item => ({ value: item.provider, label: item.label ?? item.provider, description: item.description, entry: item })) : models.map(model => ({ ...model, description: model.value.slice(model.value.indexOf('/') + 1), entry: providers.find(item => model.value.startsWith(`${item.provider}/`)) }));
-  const label = current?.label ?? (value ? value.slice(value.indexOf('/') + 1) : '选择模型');
+  const options = browseProviders ? providers.map(item => ({ value: item.provider, label: item.label ?? item.provider, description: item.description, entry: item })) : models.map(model => ({ ...model, description: `${model.providerLabel} · ${model.value}`, entry: providers.find(item => model.value.startsWith(`${item.provider}/`)) }));
+  const modelLabel = current?.label ?? (value ? value.slice(value.indexOf('/') + 1) : '选择模型');
+  const providerLabel = current?.providerLabel ?? selectedProvider;
+  const label = providerLabel ? `${providerLabel} · ${modelLabel}` : modelLabel;
   const desktop = Platform.OS === 'web' && !compact;
   useEffect(() => {
     if (open && desktop) anchor.current?.measureInWindow((x, y, width, height) => setPosition({ x, y, width, height }));
