@@ -10,8 +10,8 @@ import { assertPluginCompatibility } from '@getpaseo/protocol/plugin-requirement
 test('manifest 只接受当前已验证的最新稳定版宿主和客户端', async () => {
   const manifest = JSON.parse(await readFile(new URL('../../paseo-plugin.json', import.meta.url), 'utf8'));
   for (const runtime of ['daemon', 'app'] as const) {
-    assert.doesNotThrow(() => assertPluginCompatibility({ ...manifest, version: '0.16.1', runtime }));
-    for (const version of ['0.14.0', '0.15.0', '0.15.1', '0.15.2', '0.15.3', '0.15.4', '0.16.0', '0.16.2']) {
+    assert.doesNotThrow(() => assertPluginCompatibility({ ...manifest, version: '0.16.2', runtime }));
+    for (const version of ['0.14.0', '0.15.0', '0.15.1', '0.15.2', '0.15.3', '0.15.4', '0.16.0', '0.16.1', '0.16.3']) {
       assert.throws(() => assertPluginCompatibility({ ...manifest, version, runtime }));
     }
   }
