@@ -24,7 +24,9 @@ async function fixture() {
   const paseo = { workspaces: { create: async (input: { source: { path: string }; background: boolean }) => {
     assert.equal(input.background, true);
     return { agents: { create: async (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => { created.push({ ...options, cwd: input.source.path }); return { id: options.agentId, workspaceId: 'channel-workspace' }; } } };
-  } }, agents: { ref: (id: string) => ({
+  }, ref: (id: string) => ({
+    refresh: async () => null, // 本 fixture 每次创建独立的原生工作区，不模拟有效复用。
+  }) }, agents: { ref: (id: string) => ({
     refresh: async () => { const source = created.find(input => input.agentId === id); return source ? { agent: { id, title: source.title, labels: source.labels, cwd: source.cwd, provider: 'claude', model: 'synthetic', status: 'idle', pendingPermissions: [], archivedAt: archived.has(id) ? 'now' : null } } : null; },
     archive: async () => { archived.add(id); },
     send: async (text: string, options: PaseoAgentSendOptions) => {

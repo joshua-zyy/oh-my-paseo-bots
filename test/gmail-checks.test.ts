@@ -142,7 +142,7 @@ test('同例程并发检查拒绝重复执行，存档损坏不覆盖', () => fi
 test('Gmail事件接缝实际复用startBotSession及原生创建意图，重读事件不克隆执行', () => fixture(async x => {
   const store = new BotStore({ baseDir: x.directory }); await store.ensureChief();
   const created: PaseoAgentCreateOptions[] = [];
-  const native = { workspaces: { create: async () => ({ agents: { create: async (input: PaseoAgentCreateOptions) => { created.push(input); return { id: input.agentId, workspaceId: 'synthetic-background' }; } } }) } } as unknown as PaseoApi;
+  const native = { workspaces: { ref: () => ({ refresh: async () => null }), create: async () => ({ agents: { create: async (input: PaseoAgentCreateOptions) => { created.push(input); return { id: input.agentId, workspaceId: 'synthetic-background' }; } } }) } } as unknown as PaseoApi;
   const service = new GmailChecks({ ...x.options,
     lookup: async (owner, key) => { const intent = (await store.getBot(owner))?.creationIntents.find(item => item.requestId === key); return intent?.status === 'created' ? intent.agentId : undefined; },
     dispatch: input => startBotSession(store, native, input, { cwd: x.directory, config: { provider: 'synthetic/model' } }, { mount: async () => ({ type: 'http', url: 'http://127.0.0.1:1/synthetic' }) }),

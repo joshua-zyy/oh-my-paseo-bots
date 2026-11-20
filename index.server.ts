@@ -480,7 +480,7 @@ export default function contribute(server: PluginServerContext) {
     // 在原生创建 hook 内选项目，避免改掉既有 workspace receipt 的输入指纹。
     const managedBot = /^oh-my-paseo-bots:([a-z0-9][a-z0-9-]*)$/.exec(request.title ?? '')?.[1];
     if (request.background && request.source.kind === 'directory' && !request.source.projectId && isAbsolute(request.source.path)
-      && managedBot && request.idempotencyKey === botWorkspaceKey(managedBot, request.source.path) && await store.getBot(managedBot)) {
+      && managedBot && (request.idempotencyKey === botWorkspaceKey(managedBot, request.source.path) || request.idempotencyKey?.startsWith(`${botWorkspaceKey(managedBot, request.source.path)}:`)) && await store.getBot(managedBot)) {
       const projectId = await findRegisteredCheckoutProject(paseo, request.source.path);
       if (projectId) return { ...request, source: { ...request.source, projectId } };
     }

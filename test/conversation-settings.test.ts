@@ -40,7 +40,13 @@ async function fixture({ home = true } = {}) {
       if (loseCreation) { loseCreation = false; throw new Error('原生创建回执丢失'); }
       return { id: options.agentId, workspaceId: `workspace:${input.source.path}` };
     } } };
-  } }, agents: { ref: (agentId: string) => ({
+  }, ref: (id: string) => ({
+    refresh: async () => ({ id, title: `oh-my-paseo-bots:${created.find(item => item.cwd === id.slice('workspace:'.length))?.labels?.['paseo-guys.bot']}`, workspaceDirectory: id.slice('workspace:'.length), background: true }),
+    agents: { create: async (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => {
+      const workspace = await paseo.workspaces.create({ source: { kind: 'directory', path: id.slice('workspace:'.length) }, background: true });
+      return workspace.agents.create(options);
+    } },
+  }) }, agents: { ref: (agentId: string) => ({
     refresh: async () => {
       const input = created.find(item => item.agentId === agentId);
       if (!input) return null;

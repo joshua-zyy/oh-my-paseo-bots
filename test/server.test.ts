@@ -28,7 +28,7 @@ test('同事页持续聊天复用原生会话，可接多个子事项且定向�
   const paseo = { workspaces: { create: async (options: { background: boolean }) => {
     assert.equal(options.background, true);
     return { agents: { create: async (input: PaseoAgentCreateOptions) => { created.push(input); return { id: input.agentId!, workspaceId: 'ws-background' }; } } };
-  } }, agents: { ref: (agentId: string) => ({
+  }, ref: () => ({ refresh: async () => null }) }, agents: { ref: (agentId: string) => ({
     refresh: async () => {
       const input = created.find(item => item.agentId === agentId);
       return input ? { agent: { id: agentId, title: input.title, status: 'idle', pendingPermissions: [], workspaceId: 'ws-background', archivedAt: archived.has(agentId) ? 'now' : null, labels: { ...input.labels, ...(input.parent ? { 'paseo.parent-agent-id': input.parent } : {}) } } } : null;
@@ -264,7 +264,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   let userMessage = '请记住：后续报告使用中文。';
   const archived: string[] = [];
   const created: PaseoAgentCreateOptions[] = [];
-  const paseo = { workspaces: { create: async (options: { source: { path: string } }) => ({ agents: { create: (input: Omit<PaseoAgentCreateOptions, 'cwd'>) => paseo.agents.create({ ...input, cwd: options.source.path }) } }) }, agents: {
+  const paseo = { workspaces: { ref: () => ({ refresh: async () => null }), create: async (options: { source: { path: string } }) => ({ agents: { create: (input: Omit<PaseoAgentCreateOptions, 'cwd'>) => paseo.agents.create({ ...input, cwd: options.source.path }) } }) }, agents: {
     create: async (options: PaseoAgentCreateOptions) => { created.push(options); return { id: options.agentId!, workspaceId: 'ws-configured' }; },
     ref: (id: string) => ({
       archive: async () => { archived.push(id); return { archivedAt: new Date().toISOString() }; },
@@ -308,6 +308,8 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     const beforeWorkspace = hooks.get('workspace.create.before')!;
     const request = managedWorkspace(work);
     assert.deepEqual(await beforeWorkspace({ request }, { paseo: withCatalog }), { ...request, source: { ...request.source, projectId: 'repo' } }, '同一已登记 checkout 下的 Bot 目录继承项目，工作目录和请求键不变');
+    const restoredRequest = { ...request, idempotencyKey: `${request.idempotencyKey}:archived-workspace` };
+    assert.deepEqual(await beforeWorkspace({ request: restoredRequest }, { paseo: withCatalog }), { ...restoredRequest, source: { ...request.source, projectId: 'repo' } }, '替代已归档工作区的创建仍复用 checkout 项目，保留新请求键');
     assert.equal(await beforeWorkspace({ request: { ...request, idempotencyKey: 'ordinary' } }, { paseo: withCatalog }), undefined, '普通后台工作区不被插件改写');
     assert.equal(await beforeWorkspace({ request: managedWorkspace(nested) }, { paseo: withCatalog }), undefined, '嵌套独立 checkout 不误挂外层仓库');
     const explicitProject = { ...request, source: { ...request.source, projectId: 'explicit' } };
@@ -505,7 +507,7 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
     const cwd = options.source.path;
     opened.push(cwd);
     return { agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => createNative({ ...options, cwd }, cwd) } };
-  } }, agents: {
+  }, ref: () => ({ refresh: async () => null }) }, agents: {
     create: createNative,
     ref: (id: string) => ({
       send: async (text: string, options?: PaseoAgentSendOptions) => {

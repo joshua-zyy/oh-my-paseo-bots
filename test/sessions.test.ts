@@ -140,10 +140,15 @@ function fakePaseo(existing: string[] = []) {
   const workspaces: PaseoWorkspaceCreateOptions[] = [];
   const create = async (options: PaseoAgentCreateOptions) => {
     created.push(options);
-    return { id: options.agentId ?? `agent-native-${created.length}`, workspaceId: 'ws-1' };
+    return { id: options.agentId ?? `agent-native-${created.length}`, workspaceId: `ws-${workspaces.findIndex(workspace => workspace.source.kind === 'directory' && workspace.source.path === options.cwd) + 1 || 1}` };
   };
   const api = {
     workspaces: {
+      ref: (id: string) => {
+        const source = workspaces[Number(id.slice(3)) - 1]?.source;
+        const cwd = source?.kind === 'directory' ? source.path : '';
+        return { refresh: async () => ({ id, title: workspaces[Number(id.slice(3)) - 1]?.title, workspaceDirectory: cwd, background: true }), agents: { create: (input: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...input, cwd }) } };
+      },
       open: async (cwd: string) => ({ agents: { create: (options: Omit<PaseoAgentCreateOptions, 'cwd'>) => create({ ...options, cwd }) } }),
       create: async (options: PaseoWorkspaceCreateOptions) => {
         workspaces.push(options);
@@ -171,15 +176,113 @@ test('Bot 会话和固定委派使用后台工作区，保留目录并按 Bot �
     const first = await startBotSession(store, api, { botId: 'chief', requestId: 'first', title: '对话', prompt: '整理' }, placement(directory), tools);
     await startBotSession(store, api, { botId: 'chief', requestId: 'second', title: '其他工作', prompt: '检查' }, placement(directory), tools);
     await startBotSession(store, api, { botId: 'reader', requestId: 'child', parentAgentId: first.agentId, title: '资料核对', prompt: '核对来源' }, placement(directory), tools);
-    assert.equal(workspaces.length, 3);
+    assert.equal(workspaces.length, 2, '同 Bot 同目录直接复用有效关联，不再重复调用创建');
     assert.ok(workspaces.every(workspace => workspace.background === true));
     assert.ok(workspaces[0].idempotencyKey);
-    assert.equal(workspaces[0].idempotencyKey, workspaces[1].idempotencyKey, '同 Bot 同目录交由原生幂等复用');
-    assert.notEqual(workspaces[0].idempotencyKey, workspaces[2].idempotencyKey, '固定同事使用自己的工作区');
+    assert.notEqual(workspaces[0].idempotencyKey, workspaces[1].idempotencyKey, '固定同事使用自己的工作区');
     assert.equal(created[0].cwd, directory);
     assert.equal(created[2].cwd, join(directory, 'reader'));
     assert.equal(created[2].parent, first.agentId, '隔离位置不改变原生父子关系');
     assert.equal(created[2].background, undefined, '后台标记属于工作区创建，不传给已有工作区内的 Agent');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('普通会话不复用例程临时、其他 Bot、可见或正在归档的工作区', async () => {
+  for (const snapshot of [
+    { title: 'native-routine-run', background: true },
+    { title: 'oh-my-paseo-bots:other', background: true },
+    { title: 'oh-my-paseo-bots:reader', background: false },
+    { title: 'oh-my-paseo-bots:reader', background: true, archivingAt: 'now' },
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-workspace-owner-'));
+    try {
+      const store = new BotStore({ baseDir: directory });
+      await store.createBot({ id: 'reader', name: '合成同事', role: '核对' });
+      const { api, created, workspaces } = fakePaseo();
+      await startBotSession(store, api, { botId: 'reader', requestId: 'first', title: '原聊天' }, placement(directory), tools);
+      const ownWorkspaceId = (await store.listSessions('reader'))[0].workspaceId;
+      await store.linkSession('reader', { sessionId: 'outside-session', workspaceId: 'temporary' });
+      const ref = api.workspaces.ref.bind(api.workspaces);
+      api.workspaces.ref = id => id !== 'temporary' ? ref(id) : {
+        refresh: async () => ({ id, workspaceDirectory: directory, ...snapshot }),
+        agents: { create: async () => assert.fail(`误复用 ${snapshot.title}`) },
+      } as unknown as ReturnType<typeof ref>;
+      await startBotSession(store, api, { botId: 'reader', requestId: 'next', title: '后续事项' }, placement(directory), tools);
+      assert.equal(workspaces.length, 1, '继续复用本 Bot 原有专属工作区');
+      assert.equal(created.length, 2);
+      assert.equal((await store.listSessions('reader')).at(-1)?.workspaceId, ownWorkspaceId);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('归档工作区后恢复 Bot，创建新聊天不复用失效的原生创建回执', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-restored-workspace-'));
+  const workspaces = new Map<string, { id: string; title: string; workspaceDirectory: string; background: boolean }>();
+  const receipts = new Map<string, string>();
+  const agentReceipts = new Map<string, string>();
+  const created: PaseoAgentCreateOptions[] = [];
+  let count = 0;
+  const handle = (id: string) => ({
+    id,
+    refresh: async () => workspaces.get(id) ?? null,
+    agents: { create: async (input: PaseoAgentCreateOptions) => {
+      const prior = agentReceipts.get(input.idempotencyKey!);
+      if (prior && prior !== id) throw new Error('agent_request_key_conflict');
+      agentReceipts.set(input.idempotencyKey!, id);
+      const workspace = workspaces.get(id);
+      if (!workspace) throw new Error(`Workspace ${id} not found`);
+      created.push(input);
+      return { id: input.agentId!, workspaceId: id };
+    } },
+  });
+  const api = { agents: { ref: () => ({ refresh: async () => null }) }, workspaces: {
+    ref: handle,
+    create: async (options: PaseoWorkspaceCreateOptions) => {
+      let id = receipts.get(options.idempotencyKey!);
+      if (!id) {
+        id = `workspace-${++count}`;
+        receipts.set(options.idempotencyKey!, id);
+        assert.equal(options.source.kind, 'directory');
+        workspaces.set(id, { id, title: options.title ?? '', workspaceDirectory: directory, background: options.background === true });
+      }
+      return handle(id);
+    },
+  } } as unknown as PaseoApi;
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'reader', name: '合成同事', role: '合成验收' });
+    const first = await startBotSession(store, api, { botId: 'reader', requestId: 'first', title: '原聊天', kind: 'conversation' }, placement(directory), tools);
+    await store.acknowledgeCreation('reader', first.requestId);
+    const oldWorkspaceId = (await store.listSessions('reader'))[0].workspaceId!;
+    workspaces.delete(oldWorkspaceId); // 归档删除工作区，但宿主保留旧幂等回执。
+    await store.setArchived('reader', true);
+    await store.setArchived('reader', false);
+    agentReceipts.set('paseo-guys:reader:restored', oldWorkspaceId); // 旧版打开失败后留下的原生 Agent 回执。
+    const restored = await startBotSession(store, api, { botId: 'reader', requestId: 'restored', title: '恢复后的聊天', kind: 'conversation' }, placement(directory), tools);
+    const links = await store.listSessions('reader');
+    assert.notEqual(links[1].workspaceId, oldWorkspaceId);
+    assert.equal(workspaces.get(links[1].workspaceId!)?.background, true);
+    await startBotSession(store, api, { botId: 'reader', requestId: 'next', title: '新事项' }, placement(directory), tools);
+    assert.equal(count, 2, '恢复后的后续事项复用新的有效工作区');
+    assert.deepEqual(await startBotSession(store, api, { botId: 'reader', requestId: 'restored', title: '恢复后的聊天', kind: 'conversation' }, placement(directory), tools), restored);
+    assert.equal(created.length, 3, '同一请求回执不重复创建 Agent');
+    assert.equal((await store.listSessions('reader'))[2].workspaceId, links[1].workspaceId);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('关联工作区回查失败时保留未知，不新建工作区或 Agent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-workspace-unknown-'));
+  try {
+    const store = new BotStore({ baseDir: directory });
+    await store.createBot({ id: 'reader', name: '合成同事', role: '核对' });
+    const { api, created, workspaces } = fakePaseo();
+    await startBotSession(store, api, { botId: 'reader', requestId: 'first', title: '原聊天' }, placement(directory), tools);
+    const ref = api.workspaces.ref.bind(api.workspaces);
+    api.workspaces.ref = workspace => ({ ...ref(workspace), refresh: async () => { throw new Error('原生工作区回查断线'); } });
+    await assert.rejects(startBotSession(store, api, { botId: 'reader', requestId: 'unknown', title: '后续事项' }, placement(directory), tools), /原生工作区回查断线/);
+    assert.equal(workspaces.length, 1, '未知不能换键重建');
+    assert.equal(created.length, 1);
+    assert.equal((await store.listPendingCreations('reader')).find(intent => intent.requestId === 'unknown')?.status, 'pending');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

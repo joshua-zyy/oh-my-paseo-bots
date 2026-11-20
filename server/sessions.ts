@@ -83,12 +83,9 @@ export async function startBotSession(
       labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.channelId ? { 'paseo-guys.channel': input.channelId } : {}), ...(input.kind ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
-    const workspace = await paseo.workspaces.create({
-      source: { kind: 'directory', path: cwd },
-      title: `oh-my-paseo-bots:${input.botId}`,
-      background: true,
-      idempotencyKey: botWorkspaceKey(input.botId, cwd),
-    });
+    const { workspace, replacementId } = await botWorkspace(store, paseo, input.botId, cwd);
+    // 原生失败回执也绑定原工作区；已确认失效时给替代位置稳定的新键。
+    if (replacementId) options.idempotencyKey += `:workspace:${replacementId}`;
     agent = await workspace.agents.create(options);
   }
 
@@ -99,6 +96,26 @@ export async function startBotSession(
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
   });
   return { agentId: agent.id, requestId: proposal.intent.requestId };
+}
+
+/** 复用实际有效的关联；归档后的旧创建回执不代表工作区仍存在。 */
+async function botWorkspace(store: BotStore, paseo: PaseoApi, botId: string, cwd: string) {
+  const links = await store.listSessions(botId);
+  const ids = [...new Set([...links].reverse().map(link => link.workspaceId).filter((id): id is string => !!id))];
+  for (const id of ids) {
+    const workspace = paseo.workspaces.ref(id);
+    const snapshot = await workspace.refresh(); // 请求失败是未知，不能按不存在重建。
+    // 例程临时位置也在会话关联中，但会被宿主收尾；只复用本 Bot 的专属位置。
+    if (snapshot?.title === `oh-my-paseo-bots:${botId}` && snapshot.background && !snapshot.archivingAt && snapshot.workspaceDirectory && !relative(cwd, snapshot.workspaceDirectory)) return { workspace };
+  }
+  const workspace = await paseo.workspaces.create({
+    source: { kind: 'directory', path: cwd },
+    title: `oh-my-paseo-bots:${botId}`,
+    background: true,
+    // 同一失效关联后的并发创建仍用同一键；新关联落盘后直接复用它。
+    idempotencyKey: `${botWorkspaceKey(botId, cwd)}${ids[0] ? `:${ids[0]}` : ''}`,
+  });
+  return { workspace, replacementId: ids[0] };
 }
 
 export function botWorkspaceKey(botId: string, cwd: string): string {
