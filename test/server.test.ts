@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,8 +11,6 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
-import { TaskTracker } from '../server/tasks.js';
-import { MailOutbox, type GmailClient } from '../server/mail.js';
 
 test('同事页持续聊天复用原生会话，可接多个子事项且定向取消不影响其他事项', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-conversation-'));
@@ -73,9 +71,9 @@ test('同事页持续聊天复用原生会话，可接多个子事项且定向�
     const memory = await invoke('bots.memory.save', { botId: 'chief', kind: 'confirmed', content: '报告使用中文' }) as { id: string };
     await invoke('bots.memory.save', { botId: 'chief', kind: 'candidate', content: '尚未确认的偏好' });
     const conversation = await invoke('bots.conversation.open', { botId: 'chief' }) as { agentId: string };
-    const other = await invoke('bots.conversation.open', { botId: 'helper' }) as { agentId: string };
+    const other = await invoke('bots.start', { botId: 'helper', title: '独立核对', prompt: '仅核对合成数据' }) as { agentId: string };
     assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), conversation);
-    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'helper' }), other);
+    await assert.rejects(() => invoke('bots.conversation.open', { botId: 'helper' }), /专长预设/);
     assert.equal(created.length, 2, '每位 Bot 复用自己持续的原生聊天');
     assert.equal(created[0].prompt, undefined, '打开聊天不发起模型轮次');
     assert.equal(created[0].labels?.['paseo-guys.conversation'], 'true');
@@ -86,14 +84,6 @@ test('同事页持续聊天复用原生会话，可接多个子事项且定向�
     assert.deepEqual(attention.entries, []); assert.deepEqual(attention.issues, []); assert.deepEqual(attention.botIds, ['chief', 'helper']);
     assert.equal(created.length, 2); assert.equal(archived.size, 0); assert.equal(messages.length, 0, '读取待办不派发/确认/归档/发送');
     const client = await connect(conversation.agentId);
-    const checkTools = await client.listTools();
-    const checkTool = checkTools.tools.find(tool => tool.name === 'check_gmail_events');
-    assert(checkTool); assert.deepEqual(checkTool.inputSchema.properties ?? {}, {});
-    assert(!checkTools.tools.some(tool => tool.name === 'enable_gmail_check'));
-    assert.equal((await client.callTool({ name: 'check_gmail_events', arguments: {} })).isError, true, '普通聊天不是已启用的原生例程，不检查或派发邮件');
-    assert.equal(await invoke('bots.gmail_check', { botId: 'chief', routineId: randomUUID() }), null);
-    await assert.rejects(() => invoke('bots.gmail_check.enable', { botId: 'chief', routineId: randomUUID(), prompt: '核对合成邮件' }), /原生例程/);
-    assert.equal(created.length, 2, '配置/检查失败不得创建Agent');
     const context = () => invoke('bots.conversation.context', { botId: 'chief', agentId: conversation.agentId }) as Promise<{ type: string; mimeType: string; title: string; text: string }>;
     assert.doesNotMatch(created[0].config.systemPrompt!, /报告使用中文|会话创建时的确认记忆快照/);
     assert.match((await context()).text, /报告使用中文/);
@@ -157,95 +147,9 @@ test('同事页持续聊天复用原生会话，可接多个子事项且定向�
     assert.equal(archived.has(conversation.agentId), false, '开新对话不关闭原对话或停止其工作');
     assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string }[]).some(item => item.agentId === fresh.agentId), false);
     const delegated = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { colleagueId: 'helper', requestId: 'chat-preview', title: '同事核对', prompt: '仅核对合成数据' } }));
-    let mailRaw = '';
-    let mailSends = 0;
-    let mailTimeout = false;
-    const outbox = new MailOutbox({ baseDir: directory, store: new BotStore({ baseDir: directory }), getClient: async () => ({
-      config: { command: 'synthetic', configDir: directory, account: 'sender@example.test', query: 'label:synthetic' },
-      buildMail: value => Buffer.from(JSON.stringify(value)).toString('base64url'),
-      matchesDraft: async () => true,
-      createDraft: async raw => { mailRaw = raw; return { id: 'synthetic-draft' }; },
-      getDraft: async id => ({ id, message: { raw: mailRaw } }),
-      sendDraft: async () => { mailSends++; if (mailTimeout) throw new Error('合成发送超时'); return { id: 'synthetic-sent', labelIds: ['SENT'] }; },
-      findDrafts: async () => [], findSent: async () => [], getMessage: async id => ({ id }),
-    } as GmailClient) });
-    const proposal = { to: ['receiver@example.test'], subject: '合成确认', text: '仅用于离线显示测试' };
-    const mainMail = await outbox.propose('chief', conversation.agentId, { ...proposal, requestId: 'main-mail' });
-    const colleagueMail = await outbox.propose('helper', delegated.agentId, { ...proposal, requestId: 'colleague-mail' });
-    await outbox.propose('helper', other.agentId, { ...proposal, requestId: 'other-mail' });
-    const preview = await invoke('bots.conversation.work', { botId: 'chief', agentId: conversation.agentId }) as { entries: { agentId: string; botId: string; status: string; summary?: string }[]; mail: { id: string; botId: string }[] };
-    assert.equal(preview.entries.find(item => item.agentId === child.agentId)?.summary, '数字已核对');
-    assert.equal(preview.entries.find(item => item.agentId === next.agentId)?.status, 'canceled');
-    assert.equal(preview.entries.find(item => item.agentId === delegated.agentId)?.botId, 'helper', '主 Bot 聊天展示实际受托同事的工作');
-    assert.equal(preview.entries.some(item => item.agentId === other.agentId), false, '不混入同事无关的持续聊天');
-    assert.deepEqual(preview.mail.map(({ id, botId }) => ({ id, botId })), [{ id: mainMail.id, botId: 'chief' }, { id: colleagueMail.id, botId: 'helper' }], '只展示本聊天及受托同事的邮件，保留实际批准归属');
-    assert.deepEqual(await invoke('bots.conversation.work', { botId: 'chief', agentId: fresh.agentId }), { entries: [], mail: [] });
-    await assert.rejects(() => invoke('bots.conversation.work', { botId: 'helper', agentId: conversation.agentId }), /持续聊天/);
-    await outbox.approve('helper', colleagueMail.id);
-    assert.equal((await outbox.send('helper', delegated.agentId, colleagueMail.id)).status, 'sent');
-    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'notified' });
-    const receipt = messages.at(-1)!;
-    assert.equal(receipt.agentId, delegated.agentId, '主聊天确认受托同事的邮件后，通知实际登记执行者');
-    assert.match(receipt.text, /synthetic-sent/);
-    assert.match(receipt.text, /"status":"sent"/);
-    assert.deepEqual(receipt.options, { sourceAgentId: delegated.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:mail:${colleagueMail.id}:${createHash('sha256').update(receipt.text).digest('hex')}` });
-    await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id });
-    assert.equal(messages.at(-1)!.options?.messageId, receipt.options?.messageId, '相同实际回执重复通知沿用原生幂等消息标识');
-    messageFailure = true;
-    await assert.rejects(() => invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), /原生通知未确认/);
-    messageFailure = false;
-    assert.equal((await outbox.list('helper')).find(action => action.id === colleagueMail.id)?.status, 'sent');
-    assert.equal(mailSends, 1, '通知失败不再次执行邮件发送');
-    const uncertain = await outbox.propose('helper', delegated.agentId, { ...proposal, requestId: 'uncertain-mail' });
-    await outbox.approve('helper', uncertain.id);
-    mailTimeout = true;
-    const unknown = await outbox.send('helper', delegated.agentId, uncertain.id);
-    mailTimeout = false;
-    assert.equal(unknown.status, 'send_unknown');
-    await invoke('bots.mail.notify', { botId: 'helper', actionId: uncertain.id });
-    const unknownNotice = messages.at(-1)!;
-    const rechecked = await outbox.reconcile('helper', delegated.agentId, uncertain.id);
-    assert.equal(rechecked.status, unknown.status);
-    assert.notEqual(rechecked.detail, unknown.detail);
-    await invoke('bots.mail.notify', { botId: 'helper', actionId: uncertain.id });
-    assert.notEqual(messages.at(-1)!.options?.messageId, unknownNotice.options?.messageId, '同状态但回查说明变化时使用新原生消息键，避免请求指纹冲突');
-    assert.equal(mailSends, 2, '回查和通知不重新发送未知邮件');
-    await assert.rejects(() => invoke('bots.mail.notify', { botId: 'chief', actionId: colleagueMail.id }), /未找到邮件登记/);
-    archived.add(delegated.agentId);
-    let before = messages.length;
-    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'inactive' });
-    assert.equal(messages.length, before, '原生已归档时不派发通知');
-    archived.delete(delegated.agentId);
-    await invoke('bots.task.cancel', { botId: 'helper', agentId: delegated.agentId });
-    before = messages.length;
-    assert.deepEqual(await invoke('bots.mail.notify', { botId: 'helper', actionId: colleagueMail.id }), { agentId: delegated.agentId, status: 'inactive' });
-    assert.equal(messages.length, before, '事项取消后不唤醒 Bot');
-    await invoke('bots.mail.revoke', { botId: 'chief', actionId: mainMail.id });
-    await invoke('bots.mail.notify', { botId: 'chief', actionId: mainMail.id });
-    assert.equal(messages.at(-1)!.agentId, conversation.agentId);
-    assert.match(messages.at(-1)!.text, /"status":"revoked"/);
-
-    const a = payload(await client.callTool({ name: 'start_task', arguments: { requestId: 'parallel-a', title: '数字核对 A', prompt: '核对合成数字，交付 a.md' } }));
-    const b = payload(await client.callTool({ name: 'start_task', arguments: { requestId: 'parallel-b', title: '资料整理 B', prompt: '整理独立合成资料，交付 b.md' } }));
-    assert.notEqual(a.agentId, b.agentId);
-    for (const child of [a, b]) assert.equal(created.find(agent => agent.agentId === child.agentId)?.parent, conversation.agentId);
-    const running = async () => await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string }[];
-    assert.deepEqual((await running()).filter(item => [a.agentId, b.agentId].includes(item.agentId)).map(item => item.status), ['active', 'active']);
-    const previousArchives = [...archived];
-    const notifications = messages.length;
-    await invoke('bots.task.cancel', { botId: 'chief', agentId: a.agentId });
-    assert.deepEqual([...archived].filter(id => !previousArchives.includes(id)), [a.agentId]);
-    assert.equal((await running()).find(item => item.agentId === b.agentId)?.status, 'active');
-    const independentWorker = await connect(b.agentId);
-    payload(await independentWorker.callTool({ name: 'complete_task', arguments: { summary: '独立资料已整理 B', evidence: ['b.md'] } }));
-    const returned = messages.slice(notifications);
-    assert.equal(returned.length, 2);
-    assert.ok(returned.every(entry => entry.agentId === conversation.agentId));
-    assert.equal(returned[0].options?.sourceAgentId, a.agentId);
-    assert.equal(returned[1].options?.sourceAgentId, b.agentId);
-    assert.match(returned[1].text, /独立资料已整理 B/);
-    assert.equal(archived.has(conversation.agentId), false, '原对话仍可接收自己事项的回报');
-    assert.deepEqual(await invoke('bots.conversation.open', { botId: 'chief' }), fresh, '原对话回报不改写当前选中的新对话');
+    const preview = await invoke('bots.conversation.work', { botId: 'chief', agentId: conversation.agentId });
+    assert.equal('mail' in (preview as object), false);
+    assert.ok((preview as { entries: { agentId: string }[] }).entries.some(item => item.agentId === delegated.agentId));
   } finally {
     for (const client of clients) await client.close();
     await cleanup();
@@ -284,14 +188,14 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   const cleanup = contribute(server);
   try {
     assert.deepEqual(await invoke('bots.tools.status', {}), { state: 'idle' });
-    assert.ok(handlers.has('bots.routine.create'), '固定入口可登记独立原生例程');
+    assert.ok(!handlers.has('bots.routine.create'), '固定入口可登记独立原生例程');
     const seeded = await invoke('bots.list', {}) as { bots: { id: string; name: string }[] };
     assert.deepEqual(seeded.bots.map(bot => bot.id), ['chief'], '首次打开即有固定 Chief，不用手工注册');
     assert.equal(created.length, 0, '创建入口元数据不会自动调用模型');
     const normalWorkspace = { source: { kind: 'directory', path: directory } };
     assert.equal(await hooks.get('workspace.create.before')!({ request: normalWorkspace }, { paseo }), undefined, '正常 Paseo 工作区不变');
     const botWorkspace = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'chief' } } };
-    assert.deepEqual(await hooks.get('workspace.create.before')!({ request: botWorkspace }, { paseo }), { ...botWorkspace, background: true });
+    assert.equal(await hooks.get('workspace.create.before')!({ request: botWorkspace }, { paseo }), undefined, '仅旧 Bot 标签不改变原生工作区');
     const unknownBot = { ...normalWorkspace, agent: { labels: { 'paseo-guys.bot': 'missing' } } };
     assert.equal(await hooks.get('workspace.create.before')!({ request: unknownBot }, { paseo }), undefined, '未登记标签不能改变正常工作区');
     const repo = join(directory, 'checkout');
@@ -303,7 +207,7 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     const withCatalog = { ...paseo, projects: { list: async () => ({ projects }) } };
     function managedWorkspace(cwd: string) {
       const hash = createHash('sha256').update(JSON.stringify({ bot: 'chief', cwd })).digest('hex');
-      return { source: { kind: 'directory', path: cwd }, title: 'oh-my-paseo-bots:chief', background: true, idempotencyKey: `oh-my-paseo-bots:workspace:${hash}` };
+      return { source: { kind: 'directory', path: cwd }, title: 'oh-my-paseo-bots:v2:chief', background: true, idempotencyKey: `oh-my-paseo-bots:v2:workspace:${hash}` };
     }
     const beforeWorkspace = hooks.get('workspace.create.before')!;
     const request = managedWorkspace(work);
@@ -347,17 +251,9 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
     const context = { paseo: { agents: { ref: () => ({ refresh: async () => ({ agent: { labels: { 'paseo-guys.bot': 'chief' } } }) }) } } };
     await hooks.get('agent.turn.before')!({ agent, turnId: null }, context);
     await hooks.get('agent.turn.after')!({ agent, turnId: null, outcome: { kind: 'completed' }, timeline: [] }, context);
-    const snapshot = await invoke('bots.journal', { botId: 'chief' }) as { entries: { kind: string; outcome?: string; turnId: string | null }[]; corruptCount: number; total: number };
-    const journal = snapshot.entries;
-    assert.equal(snapshot.corruptCount, 0);
-    assert.equal(snapshot.total, 2);
-    assert.deepEqual(journal.map(item => [item.kind, item.outcome, item.turnId]), [['turn_started', undefined, null], ['turn_ended', 'completed', null]]);
-    assert.equal(JSON.stringify(journal).includes('task_completed'), false);
-    assert.equal((await invoke('bots.tasks', { botId: 'chief' }) as { status: string }[])[0].status, 'active', '原生 completed 仅表示轮次结束');
-    const older = await invoke('bots.journal', { botId: 'chief', limit: 1, offset: 1 }) as { entries: { kind: string }[]; offset: number; nextOffset: number | null };
-    assert.deepEqual(older.entries.map(item => item.kind), ['turn_started']);
-    assert.deepEqual([older.offset, older.nextOffset], [1, null]);
-    assert.deepEqual(await invoke('bots.sessions', { botId: 'chief' }), [{ sessionId: 'native-agent', title: '交办事项', workspaceId: 'ws-1' }]);
+    assert.equal(handlers.has('bots.journal'), false);
+    assert.deepEqual(await invoke('bots.tasks', { botId: 'chief' }), [], '未登记旧会话不因标签而补登记');
+    assert.deepEqual(await invoke('bots.sessions', { botId: 'chief' }), []);
     configured = true;
     const input = { botId: 'chief', title: '记忆任务', prompt: '请记住：后续报告使用中文。' };
     const started = await invoke('bots.start', input) as { agentId: string; requestId: string };
@@ -375,16 +271,13 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       const catalog = await client.listTools();
       assert.ok(catalog.tools.some(tool => tool.name === 'get_bot_context'), '每次独立例程可读取当前固定身份、记忆和工作约束');
       for (const name of ['correct_memory', 'forget_memory', 'read_bot_history']) assert.ok(catalog.tools.some(tool => tool.name === name), `${name} 通过当前 Bot 工具可达`);
-      assert.ok(catalog.tools.some(tool => tool.name === 'propose_mail'));
+      assert.equal(catalog.tools.some(tool => tool.name === 'propose_mail'), false);
       assert.equal(catalog.tools.some(tool => /approve|allow_fixed/.test(tool.name)), false);
       const colleague = await client.callTool({ name: 'create_colleague', arguments: { id: 'helper', name: '核对同事', role: '复核资料', instructions: '结论附来源' } });
       assert.equal(colleague.isError, undefined);
       assert.equal(JSON.parse((colleague.content as { text: string }[])[0].text).started, false);
       assert.equal((await client.callTool({ name: 'update_colleague', arguments: { colleagueId: 'helper', patch: { role: '核对原文资料' } } })).isError, undefined);
       assert.equal(created.length, 1, 'HTTP MCP 配置同事不会隐式启动额外原生 Agent');
-      const office = await client.callTool({ name: 'office_scope', arguments: {} });
-      assert.equal(office.isError, undefined);
-      assert.deepEqual(JSON.parse((office.content as { text: string }[])[0].text), { gmail: { configured: false }, feishu: { configured: false, documentIds: [], wikiTokens: [] } });
       const result = await client.callTool({ name: 'remember_explicit', arguments: { content: '后续报告使用中文', userQuote: '请记住：后续报告使用中文。' } });
       assert.equal(result.isError, undefined);
       const saved = await invoke('bots.memories', { botId: 'chief' }) as { id: string; kind: string; content: string }[];
@@ -396,11 +289,12 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
       assert.equal((await client.callTool({ name: 'forget_memory', arguments: { memoryId, currentContent: '后续报告使用英文', userQuote: userMessage } })).isError, undefined);
       assert.deepEqual((await invoke('bots.memories', { botId: 'chief' }) as { content: string }[]).map(item => item.content), ['纠正后的明确记忆']);
       // 专家只靠原生父链关联到事项，不获得根 Bot 的会话绑定或工具凭证。
+      await hooks.get('agent.create.after')!({ agent: { id: 'child', parentAgentId: started.agentId, title: '原生临时专家', workspaceId: 'ws-expert' } }, { paseo });
       const specialist = { id: 'grandchild', parentAgentId: 'child', title: '专家核对', workspaceId: 'ws-expert' };
       await hooks.get('agent.create.after')!({ agent: specialist }, { paseo });
       await hooks.get('agent.turn.after')!({ agent: specialist, turnId: 'expert-turn', outcome: { kind: 'canceled', reason: 'Interrupted' } }, { paseo });
       const tasks = await invoke('bots.tasks', { botId: 'chief' }) as { agentId: string; status: string; specialists: string[] }[];
-      assert.deepEqual(tasks.find(task => task.agentId === started.agentId)?.specialists, ['grandchild']);
+      assert.deepEqual(tasks.find(task => task.agentId === started.agentId)?.specialists, ['child', 'grandchild']);
       assert.equal(tasks.find(task => task.agentId === started.agentId)?.status, 'active', '自由 canceled.reason 不取消整个事项');
       assert.equal((await invoke('bots.sessions', { botId: 'chief' }) as { sessionId: string }[]).some(item => item.sessionId === 'grandchild'), false);
       assert.equal((await client.callTool({ name: 'cancel_task', arguments: { userQuote: '伪造取消' } })).isError, true);
@@ -442,45 +336,6 @@ test('插件离线接线：无配置不创建；原生创建参数挂载MCP且�
   } finally {
     await cleanup();
     assert.equal(hooks.size, 0);
-    if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR;
-    else process.env.PASEO_GUYS_DATA_DIR = previous;
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('恢复会话时原生回查、Bot 存档或 MCP 预热失败只报告错误，不阻断打开', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'paseo-guys-open-'));
-  const previous = process.env.PASEO_GUYS_DATA_DIR;
-  process.env.PASEO_GUYS_DATA_DIR = directory;
-  const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
-  const hooks = new Map<string, (event: unknown, context: unknown) => Promise<void>>();
-  const errors: unknown[][] = [];
-  t.mock.method(console, 'error', (...args: unknown[]) => { errors.push(args); });
-  const server = {
-    registerSettings: () => ({}),
-    handle: (contract: PluginRpcContract, handler: (input: unknown) => Promise<unknown>) => handlers.set(contract.name, handler),
-    addHook: (name: string, handler: (event: unknown, context: unknown) => Promise<void>) => { hooks.set(name, handler); return () => hooks.delete(name); },
-  } as unknown as PluginServerContext;
-  const cleanup = contribute(server);
-  try {
-    const event = { request: { agentId: 'existing-agent' } };
-    let failure: Error | undefined = new Error('原生回查不可达');
-    const context = { paseo: { agents: { ref: () => ({ refresh: async () => {
-      if (failure) throw failure;
-      return { agent: { labels: { 'paseo-guys.bot': 'chief' } } };
-    } }) } } };
-    const open = () => hooks.get('agent.open.before')!(event, context);
-    await assert.doesNotReject(open);
-    failure = undefined;
-    await handlers.get('bots.create')!({ id: 'chief', name: '主 Bot', role: '核对' });
-    // 存档有效但未关联此 Agent，mount 拒绝；仍可打开原生会话。
-    await assert.doesNotReject(open);
-    await writeFile(join(directory, 'chief.json'), '{broken');
-    await assert.doesNotReject(open);
-    assert.equal(errors.length, 3);
-    assert.ok(errors.every(args => String(args[0]).includes('existing-agent')));
-  } finally {
-    await cleanup();
     if (previous === undefined) delete process.env.PASEO_GUYS_DATA_DIR;
     else process.env.PASEO_GUYS_DATA_DIR = previous;
     await rm(directory, { recursive: true, force: true });
@@ -670,16 +525,10 @@ test('固定同事贯穿接线：目录、接收方身份记忆、原生父项�
       assert.equal(created.length, 3, '回报沿用原生通信，不创建新执行 Agent');
     } finally { await deliveryClient.close(); }
     const pending = payload(await client.callTool({ name: 'delegate_to_colleague', arguments: { ...request, requestId: 'pending-during-parent-stop', title: '父事项取消时尚未交付' } }));
-    // Simulate a persisted native routine parent, which has schedule labels rather than a Bot label.
-    const routineId = randomUUID();
-    const persistedTasks = new TaskTracker({ baseDir: directory, store: new BotStore({ baseDir: directory }), cli: { command: '', cwd: directory }, getPaseo: () => paseo });
-    await persistedTasks.ensure('chief', root.agentId, { title: '例程主事项', routine: { id: routineId, runId: randomUUID(), prompt: '合成例程核对' } });
-    await mkdir(join(directory, 'routines'), { recursive: true });
-    await writeFile(join(directory, 'routines', 'state.json'), JSON.stringify({ schemaVersion: 1, routines: [{ id: routineId, botId: 'chief', name: '合成例程', prompt: '合成例程核对', cron: '* * * * *', timezone: 'UTC', continuity: false, execution: { provider: 'configured/model', cwd: directory }, state: 'ready', nativeId: 'synthetic-schedule' }] }));
+    // 已在 v2 登记的父会话即使没有 Bot 标签，仍按登记的原生 ID 核对归属。
     delete created[0].labels!['paseo-guys.bot'];
-    created[0].labels!['paseo.schedule-id'] = 'synthetic-schedule';
-    await hooks.get('agent.turn.after')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'routine-parent-failure' }, { paseo });
-    assert.equal(failureMessages.length, 3, '无 Bot 标签的例程父事项仍收到固定同事失败回报');
+    await hooks.get('agent.turn.after')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'registered-parent-failure' }, { paseo });
+    assert.equal(failureMessages.length, 3, '无 Bot 标签但已在 v2 登记的父事项仍收到失败回报');
     assert.equal(failureMessages[2].agentId, root.agentId);
     await invoke('bots.task.cancel', { botId: 'chief', agentId: root.agentId });
     await hooks.get('agent.turn.after')!({ ...failedTurn, agent: { ...failedTurn.agent, id: pending.agentId }, turnId: 'failure-after-parent-stop' }, { paseo });

@@ -85,7 +85,7 @@ export function registerColleagueTools(server: McpServer, scope: ColleagueToolSc
     description: '查看其他已注册固定同事的标识、名称和职责；不读取其记忆、历史或账户配置。只按当前事项需要选择接收同事。',
     annotations: { readOnlyHint: true },
   }, () => run(async () => (await scope.store.listBots())
-    .filter(bot => bot.id !== scope.botId && !bot.archivedAt)
+    .filter(bot => bot.id !== scope.botId && bot.id !== CHIEF_BOT_ID)
     .map(({ id, name, role }) => ({ id, name, role }))));
   server.registerTool('delegate_to_colleague', {
     description: '把当前事项中明确的一部分交给已注册的其他固定同事，通过 Paseo 原生父子会话运行。仅传任务必要上下文；不传全部记忆或历史，不扩大权限。requestId 为本次委派的稳定原始标识，重试用同一输入，不换标识规避未知结果。启动回执不等于完成；使用 Paseo 原生通知与通信取得实际结果并按交付条件核对。',
@@ -97,7 +97,7 @@ export function registerColleagueTools(server: McpServer, scope: ColleagueToolSc
     if (input.colleagueId === scope.botId) throw new Error('请委派给其他固定同事，不能委派给自己');
     const colleague = await scope.store.getBot(input.colleagueId);
     if (!colleague) throw new Error(`固定同事未注册：${input.colleagueId}`);
-    if (colleague.bot.archivedAt) throw new Error('同事已归档，请用户先恢复再委派');
+    if (colleague.bot.id === CHIEF_BOT_ID) throw new Error('Chief 不是专长子 Bot 预设');
     return startWork(input.colleagueId, input, 'delegation');
   }));
 }

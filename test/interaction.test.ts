@@ -13,7 +13,7 @@ async function sourceFile(path: string) {
 }
 
 test('裸输入沿用原生输入层，不显示浏览器绿色内层焦点框', async () => {
-  for (const path of ['index.client.tsx', 'client/chat.tsx', 'client/model-selector.tsx', 'client/ui.tsx', 'client/chat-permission.tsx', 'client/connections.tsx']) {
+  for (const path of ['client/chat.tsx', 'client/model-selector.tsx', 'client/ui.tsx', 'client/chat-permission.tsx']) {
     const source = await sourceFile(path);
     let checked = 0;
     const visit = (node: ts.Node) => {
@@ -109,166 +109,23 @@ test('聊天控件沿用宿主尺寸与主题，选中态不冒充主要操作',
   assert.ok(row.children.some((child: any) => child?.type === 'Icon' && child.props.name === 'Check'));
 });
 
-test('执行详情保留主聊天及草稿归属，只有打开同事聊天才切换固定身份', async () => {
+test('执行详情不切换主总管，受托同事的原生专家沿用实际所有者', async () => {
   const source = await sourceFile('index.client.tsx');
   let callback = '';
-  let detailCallback = '';
-  const visit = (node: ts.Node) => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === 'openAgent') callback = `${node.getText(source)}\nreturn openAgent;`;
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'openAgent' && node.initializer) callback = `return (${node.initializer.getText(source)});`;
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Chat') {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-      if (attributes.find(attribute => attribute.name.getText(source) === 'botId')?.initializer?.getText(source) === '{detail.owner}') {
-        const action = attributes.find(attribute => attribute.name.getText(source) === 'openAgent')?.initializer;
-        if (action && ts.isJsxExpression(action) && action.expression) detailCallback = `return (${action.expression.getText(source)});`;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  assert.ok(callback);
-  let mainSession = 'chief-chat';
-  let selected = 'chief';
-  let conversations: Record<string, string> = { chief: mainSession };
-  let detail: { agentId: string; owner: string; executor: string } | undefined;
-  const api = { agents: { ref: (id: string) => ({ refresh: async () => ({ agent: {
-    id, title: `执行 ${id}`, labels: id === 'expert' ? {} : { 'paseo-guys.bot': 'helper', ...(id === 'helper-chat' ? { 'paseo-guys.conversation': 'true' } : {}) },
-  } }) }) } };
-  const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const open = new Function('api', 'selected', 'current', 'bots', 'choose', 'setConversations', 'setDetail', 'setPanel', 'setError', 'setViewedSession', 'setTab', body)(
-    api, selected, { name: '主 Bot' }, [{ id: 'helper', name: '核对同事' }],
-    (id: string) => { selected = id; detail = undefined; },
-    (update: (value: Record<string, string>) => Record<string, string>) => { conversations = update(conversations); },
-    (value: typeof detail) => { detail = value; }, () => {}, (error: unknown) => assert.fail(String(error)),
-    (id: string) => { mainSession = id; }, () => {},
-  );
-  open('worker');
-  await new Promise<void>(done => setImmediate(done));
-  assert.equal(mainSession, 'chief-chat');
-  assert.equal(selected, 'chief');
-  assert.deepEqual({ ...conversations }, { chief: 'chief-chat' });
-  assert.equal(detail?.owner, 'helper');
-  assert.equal(detail?.executor, '核对同事');
-  assert.ok(detailCallback);
-  const openFromDetail = new Function('openAgent', 'detail', ts.transpileModule(detailCallback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(open, detail);
-  openFromDetail('expert');
-  await new Promise<void>(done => setImmediate(done));
-  assert.equal(detail?.owner, 'helper', '从受托同事详情打开原生专家时保留实际 Bot 归属，停止回复不误用 Chief');
-  open('expert');
-  await new Promise<void>(done => setImmediate(done));
-  assert.equal(detail?.executor, '原生专家');
-  assert.equal(selected, 'chief');
-  open('helper-chat');
-  await new Promise<void>(done => setImmediate(done));
-  assert.equal(selected, 'helper');
-  assert.equal(conversations.helper, 'helper-chat');
-  assert.equal(detail, undefined);
+  const visit = (node: ts.Node) => { if (ts.isFunctionDeclaration(node) && node.name?.text === 'openAgent') callback = node.getText(source); ts.forEachChild(node, visit); };
+  visit(source); assert.ok(callback);
+  let detail: { agentId: string; owner: string } | undefined;
+  const api = { agents: { ref: (id: string) => ({ refresh: async () => ({ agent: { id, title: id, labels: id === 'worker' || id === 'helper-chat' ? { 'paseo-guys.bot': 'helper' } : {} } }) }) } };
+  const body = ts.transpileModule(callback + '\nreturn openAgent;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const open = new Function('api', 'CHIEF_BOT_ID', 'setDetail', 'setError', body)(api, 'chief', (value: typeof detail) => { detail = value; }, (error: unknown) => assert.fail(String(error)));
+  open('worker'); await new Promise<void>(done => setImmediate(done)); assert.equal(detail?.owner, 'helper');
+  open('expert', detail!.owner); await new Promise<void>(done => setImmediate(done)); assert.equal(detail?.owner, 'helper');
+  open('expert'); await new Promise<void>(done => setImmediate(done)); assert.equal(detail?.owner, 'chief');
+  open('helper-chat'); await new Promise<void>(done => setImmediate(done)); assert.equal(detail?.agentId, 'helper-chat');
+  assert.doesNotMatch(callback, /choose\(|setConversation\(|setConversations\(/, '执行详情从不切换主入口');
 });
 
 interface Element { type: string; props: Record<string, any>; children: any[] }
-test('聊天显示完整邮件并保存回执后通知同事，通知失败不重发，未知发送只回查', async () => {
-  const source = await sourceFile('client/office.tsx');
-  let row = '';
-  const visit = (node: ts.Node) => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === 'row') row = node.getText(source);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  assert.ok(row);
-  const body = ts.transpileModule(`${row}\nreturn row;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText;
-  const calls: { kind: string; input: unknown }[] = [];
-  const action = { id: 'registered-mail', agentId: 'worker', account: 'sender@example.test', to: ['receiver@example.test'], subject: '完整草案', text: '完整正文\n第二行。', sourceIds: ['source-1'], query: 'label:synthetic', status: 'pending_confirmation' };
-  let actions: typeof action[] = [action];
-  let pending: Promise<unknown> = Promise.resolve();
-  let error = '';
-  let notificationFails = true;
-  const notifiedStatuses: string[] = [];
-  const render = new Function('h', 'Fragment', 'Disclosure', 'Copy', 'Actions', 'Button', 'labels', 'opened', 'inline', 'busy', 'setOpened', 'botId', 'run', 'send', 'reconcile', 'revoke', 'allow', 'setActions', 'notify', body)(
-    (type: string, props: Record<string, unknown>, ...children: unknown[]) => ({ type, props: props ?? {}, children }), 'Fragment', 'Disclosure', 'Copy', 'Actions', 'Button', {}, undefined, true, false, () => {}, 'chief',
-    (work: () => Promise<unknown>) => { error = ''; pending = work().catch(failure => { error = String(failure); }); return pending; },
-    async (input: unknown) => { calls.push({ kind: 'send', input }); return { ...action, status: 'sent' }; },
-    async (input: unknown) => { calls.push({ kind: 'reconcile', input }); return { ...action, status: 'send_unknown' }; },
-    async (input: unknown) => { calls.push({ kind: 'revoke', input }); return { ...action, status: 'revoked' }; }, async () => {},
-    (update: (value: typeof actions) => typeof actions) => { actions = update(actions); },
-    async (input: unknown) => {
-      calls.push({ kind: 'notify', input }); notifiedStatuses.push(actions[0].status);
-      if (notificationFails) throw new Error('原生通知回执丢失');
-      return { agentId: action.agentId, status: 'notified' };
-    },
-  );
-  const elements = (node: any): Element[] => Array.isArray(node) ? node.flatMap(elements) : node && typeof node === 'object' && 'type' in node ? [node, ...node.children.flatMap(elements)] : [];
-  const text = (node: any): string => Array.isArray(node) ? node.map(text).join('') : node && typeof node === 'object' && 'children' in node ? text(node.children) : typeof node === 'string' ? node : '';
-  const draft = render(action) as Element;
-  assert.equal(draft.props.open, true);
-  assert.equal(draft.props.title, action.subject);
-  for (const value of [action.account, action.to[0], action.text, action.query, action.sourceIds[0]]) assert.ok(text(draft).includes(value));
-  const confirm = elements(draft).find(node => node.type === 'Button' && node.props.label === '确认并发送')!;
-  assert.ok(confirm && !confirm.props.disabled);
-  confirm.props.onPress(); await pending;
-  assert.deepEqual(calls, ['send', 'notify'].map(kind => ({ kind, input: { botId: 'chief', actionId: 'registered-mail' } })));
-  assert.equal(actions[0].status, 'sent');
-  assert.deepEqual(notifiedStatuses, ['sent'], '通知前已保存实际邮件回执');
-  assert.match(error, /邮件状态已保存，同事通知未确认/);
-  assert.equal(elements(render(actions[0])).some(node => node.props.label === '确认并发送'), false, '通知失败不重新开放已发送邮件的发送动作');
-  notificationFails = false;
-  const unknown = render({ ...action, status: 'send_unknown' }) as Element;
-  const controls = elements(unknown).filter(node => node.type === 'Button');
-  assert.equal(controls.some(node => node.props.label === '确认并发送'), false);
-  const reconcile = controls.find(node => node.props.label === '回查')!;
-  assert.ok(reconcile && !reconcile.props.disabled);
-  reconcile.props.onPress(); await pending;
-  assert.deepEqual(calls.slice(2), ['reconcile', 'notify'].map(kind => ({ kind, input: { botId: 'chief', actionId: 'registered-mail' } })));
-  assert.equal(actions[0].status, 'send_unknown');
-  const cancel = elements(render(action)).find(node => node.type === 'Button' && node.props.label === '撤销')!;
-  cancel.props.onPress(); await pending;
-  assert.deepEqual(calls.slice(4), ['revoke', 'notify'].map(kind => ({ kind, input: { botId: 'chief', actionId: 'registered-mail' } })));
-  assert.deepEqual(notifiedStatuses, ['sent', 'send_unknown', 'revoked']);
-  assert.equal(error, '');
-});
-
-test('例程按选择的频率和时间提交，保留高级 Cron 与指定时区', async () => {
-  const source = await sourceFile('client/routines.tsx');
-  let cadence = 'cron';
-  let submit = '';
-  const visit = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'cadence' && node.initializer) cadence = node.initializer.getText(source);
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-      if (attributes.find(attribute => attribute.name.getText(source) === 'label')?.initializer?.getText(source) === '"创建例程"') {
-        const action = attributes.find(attribute => attribute.name.getText(source) === 'onPress')?.initializer;
-        if (action && ts.isJsxExpression(action) && action.expression) submit = action.expression.getText(source);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  assert.ok(submit);
-  const body = ts.transpileModule(`const cadence = ${cadence}; return (${submit});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const createSubmit = new Function('frequency', 'hour', 'minute', 'weekday', 'cron', 'timezone', 'botId', 'name', 'prompt', 'continuity', 'run', 'create', 'setCreating', 'setName', 'setPrompt', 'setOpened', body);
-  for (const [frequency, hour, minute, weekday, expected] of [
-    ['daily', '17', '43', '1', '43 17 * * *'],
-    ['weekdays', '09', '07', '1', '7 9 * * 1-5'],
-    ['weekly', '00', '05', '0', '5 0 * * 0'],
-    ['custom', '09', '00', '1', '*/10 * * * *'],
-  ]) {
-    let pending = Promise.resolve();
-    const values: unknown[] = [];
-    const callback = createSubmit(frequency, hour, minute, weekday, '*/10 * * * *', 'America/New_York', 'chief', '合成例程', '仅整理本地合成文件', false,
-      (work: () => Promise<void>) => { pending = work(); return pending; },
-      async (input: unknown) => { values.push(input); return { id: 'registered-routine' }; }, () => {}, () => {}, () => {}, () => {},
-    );
-    callback(); await pending;
-    assert.deepEqual(values, [{ botId: 'chief', name: '合成例程', prompt: '仅整理本地合成文件', cron: expected, timezone: 'America/New_York', continuity: false }]);
-  }
-});
-
-test('例程列表显示普通时间，其他 Cron 保留原文', async () => {
-  const { describeRoutineCron } = await import(new URL('../client/routine-time.js', import.meta.url).href);
-  for (const [expression, expected] of [
-    ['43 17 * * *', '每天 17:43'], ['7 9 * * 1-5', '工作日 09:07'], ['5 0 * * 0', '每周日 00:05'],
-    ['0 9 1 * *', '0 9 1 * *'], ['*/10 * * * *', '*/10 * * * *'],
-  ]) assert.equal(describeRoutineCron(expression), expected);
-});
 
 test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容保持完整', async () => {
   const source = await sourceFile('client/chat.tsx');
@@ -280,7 +137,7 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   visit(source);
   assert.ok(callback);
   const body = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const createSend = new Function('agentId', 'sends', 'stops', 'changing', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', 'channelId', 'prepareGroup', body);
+  const createSend = new Function('agentId', 'sends', 'stops', 'changing', 'draft', 'offline', 'chat', 'observer', 'setDrafts', 'api', 'opened', 'prepare', body);
   const text = '请记住：后续报告使用英文。\n本条原话不能附加或删改。';
   const attachment = { type: 'text', mimeType: 'text/plain', title: '最新确认记忆', text: '["使用英文"]' };
   let preparations = 0;
@@ -289,15 +146,13 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   let sendFails = true;
   let contextFails = false;
   let conversation = true;
-  let channelId: string | undefined;
-  let groupPreparations = 0;
-  const groupAttachment = { ...attachment, title: '频道上下文', text: '["本群约定"]' };
   const changing = { current: new Set<string>() };
   const invoke = () => createSend('helper-chat', { current: new Set() }, { current: new Set() }, changing, drafts['helper-chat'], false,
     { loading: false, agent: { archivedAt: null, labels: conversation ? { 'paseo-guys.conversation': 'true' } : {} } }, { current: { refresh() {} } },
     (update: (value: typeof drafts) => typeof drafts) => { drafts = update(drafts); },
     { agents: { ref: () => ({ send: async (text: string, options: unknown) => { requests.push({ text, options }); if (sendFails) throw new Error('回执丢失'); } }) } },
-    { owner: 'helper' }, async (input: unknown) => { preparations++; assert.deepEqual(input, { botId: 'helper', agentId: 'helper-chat' }); if (contextFails) throw new Error('记忆读取失败'); return attachment; }, channelId, async (input: unknown) => { groupPreparations++; assert.deepEqual(input, { channelId, agentId: 'helper-chat' }); return groupAttachment; },
+    { owner: 'helper' }, async (input: unknown) => { preparations++; assert.deepEqual(input, { botId: 'helper', agentId: 'helper-chat' }); if (contextFails) throw new Error('记忆读取失败'); return attachment; },
+
   )();
   await invoke();
   assert.equal(preparations, 1);
@@ -323,12 +178,7 @@ test('旧 Bot 聊天发送携带当前确认记忆，原话与失败重试内容
   changing.current.add('helper-chat');
   await invoke();
   assert.equal(requests.length, 3, '配置切换期间不把未发送消息发给旧会话');
-  changing.current.clear(); channelId = 'channel-test'; conversation = true;
-  drafts['helper-chat'] = { text, messageId: 'group-message' };
-  await invoke();
-  assert.equal(groupPreparations, 1);
-  assert.equal(preparations, 2, '频道发送不调用私聊上下文');
-  assert.deepEqual(requests[3], { text, options: { messageId: 'group-message', activeTurnBehavior: 'steer', attachments: [groupAttachment] } });
+
 });
 
 test('消息框切换保留草稿并沿原请求重试，异步完成后仍只更新所属 Bot', async () => {
@@ -417,12 +267,10 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   };
   visit(source);
   assert.ok(callback);
-  let conversations: Record<string, string> = { chief: 'old', helper: 'helper-chat' };
-  const remember = new Function('setConversations', ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)((update: (value: typeof conversations) => typeof conversations) => { conversations = update(conversations); });
-  remember('chief', 'old', 'new');
-  assert.deepEqual(conversations, { chief: 'new', helper: 'helper-chat' });
-  remember('chief', 'old', 'late');
-  assert.equal(conversations.chief, 'new', '不覆盖用户已打开的其他对话');
+  let conversation = 'old';
+  const remember = new Function('setConversation', ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)((update: (value: string) => string) => { conversation = update(conversation); });
+  remember('chief', 'old', 'new'); assert.equal(conversation, 'new');
+  remember('chief', 'old', 'late'); assert.equal(conversation, 'new', '迟到回执不覆盖已切换的主聊天');
   const settings = await sourceFile('client/chat-settings.tsx');
   const component = settings.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'ConversationSettings')!;
   const body = ts.transpileModule(`${component.getText(settings)}\nreturn ConversationSettings;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
@@ -453,43 +301,6 @@ test('聊天入口按实际 Bot 保存切换结果，模型和工作区选项接
   assert.ok(!view().some(node => node.type === 'Modal'), '消息框不再自带简化居中模型列表');
   props.disabled = true;
   assert.ok(view().filter(node => ['ModelSelector', 'ThinkingSelector', 'PathPicker'].includes(node.type)).every(node => node.props.disabled));
-});
-
-test('归档入口先确认，恢复与归档使用实际 Bot 标识且失败不切走同事', async () => {
-  const source = await sourceFile('index.client.tsx');
-  let action = '';
-  const presses = new Map<string, string>();
-  const visit = (node: ts.Node) => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === 'changeArchive') action = node.getText(source);
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Button') {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-      const label = attributes.find(attribute => attribute.name.getText(source) === 'label')?.initializer;
-      const press = attributes.find(attribute => attribute.name.getText(source) === 'onPress')?.initializer;
-      if (label && ts.isStringLiteral(label) && press) presses.set(label.text, press.getText(source));
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  assert.ok(action);
-  assert.equal(presses.get('归档同事'), "{() => setPanel('archive')}");
-  assert.ok(presses.get('确认归档')?.includes('changeArchive(current.id, true)'));
-  assert.ok(presses.get('已归档同事')?.includes("setPanel('archived')"));
-  const calls: string[] = [];
-  const guard = { current: false };
-  let failure = false;
-  const run = new Function('archive', 'restore', 'refresh', 'choose', 'CHIEF_BOT_ID', 'guard', 'setBusy', 'setError', ts.transpileModule(`${action}\nreturn changeArchive;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(
-    async ({ botId }: { botId: string }) => { calls.push(`archive:${botId}`); if (failure) throw new Error('未结束事项'); },
-    async ({ botId }: { botId: string }) => { calls.push(`restore:${botId}`); },
-    async () => calls.push('refresh'), (id: string) => calls.push(`choose:${id}`), 'chief', guard, () => {}, (error: string) => { if (error) calls.push(error); },
-  );
-  await run('helper', true);
-  assert.deepEqual(calls.splice(0), ['archive:helper', 'refresh', 'choose:chief']);
-  await run('other', false);
-  assert.deepEqual(calls.splice(0), ['restore:other', 'refresh']);
-  failure = true;
-  await run('helper', true);
-  assert.deepEqual(calls, ['archive:helper', 'Error: 未结束事项']);
-  assert.equal(guard.current, false);
 });
 
 test('当前聊天订阅旧父会话的跨 Bot 子任务，旧任务报告变化仍触发工作刷新', async () => {

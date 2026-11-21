@@ -7,7 +7,6 @@ export const listDirectory = defineRpc({
   input: z.object({ path: z.string().trim().min(1).optional(), kind: z.enum(['directory', 'skill', 'mcp']).default('directory') }),
   output: z.object({ path: z.string(), parent: z.string().nullable(), home: z.string(), entries: z.array(z.object({ name: z.string(), path: z.string(), kind: z.enum(['directory', 'file']) })) }),
 });
-export const listBuiltinSkills = defineRpc({ name: 'bots.skills.builtin', input: z.object({}), output: z.array(botSkillSchema) });
 export const inspectSkill = defineRpc({ name: 'bots.skill.inspect', input: z.object({ path: z.string().trim().min(1) }), output: botSkillSchema });
 export const inspectMcp = defineRpc({ name: 'bots.mcp.inspect', input: z.object({ path: z.string().trim().min(1) }), output: z.object({ names: z.array(z.string()) }) });
 export const listMcpSources = defineRpc({

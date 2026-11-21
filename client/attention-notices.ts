@@ -2,9 +2,7 @@ import type { AttentionEntry, AttentionView } from '../shared/attention.js';
 
 const key = (entry: AttentionEntry) => entry.notice ? JSON.stringify([entry.notice.channel, entry.notice.reason, entry.notice.episode]) : '';
 function recovered(entry: AttentionEntry, issues: AttentionView['issues']) {
-  const groups = entry.source === 'work' ? ['work', `agent:${entry.sourceId}`]
-    : ['creation', 'followup'].includes(entry.source) ? ['work']
-      : entry.source === 'gmail' ? ['routines', `gmail:${entry.sourceId}`] : [entry.source === 'routine' ? 'routines' : entry.source];
+  const groups = entry.source === 'work' ? ['work', `agent:${entry.sourceId}`] : ['work'];
   return issues.some(issue => (!issue.botId || issue.botId === entry.botId) && (issue.source === 'store' || groups.includes(issue.source)));
 }
 

@@ -11,7 +11,7 @@ async function setup() {
   const code = ts.transpileModule(`${declaration.getText(source)}\nreturn Attention;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, jsxFactory: 'h', jsxFragmentFactory: 'Fragment' } }).outputText.replace(/export /g, '');
   const values: any[] = [], opened: unknown[] = [];
   let cursor = 0, calls = 0, fail = false, loading = false, gate: Promise<void> | undefined, release: (() => void) | undefined, readError = '', subscriptionError = '', value: AttentionView | undefined;
-  let result: AttentionView = { entries: [{ id: 'stable', botId: 'helper', botName: '同事', source: 'mail', sourceId: 'mail-id', kind: 'unknown', title: '结果未知', target: { panel: 'work' } }], issues: [], botIds: ['chief', 'helper'], scheduleIds: ['native-routine'] };
+  let result: AttentionView = { entries: [{ id: 'stable', botId: 'helper', botName: '同事', source: 'work', sourceId: 'mail-id', kind: 'unknown', title: '结果未知', target: { panel: 'work' } }], issues: [], botIds: ['chief', 'helper'] };
   const controller = { refresh: async () => { calls++; loading = true; await gate; if (fail) readError = '读取未确认，保留上次结果'; else { value = result; readError = ''; } loading = false; } };
   const useState = (initial: any) => { const i = cursor++; if (!(i in values)) values[i] = initial; return [values[i], (value: any) => { values[i] = typeof value === 'function' ? value(values[i]) : value; }]; };
   const Modal = Object.assign(function Modal() {}, { Content: 'Modal.Content' });
@@ -35,9 +35,9 @@ test('集中待办仅消费共享投影，重绘不新建监听或读取；打�
 });
 
 test('打开待办主动读取；刷新中保留旧值但不把旧空值当当前无待办', async () => {
-  const f = await setup(); f.setResult({ entries: [], issues: [], botIds: ['chief'], scheduleIds: [] }); await f.refresh();
+  const f = await setup(); f.setResult({ entries: [], issues: [], botIds: ['chief'] }); await f.refresh();
   let view = f.render(); assert(view.some(node => node.type === 'Copy' && JSON.stringify(node.children).includes('当前已读取来源没有')));
-  f.setResult({ entries: [{ id: 'new', botId: 'chief', botName: '主管', source: 'capability', sourceId: 'new', kind: 'decision', title: '新决定', target: { panel: 'capabilities' } }], issues: [], botIds: ['chief'], scheduleIds: [] });
+  f.setResult({ entries: [{ id: 'new', botId: 'chief', botName: '主管', source: 'work', sourceId: 'new', kind: 'decision', title: '新决定', target: { panel: 'work' } }], issues: [], botIds: ['chief'] });
   f.hold(); const previous = f.calls(); view.find(node => node.props.label === '待办 · 0').props.onPress(); view = f.render();
   assert.equal(f.calls(), previous + 1); assert.equal(view.find(node => node.type === f.Modal).props.open, true);
   assert(view.some(node => node.type === 'Copy' && JSON.stringify(node.children).includes('正在刷新')));
@@ -55,25 +55,16 @@ test('共享读取失败保留旧待办，局部空有警告；读取成功不�
   f.fail(); view.find(node => node.props.label === '刷新待办').props.onPress(); await tick(); view = f.render();
   assert(view.some(node => node.props.label === '待办 · 1 · 待核对'));
   assert(view.some(node => node.type === 'Notice' && node.props.error.includes('保留上次结果')));
-  const partial = await setup(); partial.setResult({ entries: [], issues: [{ source: 'mail', botId: 'helper', detail: '损坏' }], botIds: ['chief'], scheduleIds: [] }); await partial.refresh(); view = partial.render();
+  const partial = await setup(); partial.setResult({ entries: [], issues: [{ source: 'work', botId: 'helper', detail: '损坏' }], botIds: ['chief'] }); await partial.refresh(); view = partial.render();
   assert(view.some(node => node.type === 'Copy' && JSON.stringify(node.children).includes('不能确认没有待办')));
   assert(!view.some(node => node.type === 'Copy' && JSON.stringify(node.children).includes('当前已读取来源没有')));
 });
 
-test('集中入口路由能力/工作/例程和原生会话，不触发审批或会话创建', async () => {
-  const source = ts.createSourceFile('index.client.tsx', await readFile(new URL('../../index.client.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  let callback = '';
-  const visit = (node: ts.Node) => {
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'Attention') {
-      const attr = node.attributes.properties.filter(ts.isJsxAttribute).find(attr => attr.name.getText(source) === 'onOpen')!;
-      callback = (attr.initializer as ts.JsxExpression).expression!.getText(source);
-    }
-    ts.forEachChild(node, visit);
-  }; visit(source); assert(callback);
-  const calls: unknown[][] = [];
-  const code = ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const open = new Function('refresh', 'choose', 'setPanel', 'openAgent', 'setError', code)(async () => calls.push(['refresh']), (id: string) => calls.push(['choose', id]), (panel: string) => calls.push(['panel', panel]), (id: string, botId: string) => calls.push(['agent', id, botId]), (error: string) => { throw new Error(error); });
-  for (const panel of ['capabilities', 'work', 'routines']) { open({ botId: 'helper', target: { panel } }); await tick(); }
-  open({ botId: 'helper', target: { panel: 'agent', agentId: 'permission-agent' } });
-  assert.deepEqual(calls, [['refresh'], ['choose', 'helper'], ['panel', 'capabilities'], ['refresh'], ['choose', 'helper'], ['panel', 'work'], ['refresh'], ['choose', 'helper'], ['panel', 'routines'], ['agent', 'permission-agent', 'helper']]);
+test('骨架只注册单一主入口和侧栏，不注册旧能力行渲染器或多 Bot 侧栏', async () => {
+  const text = await readFile(new URL('../../index.client.tsx', import.meta.url), 'utf8');
+  assert.equal((text.match(/client\.addScreen\(/g) ?? []).length, 1);
+  assert.equal((text.match(/client\.addSidebarHeaderItem\(/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /addTimelineRenderer|CAPABILITY_TIMELINE|CapabilityNavigationContext|setPicker|roster/);
+  assert.match(text, /botId=\{CHIEF_BOT_ID\}/);
+  for (const label of ['新对话', '配置', '记忆']) assert.ok(text.includes('label="' + label + '"'));
 });

@@ -6,8 +6,6 @@ import { Actions, Button, Copy, Disclosure, Notice } from './ui.js';
 import { Tasks } from './tasks.js';
 import { History } from './history.js';
 import { Usage } from './usage.js';
-import { Journal } from './journal.js';
-import { OfficeActions } from './office.js';
 import { useBotUpdates } from './use-bot-updates.js';
 
 export function Work({ botId, openAgent }: { botId: string; openAgent?: (id: string) => void }) {
@@ -20,7 +18,6 @@ export function Work({ botId, openAgent }: { botId: string; openAgent?: (id: str
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [journalOpen, setJournalOpen] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState(false);
   const guard = useRef(false);
   async function recover(requestId: string) {
@@ -47,10 +44,8 @@ export function Work({ botId, openAgent }: { botId: string; openAgent?: (id: str
   return <>
     <Notice error={error || updates.error} />
     <Tasks botId={botId} openAgent={openAgent} revision={revision + updates.revision} />
-    <OfficeActions botId={botId} revision={revision + updates.revision} />
     {pending.length > 0 && <Disclosure title="创建回查" open={requestsOpen} onPress={() => setRequestsOpen(value => !value)}>{pending.map(item => <Actions key={item.requestId}><Copy muted>{item.agentId}</Copy><Button label="回查并打开" disabled={busy || !openAgent} onPress={() => void recover(item.requestId)} /></Actions>)}</Disclosure>}
     <Disclosure title="全部会话" open={sessionsOpen} onPress={() => setSessionsOpen(value => !value)}><Sessions botId={botId} openAgent={openAgent} revision={revision + updates.revision} /></Disclosure>
-    <Disclosure title="工作日志" open={journalOpen} onPress={() => setJournalOpen(value => !value)}><Journal botId={botId} /></Disclosure>
   </>;
 }
 

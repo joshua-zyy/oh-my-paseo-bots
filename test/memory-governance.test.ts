@@ -11,7 +11,7 @@ async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-memory-governance-'));
   const store = new BotStore({ baseDir: directory });
   await store.ensureChief();
-  const file = join(directory, 'chief.json');
+  const file = join(directory, 'v2', 'chief.json');
   return { store, directory, file, document: async () => JSON.parse(await readFile(file, 'utf8')), close: () => rm(directory, { recursive: true, force: true }) };
 }
 

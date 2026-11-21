@@ -5,11 +5,10 @@ import type { AttentionEntry, AttentionView } from '../shared/attention.js';
 import { createAttentionController, attentionMutation } from '../client/attention-controller.js';
 import { AttentionNotices } from '../client/attention-notices.js';
 import { observeAgentChanges } from '../client/agent-changes.js';
-import { capabilityStatusItem, CAPABILITY_TIMELINE } from '../shared/capability-timeline.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
-const entry = (episode: string, channel: 'plugin' | 'host' | 'progress' = 'plugin'): AttentionEntry => ({ id: 'stable', sourceId: 'request', botId: 'chief', botName: '主Bot', source: 'capability', kind: 'decision', title: '标题', target: { panel: 'capabilities' }, notice: { channel, reason: 'capability', episode } });
-const view = (entries: AttentionEntry[] = []): AttentionView => ({ entries, issues: [], botIds: ['chief'], scheduleIds: [] });
+const entry = (episode: string, channel: 'plugin' | 'host' | 'progress' = 'plugin'): AttentionEntry => ({ id: 'stable', sourceId: 'request', botId: 'chief', botName: '主Bot', source: 'work', kind: 'decision', title: '标题', target: { panel: 'work' }, notice: { channel, reason: 'task_review', episode } });
+const view = (entries: AttentionEntry[] = []): AttentionView => ({ entries, issues: [], botIds: ['chief'] });
 function subscription(name: string) {
   const observers = new Set<any>(); let released = 0, failRelease = false;
   const snapshot = { subscriptionId: name, requestId: name, entries: [] };
@@ -134,38 +133,6 @@ test('局部缺失恢复只建该来源基线，其他来源新的重要事项�
   const result = n.collect(view([entry('recovered'), other])); assert.deepEqual(result, [other]);
 });
 
-const capabilityRow = (state: 'pending' | 'applied' | 'rejected') => ({ ...capabilityStatusItem('chief', '主Bot', { id: 'a'.repeat(64), sourceAgentId: 'real-source', summary: '合成', state, skills: [], mcp: [], createdAt: 'synthetic' }), pluginId: CAPABILITY_TIMELINE.pluginId });
-const sourceView = (entries: AttentionEntry[] = []): AttentionView => ({ ...view(entries), capabilityAgentIds: ['real-source'] });
-
-test('能力状态行精确订阅驱动自动形成与清除；普通token/其他插件/非法数据不扫描', async () => {
-  const f = fixture(); f.set(sourceView()); const c = createAttentionController(f.api, f.read); await c.ready;
-  const notices: AttentionEntry[][] = []; c.present(items => notices.push(items));
-  const timeline = f.timeline('real-source'), before = f.reads();
-  timeline.emit({ type: 'timeline', item: { type: 'assistant_message', text: 'token' } });
-  timeline.emit({ type: 'timeline', item: { ...capabilityRow('pending'), pluginId: 'unrelated' } });
-  timeline.emit({ type: 'timeline', item: { ...capabilityRow('pending'), data: { state: 'pending' } } });
-  await tick(); assert.equal(f.reads(), before);
-  f.set(sourceView([entry('new-decision')])); timeline.emit({ type: 'timeline', item: capabilityRow('pending') });
-  await tick(); assert(f.reads() > before); assert.equal(c.getSnapshot().value!.entries.length, 1); assert.equal(notices.length, 1);
-  f.set(sourceView()); timeline.emit({ type: 'timeline', item: capabilityRow('rejected') });
-  await tick(); assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(notices.length, 1, '解决不是新的重要提醒');
-  assert.equal(timeline.starts(), 1); await c.release(); assert.equal(timeline.released(), 1);
-});
-
-test('能力来源建立期间的变化不丢，来源复用/移除与恢复不由UI生命周期管理', async () => {
-  const f = fixture(); f.set(sourceView()); let ack!: () => void;
-  const ready = new Promise<void>(resolve => { ack = resolve; }); f.timeline('real-source').setReady(ready);
-  const c = createAttentionController(f.api, f.read); await tick();
-  f.set(sourceView([entry('during-ack')])); f.timeline('real-source').emit({ type: 'timeline', item: capabilityRow('pending') });
-  ack(); await c.ready; assert.equal(c.getSnapshot().value!.entries[0].notice!.episode, 'during-ack');
-  await c.refresh(); assert.equal(f.timeline('real-source').starts(), 1);
-  f.timeline('real-source').emit({ type: 'error', error: 'lost capability stream' });
-  await c.refresh(); assert.match(c.getSnapshot().error, /lost capability stream/, '一次读取不抹掉订阅错误');
-  f.set(sourceView()); f.timeline('real-source').emit({ type: 'subscription_restored' }); await tick();
-  assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(c.getSnapshot().error, '');
-  f.set(view()); await c.refresh(); assert.equal(f.timeline('real-source').released(), 1);
-  await c.release(); const count = f.reads(); f.timeline('real-source').emit({ type: 'timeline', item: capabilityRow('pending') }); await tick(); assert.equal(f.reads(), count);
-});
 
 test('无原生事件的另一客户端提交由有界重读自动形成/清除，同项与普通进展不重复提醒', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -181,17 +148,6 @@ test('无原生事件的另一客户端提交由有界重读自动形成/清除�
   assert.equal(c.getSnapshot().value!.entries.length, 0); assert.equal(notices.length, 1, '已决定不提醒');
   f.set(view([entry('ordinary-inflight', 'progress')])); t.mock.timers.tick(15_000); await tick();
   assert.equal(notices.length, 1, '没有新进展不等于重要异常');
-});
-
-test('无Agent的例程失败无需伪造注意事件即可自动发现', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const f = fixture(), c = createAttentionController(f.api, f.read); await c.ready;
-  t.after(() => c.release());
-  const notices: AttentionEntry[][] = []; c.present(items => notices.push(items));
-  const failed: AttentionEntry = { ...entry('failed-run'), source: 'routine', kind: 'failure', target: { panel: 'routines' }, notice: { channel: 'plugin', reason: 'routine_failed', episode: 'failed-run' } };
-  f.set(view([failed])); t.mock.timers.tick(15_000); await tick();
-  assert.deepEqual(c.getSnapshot().value!.entries, [failed]); assert.deepEqual(notices, [[failed]]);
-  f.set(view()); t.mock.timers.tick(15_000); await tick(); assert.equal(c.getSnapshot().value!.entries.length, 0);
 });
 
 test('慢自动重读不堆积，原生失效仍合并后读，完成后才安排下一次且卸载释放', async t => {

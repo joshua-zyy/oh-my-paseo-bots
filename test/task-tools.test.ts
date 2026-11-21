@@ -17,12 +17,10 @@ async function withTasks(run: (fixture: { tracker: TaskTracker; reopen: () => Ta
   const reopen = () => new TaskTracker({
     baseDir: dir,
     store: new BotStore({ baseDir: join(dir, 'store') }),
-    cli: { command: 'unused', cwd: dir },
     getPaseo: () => ({ agents: { ref: (agentId: string) => ({ refresh: async () => ({ agent: { id: agentId, labels: {} } }), archive: async () => {
       if (agentId === 'agent-stopping') throw new Error('offline archive pending');
       return { archivedAt: 'now' };
     } }) } }) as unknown as PaseoApi,
-    execute: async () => { throw new Error('queries must not execute CLI'); },
   });
   try {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '持续跟进' });
@@ -93,7 +91,7 @@ test('新会话可发现同 Bot 的旧未结事项，按需读取完整记录，
 
 test('跨 Bot 和未知事项不能读取，查询不写回或恢复任何旧事项', async () => {
   await withTasks(async ({ tracker, dir }) => withClient(tracker, async client => {
-    const files = [join(dir, 'tasks', 'chief.json'), join(dir, 'tasks', 'other.json')];
+    const files = [join(dir, 'v2', 'tasks', 'chief.json'), join(dir, 'v2', 'tasks', 'other.json')];
     const before = await Promise.all(files.map(file => readFile(file, 'utf8')));
     for (const agentId of ['agent-other', 'agent-missing']) {
       const result = await client.callTool({ name: 'read_bot_task', arguments: { agentId, botId: 'other' } });

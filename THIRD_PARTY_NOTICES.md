@@ -1,4 +1,4 @@
-本项目的聊天订阅、历史合并、问题回复、技能 frontmatter 读取、MCP 配置来源发现和常见 Cron 描述适配自 [oliexe/paseo-bots](https://github.com/oliexe/paseo-bots) 的 `client/useChat.ts`、`client/chat/stream/model.ts`、问题表单、`shared/skills.ts`、`server/mcp-sources.ts` 和 `shared/routines.ts`。修改包含 Paseo 0.14 的后台列表观察、订阅恢复、页面布局及原生权限接入。以下许可适用于这些复用部分。
+本项目的聊天订阅、历史合并、问题回复、技能 frontmatter 读取、MCP 配置来源发现适配自 [oliexe/paseo-bots](https://github.com/oliexe/paseo-bots) 的 `client/useChat.ts`、`client/chat/stream/model.ts`、问题表单、`shared/skills.ts`、`server/mcp-sources.ts`。修改包含 Paseo 0.14 的后台列表观察、订阅恢复、页面布局及原生权限接入。以下许可适用于这些复用部分。
 
 ## Paseo 原生控件适配
 
@@ -12,17 +12,9 @@
 
 `server/conversations.ts` 的有界完整消息选择改编自 [pingdotgg/t3code](https://github.com/pingdotgg/t3code) 提交 `337c5858c33bc7f8f6dfd391a2c279fa0f7e4d17` 的 `packages/provider-core/src/server/handoffBudget.ts`。保留最近用户／助手和较早用户消息优先、完整原文、来源与遗漏标记；适配为 Paseo 原生历史读取及空分段的首轮附件，不引入 t3code 的编排层、会话库或 Provider 驱动。许可为 MIT，Copyright (c) 2026 T3 Tools Inc.，全文见 [licenses/t3code-MIT.txt](licenses/t3code-MIT.txt)。
 
-## DS-Bot 点名识别适配
+## 历史设计参考许可
 
-`shared/channel-mentions.ts` 改编自 [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot) 提交 `5c514ad70d5f3fd1c3b72b2e76e530bef50989d7` 的 `ds-bot/src/shared/mentions.js`：保留代码／Markdown 链接／地址／路径排除、最长名称优先与去重语义，增加本项目 Bot 稳定标识及同名歧义报告；不迁移其会话库、群轮次循环或调度。Copyright 2026 Fei2411 and the DS Bot contributors，Apache-2.0 许可及适用告知见 [许可证](licenses/DS-Bot-Apache-2.0.txt) 和 [NOTICE](licenses/DS-Bot-NOTICE.txt)。
-
-`server/channel-chat.ts` 的群原文预算选择沿用上节 t3code 适配的完整消息、来源、遗漏标记方法；仍只查 Paseo 原生历史，不另建历史库。
-
-## Office 工作流适配
-
-`server/office-skills.ts` 的固定 Excel 技能工作流参考并适配 [anthropics/skills](https://github.com/anthropics/skills) 提交 `2c5958ecac7cee2b583967a2c4981d0f4a75c579` 的 `skills/xlsx/SKILL.md`（Apache-2.0），包含原生工作簿、保留原件与公式、双模式回读、真实重算及交付检查原则。改动为中文、Paseo 原生命令/权限、按需索引和本机已有 Excel COM 的重算/检查路径；不假定 LibreOffice 或其他依赖预装，也不将静态资源发放作为 Bot 自动学习/迭代技能。许可全文见 [licenses/Anthropic-Skills-Apache-2.0.txt](licenses/Anthropic-Skills-Apache-2.0.txt)。
-
-同时参考 DS-Bot `5c514ad` 的 `office-tools` 创建/修改/实际检查流程及元数据与正文分离方式，其适用 Apache-2.0/NOTICE 见前述 DS-Bot 告知。没有复制其 DSH 技能服务、Office CLI 或执行底座；重算调用已安装的 Microsoft Excel，文件读写复用 openpyxl，不另造公式引擎。Microsoft Excel 与 Python 包各自的许可证不因本项目适配改变。
+瘦身版本已移除项目群聊与内置办公工作流，不再包含这些适配实现。历史设计参考的适用许可文本仍保留：DS-Bot（Copyright 2026 Fei2411 and the DS Bot contributors，Apache-2.0）的 [许可证](licenses/DS-Bot-Apache-2.0.txt) 与 [NOTICE](licenses/DS-Bot-NOTICE.txt)，以及 [Anthropic Skills 的 Apache-2.0 许可](licenses/Anthropic-Skills-Apache-2.0.txt)。保留告知不表示当前插件继续提供相关功能。
 
 ## paseo-bots 许可原文
 

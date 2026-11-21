@@ -36,12 +36,8 @@ export function registerTaskTools(server: McpServer, tasks: TaskTracker, botId: 
     if (!task) throw new Error(`未找到本 Bot 登记的事项：${targetAgentId}`);
     return task;
   }));
-  server.registerTool('create_followup', {
-    description: '为用户交办事项配置原生 heartbeat。仅在明确交办的范围内使用，不授予外发权限，不创建新目标。稳定 name 复用；未知结果保留可见，不新建其他名字规避。',
-    inputSchema: { name: z.string().min(1), prompt: z.string().min(1), cron: z.string().min(1), timezone: z.string().min(1) },
-  }, input => run(() => tasks.follow(botId, agentId, input)));
   server.registerTool('complete_task', {
-    description: '仅当约定交付条件已满足时保存 summary 和 evidence。持续聊天不能调用，请在独立执行事项中完成。普通子事项先经原生通信回报摘要与证据并返回成功回执，当前轮次结束后停止跟进并归档；收到回执后正常回复，不继续新工作。独立例程只保存本次报告，随后正常回复让原生调度收尾。派发回执、草稿或轮次结束均不能作为完成依据。',
+    description: '仅当约定交付条件已满足时保存 summary 和 evidence。持续聊天不能调用，请在独立执行事项中完成。普通子事项先经原生通信回报摘要与证据并返回成功回执，当前轮次结束后归档；收到回执后正常回复，不继续新工作。派发回执、草稿或轮次结束均不能作为完成依据。',
     inputSchema: { summary: z.string().trim().min(1), evidence: z.array(z.string().trim().min(1)).min(1) },
   }, input => run(() => tasks.stop(botId, agentId, { ...input, outcome: 'completed' }, { deferArchive: true })));
   if (cancelExplicit) server.registerTool('cancel_task', {

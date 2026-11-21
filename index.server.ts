@@ -2,17 +2,15 @@ import type { PluginServerContext, PluginHookAgent, PluginHookContext } from '@g
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { join, isAbsolute } from 'node:path';
+import type { PaseoApi } from '@getpaseo/client';
 import { BotStore } from './server/store.js';
-import { archiveBot } from './server/bot-archive.js';
-import { BotJournal } from './server/journal.js';
-import { botSessionConfig, botWorkspaceKey, findRegisteredCheckoutProject, startBotSession, type SessionInput } from './server/sessions.js';
+import { botWorkspaceKey, findRegisteredCheckoutProject, startBotSession, type SessionInput } from './server/sessions.js';
 import { BotMcp } from './server/mcp.js';
-import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory, publishExplicitTeamMemory } from './server/memory.js';
+import { rememberExplicit, latestUserMessage, correctExplicitMemory, forgetExplicitMemory } from './server/memory.js';
 import { readBotHistory } from './server/history.js';
 import { readHistory } from './shared/history.js';
-import type { PaseoApi } from '@getpaseo/client';
 import * as rpc from './shared/contracts.js';
 import * as filesRpc from './shared/files.js';
 import { readDirectory, readSkill, readMcp, discoverMcpSources } from './server/files.js';
@@ -20,53 +18,17 @@ import { stopBotReply } from './server/reply.js';
 import { conversationContext, conversationWork, conversationConfiguration, changeConversation } from './shared/chat.js';
 import { readConversation, conversationExecution, prepareConversationHandoff } from './server/conversations.js';
 import { CHIEF_BOT_ID } from './shared/bot.js';
-import * as officeRpc from './shared/office.js';
-import { BotOfficeAccess } from './server/office.js';
-import { GmailClient } from './server/gmail.js';
-import { GmailChecks } from './server/gmail-checks.js';
-import * as gmailCheckRpc from './shared/gmail-checks.js';
 import { TaskTracker } from './server/tasks.js';
 import * as taskRpc from './shared/tasks.js';
-import { BotRoutines } from './server/routines.js';
-import * as routineRpc from './shared/routines.js';
-import { ChannelStore } from './server/channels.js';
-import { ChannelContextStore } from './server/channel-context.js';
-import { ChannelChat } from './server/channel-chat.js';
-import { TeamMemoryStore } from './server/team-memory.js';
-import { CapabilityGuidance } from './server/capability-guidance.js';
-import { provisionOfficeSkills } from './server/office-skills.js';
-import * as capabilityRpc from './shared/capability-guidance.js';
-import * as channelRpc from './shared/channels.js';
 import { listAttention } from './shared/attention.js';
 import { readAttention } from './server/attention.js';
-import { capabilityStatusItem } from './shared/capability-timeline.js';
 
 export default function contribute(server: PluginServerContext) {
   const legacyDir = join(homedir(), '.paseo-guys');
   const baseDir = process.env.OH_MY_PASEO_BOTS_DATA_DIR ?? process.env.PASEO_GUYS_DATA_DIR
     ?? (existsSync(legacyDir) ? legacyDir : join(homedir(), '.oh-my-paseo-bots'));
   const store = new BotStore({ baseDir });
-  const channels = new ChannelStore({ baseDir, bots: store });
-  const channelState = new ChannelContextStore(baseDir, store, channels);
-  const teamMemory = new TeamMemoryStore(baseDir);
-  const officeSkills = provisionOfficeSkills(baseDir);
-  void officeSkills.catch(error => console.error('内置Office资源准备失败', error));
-  server.handle(filesRpc.listBuiltinSkills, () => officeSkills);
-  const capabilityGuidance = new CapabilityGuidance(store, {}, async () => { const state = await settings.read(); return state.status === 'ready' ? state.values.cwd : undefined; }, () => officeSkills, async (botId, request) => {
-    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
-    const bot = await store.getBot(botId);
-    if (!bot) throw new Error('同事记录未找到');
-    await currentPaseo.agents.ref(request.sourceAgentId).timeline.append(capabilityStatusItem(botId, bot.bot.name, request));
-  });
-  server.handle(capabilityRpc.inspectCapabilities, input => capabilityGuidance.inspect(input.botId));
-  server.handle(capabilityRpc.decideCapabilities, (input, { paseo }) => { currentPaseo = paseo; return capabilityGuidance.decide(input.botId, input.requestId, input.decision); });
-  const channelChat = new ChannelChat(store, channels, channelState, startBoundSession, teamMemory);
-  server.handle(channelRpc.listChannels, input => channels.list(input.includeArchived));
-  server.handle(channelRpc.createChannel, input => channels.create(input));
-  server.handle(channelRpc.updateChannel, input => channels.update(input.channelId, input.details));
-  server.handle(channelRpc.archiveChannel, input => channels.setArchived(input.channelId, input.archived));
-  const defaultCwd = join(baseDir, 'workspace');
-  const journal = new BotJournal({ baseDir: join(baseDir, 'journal') });
+  const defaultCwd = join(baseDir, 'v2', 'workspace', CHIEF_BOT_ID);
   let currentPaseo: PaseoApi | undefined;
   const settings = server.registerSettings(rpc.settings);
   const readCli = async () => {
@@ -80,44 +42,12 @@ export default function contribute(server: PluginServerContext) {
   const tasks: TaskTracker = new TaskTracker({ baseDir, store, getPaseo: () => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪');
     return currentPaseo;
-  }, routineOwner: agentId => routines.owner(agentId), cli: readCli });
-  const officeSettings = server.registerSettings(officeRpc.officeSettings);
-  const office = new BotOfficeAccess({ baseDir, store, requireActive: (botId, agentId) => tasks.requireActive(botId, agentId), readConfig: async botId => {
-    const state = await officeSettings.read();
-    if (state.status !== 'ready') throw new Error('办公配置无效，请先在固定同事入口设置账户和数据范围');
-    return state.values.bots[botId] ?? {};
   } });
-  const mcp: BotMcp = new BotMcp({ baseDir, store, journal, office, tasks, capabilityGuidance, readUserMessage: agentId => { if (!currentPaseo) throw new Error('原生上下文尚未就绪，未配置能力'); return latestUserMessage(currentPaseo, agentId); }, readTeamMemories: () => teamMemory.confirmed(), resolveScope: async (botId, agentId) => {
+  const mcp: BotMcp = new BotMcp({ baseDir, store, tasks, readContext: async (botId, agentId) => {
     const bot = await store.getBot(botId);
-    const link = bot?.sessions.find(link => link.sessionId === agentId) ?? bot?.creationIntents.find(intent => intent.agentId === agentId);
-    if (!link) throw new Error('原生会话未关联到此Bot');
-    if (!link.channelId) return { checkGmailEvents: () => gmailChecks.check(botId, agentId) };
-    if (!currentPaseo) throw new Error('频道宿主上下文尚未就绪');
-    const channelId = link.channelId;
-    const channel = await channelState.authorize(channelId, botId, agentId, currentPaseo);
-    const access = {
-      addMemory: async (_owner: string, input: Parameters<BotStore['addMemory']>[1]) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.addMemory(channelId, input); },
-      updateMemory: async (_owner: string, memoryId: string, input: Parameters<BotStore['updateMemory']>[2], expected?: string) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.updateMemory(channelId, memoryId, input, expected); },
-      removeMemory: async (_owner: string, memoryId: string, expected?: string, origin?: Parameters<BotStore['removeMemory']>[3]) => { await channelState.authorize(channelId, botId, agentId, currentPaseo!); return channelState.removeMemory(channelId, memoryId, expected, origin); },
-    };
-    return {
-      channelId, memoryStore: { addMemory: access.addMemory, getContextMemories: () => channelState.confirmed(channelId) },
-      tasks: undefined, office: undefined, startColleague: undefined, cancelExplicit: undefined,
-      readContext: () => channelChat.frame(channelId, botId, agentId, currentPaseo!),
-      askChannelMember: channel.adminBotId === botId ? input => channelChat.ask(channelId, botId, agentId, input, currentPaseo!) : undefined,
-      reportChannelResult: input => channelChat.report(channelId, botId, agentId, input, currentPaseo!),
-      rememberExplicit: (_bot, _agent, input) => rememberExplicit(store, currentPaseo!, botId, agentId, input, access, channelId),
-      correctMemory: (_bot, _agent, input) => correctExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
-      forgetMemory: (_bot, _agent, input) => forgetExplicitMemory(store, currentPaseo!, botId, agentId, input, access, channelId),
-      publishMemory: (_bot, _agent, input) => publishExplicitTeamMemory(store, currentPaseo!, botId, agentId, input, teamMemory, { getContextMemories: () => channelState.confirmed(channelId) }, channelId),
-      readHistory: async (_bot, input) => {
-        await channelState.authorize(channelId, botId, agentId, currentPaseo!);
-        const target = (await channelState.sessions(channelId)).find(session => session.agentId === input.agentId);
-        if (!target) throw new Error('历史不属于当前频道场景');
-        return readBotHistory(store, currentPaseo!, target.botId, input, channelId);
-      },
-    };
-  }, readContext: async (botId, agentId) => ({ ...await routines.context(botId, agentId), gmailCheck: await gmailChecks.context(botId, agentId), teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }), startColleague: async input => {
+    if (!bot) throw new Error('Bot 未在 v2 注册');
+    return { bot: bot.bot, confirmedMemories: (await store.getContextMemories(botId)).map(memory => memory.content), task: await tasks.get(botId, agentId), tasks: await tasks.list(botId) };
+  }, startColleague: async input => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未派发同事任务');
     return startBoundSession(input, currentPaseo);
   }, cancelExplicit: async (botId, agentId, quote, targetAgentId) => {
@@ -140,9 +70,6 @@ export default function contribute(server: PluginServerContext) {
   }, rememberExplicit: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未保存明确记忆');
     return rememberExplicit(store, currentPaseo, botId, agentId, input);
-  }, publishMemory: async (botId, agentId, input) => {
-    if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未发布团队记忆');
-    return publishExplicitTeamMemory(store, currentPaseo, botId, agentId, input, teamMemory);
   }, correctMemory: async (botId, agentId, input) => {
     if (!currentPaseo) throw new Error('原生宿主上下文尚未就绪，未纠正记忆');
     return correctExplicitMemory(store, currentPaseo, botId, agentId, input);
@@ -155,18 +82,17 @@ export default function contribute(server: PluginServerContext) {
   } });
   const restoring = mcp.restore();
   void restoring.catch(error => console.error('Bot MCP 端点恢复失败', error));
-  server.handle(listAttention, (_, { paseo }) => readAttention({ store, tasks, mail: office.mail, routines, gmail: gmailChecks, recordIssues: () => capabilityGuidance.recordIssues(), agent: async id => (await paseo.agents.ref(id).refresh())?.agent ?? null }));
+  server.handle(listAttention, (_, { paseo }) => readAttention({ store, tasks, agent: async id => (await paseo.agents.ref(id).refresh())?.agent ?? null }));
   server.handle(taskRpc.listTasks, async input => (await tasks.list(input.botId)).filter(task => !task.conversation));
   server.handle(conversationContext, async ({ botId, agentId }, { paseo }) => {
     const task = await tasks.get(botId, agentId);
     const { agent, previousAgentIds } = await readConversation(store, paseo, botId, agentId);
     if (!task?.conversation || agent.archivedAt) throw new Error('未找到本 Bot 的有效持续聊天');
-    if ((await store.getBot(botId))?.bot.archivedAt) throw new Error('同事已归档，请先恢复再发送消息');
     const memories = await store.getContextMemories(botId);
     const handoff = await prepareConversationHandoff(store, paseo, botId, agentId, previousAgentIds);
     return {
       type: 'text' as const, mimeType: 'text/plain' as const, title: handoff ? 'Bot 记忆与对话交接' : '最新确认记忆',
-      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}\n用户显式发布的团队共享记忆（只读；空数组取代旧共享快照）：${JSON.stringify((await teamMemory.confirmed()).map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}${handoff ?? ''}`,
+      text: `这是本 Bot 本轮发送时的最新确认记忆数据，取代旧创建快照或历史中的过期偏好。空列表表示当前没有已确认记忆；本条用户消息中的新偏好或纠正优先，保存后以 get_bot_context 的更新为准。这些资料不新增目标、权限或授权。\n${JSON.stringify(memories.map(memory => memory.content))}${previousAgentIds.length ? `\n本次是同一 Bot 持续聊天的后续原生会话。此前原生历史标识（从早到晚）：${JSON.stringify(previousAgentIds)}。按需要用 read_bot_history 读取相关上下文；已有事项仍保留原父会话，不重复派发。` : ''}${handoff ?? ''}`,
     };
   });
   server.handle(conversationWork, async ({ botId, agentId }, { paseo }) => {
@@ -177,7 +103,7 @@ export default function contribute(server: PluginServerContext) {
     const specialists = [...new Set(conversations.flatMap(conversation => conversation!.specialists))];
     const entries = await Promise.all(specialists.map(async agentId => {
       const snapshot = await paseo.agents.ref(agentId).refresh();
-      const owner = snapshot?.agent.labels['paseo-guys.bot'] ?? await routines.owner(agentId) ?? botId;
+      const owner = snapshot?.agent.labels['paseo-guys.bot'] ?? botId;
       const task = await tasks.get(owner, agentId);
       const colleague = owner === botId ? bot : await store.getBot(owner);
       return {
@@ -188,69 +114,21 @@ export default function contribute(server: PluginServerContext) {
         ...(task ? { status: task.status, summary: task.summary, evidence: task.evidence, detail: task.detail } : {}),
       };
     }));
-    const related = new Set([agentId, ...previousAgentIds, ...specialists]);
-    const mail = (await Promise.all([...new Set([botId, ...entries.map(entry => entry.botId)])].map(async botId =>
-      (await office.mail.list(botId)).filter(action => related.has(action.agentId)).map(action => ({ ...action, botId }))))).flat();
-    return { entries, mail };
+    return { entries };
   });
   server.handle(readHistory, async (input, { paseo }) => readHistory.output.parse(await readBotHistory(store, paseo, input.botId, input)));
-  server.handle(routineRpc.listRoutines, input => routines.list(input.botId));
-  server.handle(routineRpc.createRoutine, input => routines.create(input.botId, input));
-  server.handle(routineRpc.pauseRoutine, input => routines.action(input.botId, input.routineId, 'pause'));
-  server.handle(routineRpc.resumeRoutine, input => routines.action(input.botId, input.routineId, 'resume'));
-  server.handle(routineRpc.runRoutine, input => routines.action(input.botId, input.routineId, 'run-once'));
-  server.handle(routineRpc.cancelRoutine, async (input, { paseo }) => {
-    currentPaseo = paseo;
-    return routines.cancel(input.botId, input.routineId);
-  });
   server.handle(taskRpc.cancelTask, async (input, { paseo }) => {
     currentPaseo = paseo;
     await tasks.ensure(input.botId, input.agentId, { title: input.agentId });
     return tasks.stop(input.botId, input.agentId, { outcome: 'canceled', summary: '用户在固定同事入口取消事项并停止跟进' });
   });
-  server.handle(officeRpc.officeStatus, input => office.scope(input.botId));
-  server.handle(officeRpc.listMail, input => office.mail.list(input.botId));
-  server.handle(officeRpc.listMailGrants, input => office.mail.listGrants(input.botId));
-  server.handle(officeRpc.sendMail, async input => {
-    let action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
-    if (!action) throw new Error('未找到邮件登记');
-    if (action.status === 'pending_confirmation' || action.status === 'revoked') action = await office.mail.approve(input.botId, action.id);
-    return office.mail.send(input.botId, action.agentId, action.id);
-  });
-  server.handle(officeRpc.reconcileMail, async input => {
-    const action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
-    if (!action) throw new Error('未找到邮件登记');
-    return office.mail.reconcile(input.botId, action.agentId, action.id);
-  });
-  server.handle(officeRpc.revokeMail, input => office.mail.revoke(input.botId, input.actionId));
-  server.handle(officeRpc.notifyMail, async (input, { paseo }) => {
-    currentPaseo = paseo;
-    const action = (await office.mail.list(input.botId)).find(item => item.id === input.actionId);
-    if (!action) throw new Error('未找到邮件登记');
-    const task = await tasks.get(input.botId, action.agentId);
-    if (task?.status !== 'active') return { agentId: action.agentId, status: 'inactive' as const };
-    const snapshot = await paseo.agents.ref(action.agentId).refresh();
-    if (!snapshot || snapshot.agent.archivedAt) return { agentId: action.agentId, status: 'inactive' as const };
-    const owner = snapshot.agent.labels['paseo-guys.bot'] ?? await routines.owner(action.agentId);
-    if (owner !== input.botId) throw new Error('邮件执行者未关联此 Bot，未派发通知');
-    const message = `用户在同事页处理了本事项的邮件，以下是已保存的实际回执。请按原任务核对状态并向用户汇报；已发送的邮件不要重发，结果不确定时只回查，撤销不收回已准入或已发出的邮件。这条状态通知不新增目标、权限或预授权。\n${JSON.stringify({ actionId: action.id, subject: action.subject, status: action.status, draftId: action.draftId, sentId: action.sentId, detail: action.detail })}`;
-    await paseo.agents.ref(action.agentId).send(
-      message,
-      { sourceAgentId: action.agentId, activeTurnBehavior: 'steer', messageId: `paseo-guys:mail:${action.id}:${createHash('sha256').update(message).digest('hex')}` },
-    );
-    return { agentId: action.agentId, status: 'notified' as const };
-  });
-  server.handle(officeRpc.allowFixedMail, input => office.mail.allowFixed(input.botId, input.actionId));
-  server.handle(officeRpc.revokeMailGrant, async input => { await office.mail.revokeGrant(input.botId, input.grantId); return {}; });
   server.handle(rpc.toolStatus, () => mcp.status());
   server.handle(rpc.stopReply, (input, { paseo }) => stopBotReply({ ...input, store, tasks, paseo, cli: readCli }));
-  server.handle(rpc.archiveBot, (input, { paseo }) => archiveBot({ store, tasks, routines, paseo }, input.botId));
-  server.handle(rpc.restoreBot, input => store.setArchived(input.botId, false));
-  server.handle(rpc.listBots, async ({ includeArchived }) => {
+  server.handle(rpc.listBots, async () => {
     const corrupt: string[] = [];
     const bots = await store.listBots(id => corrupt.push(id));
     if (!bots.some(bot => bot.id === CHIEF_BOT_ID) && !corrupt.includes(CHIEF_BOT_ID)) bots.unshift(await store.ensureChief());
-    return { bots: includeArchived ? bots : bots.filter(bot => !bot.archivedAt), corrupt };
+    return { bots, corrupt };
   });
   server.handle(filesRpc.listDirectory, readDirectory);
   server.handle(filesRpc.inspectSkill, input => readSkill(input.path));
@@ -276,7 +154,7 @@ export default function contribute(server: PluginServerContext) {
     }
     return store.updateBot(input.botId, patch);
   });
-  server.handle(rpc.listMemories, input => input.team ? teamMemory.listMemories(input.includeArchived) : input.channelId ? channelState.listMemories(input.channelId, input.includeArchived) : store.listMemories(input.botId, { includeArchived: input.includeArchived }));
+  server.handle(rpc.listMemories, input => store.listMemories(input.botId, { includeArchived: input.includeArchived }));
   server.handle(rpc.listSessions, input => store.listSessions(input.botId));
   server.handle(rpc.pendingCreations, input => store.listPendingCreations(input.botId));
   server.handle(rpc.acknowledgeCreation, async input => { await store.acknowledgeCreation(input.botId, input.requestId); return {}; });
@@ -290,15 +168,11 @@ export default function contribute(server: PluginServerContext) {
     await store.completeCreation(input.botId, intent.requestId, { sessionId: intent.agentId, title: snapshot.agent.title, workspaceId: snapshot.agent.workspaceId });
     return { agentId: intent.agentId, status: 'created' as const };
   });
-  server.handle(rpc.readJournal, async input => {
-    if (!await store.getBot(input.botId)) throw new Error(`Bot 不存在：${input.botId}`);
-    return journal.inspect(input.botId, { limit: input.limit, offset: input.offset });
-  });
   // These RPCs are user-facing controls, never a tool automatically granted to Agents.
-  server.handle(rpc.saveMemory, input => input.team ? teamMemory.addMemory({ kind: input.kind, content: input.content }) : input.channelId ? channelState.addMemory(input.channelId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.addMemory(input.botId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.correctMemory, input => input.team ? teamMemory.updateMemory(input.memoryId, { kind: input.kind, content: input.content }) : input.channelId ? channelState.updateMemory(input.channelId, input.memoryId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }) : store.updateMemory(input.botId, input.memoryId, { ...input, origin: { type: 'manual' } }));
-  server.handle(rpc.forgetMemory, async input => ({ removed: input.team ? await teamMemory.removeMemory(input.memoryId) : input.channelId ? await channelState.removeMemory(input.channelId, input.memoryId, undefined, { type: 'manual' }) : await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
-  server.handle(rpc.restoreMemory, input => input.team ? teamMemory.restoreMemory(input.memoryId) : input.channelId ? channelState.restoreMemory(input.channelId, input.memoryId) : store.restoreMemory(input.botId, input.memoryId));
+  server.handle(rpc.saveMemory, input => store.addMemory(input.botId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }));
+  server.handle(rpc.correctMemory, input => store.updateMemory(input.botId, input.memoryId, { kind: input.kind, content: input.content, origin: { type: 'manual' } }));
+  server.handle(rpc.forgetMemory, async input => ({ removed: await store.removeMemory(input.botId, input.memoryId, undefined, { type: 'manual' }) }));
+  server.handle(rpc.restoreMemory, input => store.restoreMemory(input.botId, input.memoryId));
   server.handle(rpc.startSession, async (input, { paseo }) => {
     return startBoundSession({ ...input, requestId: input.requestId ?? randomUUID() }, paseo);
   });
@@ -306,9 +180,8 @@ export default function contribute(server: PluginServerContext) {
     currentPaseo = paseo;
     const bot = await store.getBot(botId);
     if (!bot) throw new Error(`Bot 不存在：${botId}`);
-    if (bot.bot.archivedAt) throw new Error('同事已归档，请先恢复再打开聊天');
-    const channelAgents = new Set([...bot.sessions.filter(link => link.channelId).map(link => link.sessionId), ...bot.creationIntents.filter(intent => intent.channelId).map(intent => intent.agentId)]);
-    const conversations = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active' && !channelAgents.has(task.agentId)).reverse();
+    if (botId !== CHIEF_BOT_ID) throw new Error('专长预设没有独立持续私聊入口');
+    const conversations = (await tasks.list(botId)).filter(task => task.conversation && task.status === 'active').reverse();
     const intents = await store.listPendingCreations(botId);
     let pendingRequestId: string | undefined;
     for (const existing of conversations) {
@@ -332,6 +205,7 @@ export default function contribute(server: PluginServerContext) {
     return { agentId: result.agentId };
   });
   server.handle(rpc.createConversation, async ({ botId }, { paseo }) => {
+    if (botId !== CHIEF_BOT_ID) throw new Error('专长预设没有独立持续私聊入口');
     const bot = await store.getBot(botId);
     if (!bot) throw new Error(`Bot 不存在：${botId}`);
     const result = await startBoundSession({ botId, requestId: randomUUID(), title: bot.bot.name, kind: 'conversation' }, paseo);
@@ -365,10 +239,6 @@ export default function contribute(server: PluginServerContext) {
     await store.acknowledgeCreation(botId, result.requestId);
     return { agentId: result.agentId };
   });
-  server.handle(channelRpc.channelView, ({ channelId }) => channelChat.view(channelId));
-  server.handle(channelRpc.openChannel, ({ channelId, botId }, { paseo }) => { currentPaseo = paseo; return channelChat.open(channelId, paseo, botId); });
-  server.handle(channelRpc.channelContext, ({ channelId, agentId }, { paseo }) => { currentPaseo = paseo; return channelChat.attachment(channelId, agentId, paseo); });
-  server.handle(channelRpc.routeChannelMessage, ({ channelId, text }, { paseo }) => { currentPaseo = paseo; return channelChat.route(channelId, text, paseo); });
   async function startBoundSession(input: SessionInput, paseo: PaseoApi) {
     currentPaseo = paseo;
     const state = await settings.read();
@@ -381,11 +251,11 @@ export default function contribute(server: PluginServerContext) {
       const parent = await paseo.agents.ref(input.parentAgentId).refresh();
       if (parent?.agent.labels['paseo-guys.bot'] === input.botId && parent.agent.labels['paseo-guys.conversation'] === 'true') execution = conversationExecution(parent.agent);
     }
-    const cwd = execution?.cwd ?? bot.bot.execution.cwd ?? (state.values.cwd === defaultCwd ? await managedWorkspace(input.botId) : state.values.cwd);
-    return startBotSession(store, paseo, { ...input, execution }, { cwd, config: { provider, modeId, thinkingOptionId }, teamConfirmedMemories: input.kind ? [] : (await teamMemory.confirmed()).map(memory => memory.content) }, {
+    const useManaged = state.values.cwd === defaultCwd || state.values.cwd === join(baseDir, 'workspace');
+    const cwd = execution?.cwd ?? bot.bot.execution.cwd ?? (useManaged ? await managedWorkspace(input.botId) : state.values.cwd);
+    return startBotSession(store, paseo, { ...input, execution }, { cwd, config: { provider, modeId, thinkingOptionId } }, {
       mount: async (botId, agentId) => {
         await tasks.ensure(botId, agentId, { title: input.title, ...(input.kind ? { conversation: true } : {}) });
-        if (input.channelId) await channelState.link(input.channelId, botId, agentId);
         return mcp.mount(botId, agentId);
       },
     });
@@ -393,11 +263,7 @@ export default function contribute(server: PluginServerContext) {
   async function managedWorkspacePath(botId: string) {
     const bot = await store.getBot(botId);
     if (!bot) throw new Error(`Bot 不存在：${botId}`);
-    const state = await settings.read();
-    const home = process.env.PASEO_HOME ?? (state.status === 'ready' ? state.values.paseoHome : undefined);
-    if (!home) return undefined;
-    if (!isAbsolute(home)) throw new Error('当前 Paseo 配置目录必须为宿主绝对路径');
-    return join(home, 'oh-my-paseo-bots', 'workspaces', bot.bot.id);
+    return join(baseDir, 'v2', 'workspace', bot.bot.id);
   }
   async function managedWorkspace(botId: string) {
     const cwd = await managedWorkspacePath(botId);
@@ -405,155 +271,52 @@ export default function contribute(server: PluginServerContext) {
     await mkdir(cwd, { recursive: true });
     return cwd;
   }
-  const routines = new BotRoutines({ baseDir, store, tasks, cli: async () => {
-    const state = await settings.read();
-    if (state.status !== 'ready') throw new Error('请先设置宿主原生 CLI 与目录');
-    const home = state.values.paseoHome ?? process.env.PASEO_HOME;
-    if (!state.values.paseoCommand || !home || !isAbsolute(home)) throw new Error('独立例程需配置当前 daemon 的 CLI 命令及绝对 home');
-    return { command: state.values.paseoCommand, home, cwd: state.values.cwd };
-  }, defaults: async () => {
-    const state = await settings.read();
-    if (state.status !== 'ready') throw new Error('Bot 执行设置无效');
-    if (state.values.cwd === defaultCwd) await mkdir(defaultCwd, { recursive: true });
-    return { cwd: state.values.cwd, config: { provider: state.values.provider, modeId: state.values.modeId, thinkingOptionId: state.values.thinkingOptionId }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) };
-  } });
-  const gmailChecks = new GmailChecks({ baseDir,
-    getConfig: async botId => {
-      const bot = await store.getBot(botId);
-      if (!bot || bot.bot.archivedAt) throw new Error('同事不存在或已归档');
-      const state = await officeSettings.read();
-      const config = state.status === 'ready' ? state.values.bots[botId]?.gmail : undefined;
-      if (!config || !isAbsolute(config.configDir)) throw new Error('请先配置本同事的Gmail账户与批准查询，以及宿主绝对登录目录');
-      return config;
-    }, client: config => new GmailClient(config),
-    validateRoutine: async (botId, routineId) => {
-      const row = (await routines.list(botId)).find(item => item.routine.id === routineId);
-      if (!row?.native || row.error || row.routine.state !== 'ready' || row.native.status === 'completed') throw new Error('只可绑定本同事已确认且未结束的原生例程');
-    },
-    activeRoutine: async (botId, agentId) => (await tasks.requireActive(botId, agentId)).routine?.id,
-    dispatch: async input => { if (!currentPaseo) throw new Error('原生宿主未就绪，未派发'); return startBoundSession(input, currentPaseo); },
-    lookup: async (botId, requestId) => {
-      const intent = (await store.getBot(botId))?.creationIntents.find(item => item.requestId === requestId);
-      if (!intent) return undefined;
-      if (intent.status === 'created') return intent.agentId;
-      if (!currentPaseo) return undefined;
-      const snapshot = await currentPaseo.agents.ref(intent.agentId).refresh();
-      if (!snapshot) return undefined;
-      if (snapshot.agent.labels['paseo-guys.bot'] !== botId || snapshot.agent.labels['paseo-guys.request'] !== requestId) throw new Error('原生创建来源与邮件事件登记不符');
-      await store.completeCreation(botId, requestId, { sessionId: snapshot.agent.id, title: snapshot.agent.title, workspaceId: snapshot.agent.workspaceId });
-      return snapshot.agent.id;
-    },
-  });
-  server.handle(gmailCheckRpc.inspectGmailCheck, input => gmailChecks.inspect(input.botId, input.routineId));
-  server.handle(gmailCheckRpc.enableGmailCheck, input => gmailChecks.enable(input.botId, input.routineId, input.prompt));
-  server.handle(gmailCheckRpc.disableGmailCheck, input => gmailChecks.disable(input.botId, input.routineId));
   async function associate(agent: PluginHookAgent, context: PluginHookContext) {
+    // 未登记的旧 Agent 不做原生 refresh，避免刷新触发宿主恢复/创建钩子。
+    const owner = await store.findSessionOwner(agent.id);
+    const parent = agent.parentAgentId ? await store.findSessionOwner(agent.parentAgentId) : null;
+    const inherited = !parent && agent.parentAgentId ? await tasks.findSpecialistOwner(agent.parentAgentId) : null;
+    if (!owner && !parent && !inherited) return null;
     currentPaseo = context.paseo;
+    if (parent && (await tasks.get(parent.bot.id, agent.parentAgentId!))?.status === 'active') await tasks.observeSpecialist(parent.bot.id, agent.parentAgentId!, agent.id);
+    else if (inherited) await tasks.observeSpecialist(inherited.botId, inherited.rootAgentId, agent.id);
+    if (!owner) return null;
+    const botId = owner.bot.id;
     const snapshot = await context.paseo.agents.ref(agent.id).refresh();
-    const botId = snapshot?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(agent.id);
-    let parentBotId: string | null = null;
-    let parentId = agent.parentAgentId;
-    const seen = new Set<string>([agent.id]);
-    while (parentId && !seen.has(parentId)) {
-      seen.add(parentId);
-      const parent = await context.paseo.agents.ref(parentId).refresh();
-      const owner = parent?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(parentId);
-      if (owner && await store.getBot(owner)) {
-        try {
-          await store.linkSession(owner, { sessionId: parentId, title: parent!.agent.title, workspaceId: parent!.agent.workspaceId });
-          await tasks.ensure(owner, parentId, { title: parent!.agent.title || parentId, ...(parent?.agent.labels?.['paseo-guys.conversation'] === 'true' ? { conversation: true } : {}) });
-          await tasks.observeSpecialist(owner, parentId, agent.id);
-        } catch (error) { console.error(`Bot ${owner} 的原生专家关联未保存；仍记录原生观察`, error); }
-        parentBotId = owner;
-        break;
-      }
-      parentId = parent?.agent.labels?.['paseo.parent-agent-id'] ?? null;
-    }
-    if (!botId || !await store.getBot(botId)) return parentBotId;
-    try { await store.linkSession(botId, { sessionId: agent.id, title: agent.title, workspaceId: agent.workspaceId }); }
-    catch (error) { console.error(`Bot ${botId} 会话关联未保存；仍记录原生观察`, error); }
-    try { await tasks.ensure(botId, agent.id, { title: agent.title || agent.id, ...(snapshot?.agent.labels?.['paseo-guys.conversation'] === 'true' ? { conversation: true } : {}) }); }
-    catch (error) { console.error(`Bot ${botId} 的事项关联未保存；仍记录原生观察`, error); }
+    await store.linkSession(botId, { sessionId: agent.id, title: agent.title, workspaceId: agent.workspaceId });
+    await tasks.ensure(botId, agent.id, { title: agent.title || agent.id, ...(snapshot?.agent.labels['paseo-guys.conversation'] === 'true' ? { conversation: true } : {}) });
     return botId;
   }
   const hidden = server.addHook('workspace.create.before', async ({ request }, { paseo }) => {
-    // 在原生创建 hook 内选项目，避免改掉既有 workspace receipt 的输入指纹。
-    const managedBot = /^oh-my-paseo-bots:([a-z0-9][a-z0-9-]*)$/.exec(request.title ?? '')?.[1];
+    const managedBot = /^oh-my-paseo-bots:v2:([a-z0-9][a-z0-9_-]*)$/.exec(request.title ?? '')?.[1];
     if (request.background && request.source.kind === 'directory' && !request.source.projectId && isAbsolute(request.source.path)
       && managedBot && (request.idempotencyKey === botWorkspaceKey(managedBot, request.source.path) || request.idempotencyKey?.startsWith(`${botWorkspaceKey(managedBot, request.source.path)}:`)) && await store.getBot(managedBot)) {
       const projectId = await findRegisteredCheckoutProject(paseo, request.source.path);
       if (projectId) return { ...request, source: { ...request.source, projectId } };
     }
-    const botId = request.agent?.labels?.['paseo-guys.bot'];
-    if (botId && await store.getBot(botId)) return { ...request, background: true };
-    const scheduleId = request.agent?.labels?.['paseo.schedule-id'];
-    if (scheduleId && await routines.ownsSchedule(scheduleId)) return { ...request, background: true };
-    if (request.callerAgentId) {
-      const caller = await paseo.agents.ref(request.callerAgentId).refresh();
-      const owner = caller?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(request.callerAgentId);
-      if (owner && await store.getBot(owner)) return { ...request, background: true };
-    }
+    if (request.callerAgentId && (await store.findSessionOwner(request.callerAgentId) || await tasks.findSpecialistOwner(request.callerAgentId))) return { ...request, background: true };
   });
   const opened = server.addHook('agent.open.before', async ({ request }, context) => {
+    const owner = await store.findSessionOwner(request.agentId);
+    const specialist = owner ? null : await tasks.findSpecialistOwner(request.agentId);
+    if (!owner && !specialist) return; // 旧 botId 标签/根层文件不构成 v2 登记。
     currentPaseo = context.paseo;
-    if (request.labels?.['paseo.schedule-id']) {
-      // 历史读取只核对已保存的例程归属，不 bind/ensure 或恢复取消的执行。
-      if (request.purpose === 'history') {
-        const botId = await routines.owner(request.agentId);
-        if (botId && await store.getBot(botId) && request.provider === 'claude') {
-          return { ...request, env: { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } };
-        }
-        return;
-      }
-      const routine = await routines.bind(request);
-      if (!routine) return;
-      const bot = await store.getBot(routine.botId);
-      if (!bot) throw new Error('例程绑定的 Bot 不存在');
-      const config = await botSessionConfig(store, routine.botId, { cwd: request.cwd, config: { provider: request.provider }, teamConfirmedMemories: (await teamMemory.confirmed()).map(memory => memory.content) }, 'routine');
-      return { ...request, ...(request.provider === 'claude' ? { env: { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } } : {}), mcpServers: { ...request.mcpServers, ...config.config.mcpServers, 'paseo-guys': await mcp.mount(routine.botId, request.agentId) } };
-    }
-    let env: Record<string, string> | undefined;
-    let botId: string | undefined = request.labels?.['paseo-guys.bot'];
-    try {
-      // 已登记 Bot 标签是既有生命周期的自动纳管入口；首次无需等待关联或原生回查。
-      botId ??= (await context.paseo.agents.ref(request.agentId).refresh())?.agent.labels?.['paseo-guys.bot'];
-      const bot = botId ? await store.getBot(botId) : null;
-      if (botId && bot) {
-        if (request.provider === 'claude') env = { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
-        await mcp.mount(botId, request.agentId);
-      }
-    } catch (error) {
-      if (request.provider === 'claude' && botId && !env) {
-        throw new Error('Claude Bot 的原生自动记忆关闭未能核实，未打开会话', { cause: error });
-      }
-      console.error(`原生会话 ${request.agentId} 的 Bot 工具恢复失败；继续打开会话`, error);
-    }
-    // 工具预热失败不撤销已核实 Bot 的关闭策略；不修改普通会话或宿主全局环境。
+    const env = request.provider === 'claude' ? { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } : undefined;
+    try { if (owner) await mcp.mount(owner.bot.id, request.agentId); }
+    catch (error) { console.error(`原生会话 ${request.agentId} 的 Bot 工具恢复失败；继续打开会话`, error); }
     if (env) return { ...request, env };
   });
-  const started = server.addHook('agent.turn.before', async (event, context) => {
-    const botId = await associate(event.agent, context);
-    if (botId) await journal.append(botId, { agentId: event.agent.id, turnId: event.turnId, kind: 'turn_started' });
-  });
+  const started = server.addHook('agent.turn.before', async (event, context) => { await associate(event.agent, context); });
   const created = server.addHook('agent.create.after', async (event, context) => { await associate(event.agent, context); });
   const archived = server.addHook('agent.archive.after', async (event, context) => {
+    const owner = await store.findSessionOwner(event.agent.id);
+    if (!owner) return;
     currentPaseo = context.paseo;
-    const snapshot = await context.paseo.agents.ref(event.agent.id).refresh();
-    const botId = snapshot?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(event.agent.id);
-    if (botId && await store.getBot(botId)) {
-      await tasks.observeArchived(botId, event.agent.id);
-      const requestId = snapshot?.agent.labels?.['paseo-guys.request'];
-      if (requestId && (await store.listPendingCreations(botId)).some(intent => intent.requestId === requestId && intent.status === 'created')) {
-        await store.acknowledgeCreation(botId, requestId);
-      }
-    }
+    await tasks.observeArchived(owner.bot.id, event.agent.id);
+    for (const intent of owner.creationIntents) if (intent.agentId === event.agent.id && intent.status === 'created' && !intent.acknowledged) await store.acknowledgeCreation(owner.bot.id, intent.requestId);
   });
   const ended = server.addHook('agent.turn.after', async (event, context) => {
     const botId = await associate(event.agent, context);
-    if (botId) await journal.append(botId, {
-      agentId: event.agent.id, turnId: event.turnId, kind: 'turn_ended', outcome: event.outcome.kind,
-      ...(event.outcome.kind === 'failed' ? { error: event.outcome.error.message.trim().slice(0, 4000) || '原生轮次失败（无详细信息）' } : {}),
-    });
     if (botId) await tasks.settleCompletion(botId, event.agent.id);
     if (!botId || event.outcome.kind !== 'failed') return;
     const child = await context.paseo.agents.ref(event.agent.id).refresh();
@@ -562,8 +325,9 @@ export default function contribute(server: PluginServerContext) {
     if (task?.status !== 'active') return;
     const parentId = child.agent.labels['paseo.parent-agent-id'];
     if (!parentId) return;
+    const parentBotId = (await store.findSessionOwner(parentId))?.bot.id;
+    if (!parentBotId) return;
     const parent = await context.paseo.agents.ref(parentId).refresh();
-    const parentBotId = parent?.agent.labels?.['paseo-guys.bot'] ?? await routines.owner(parentId);
     const parentTask = parentBotId ? await tasks.get(parentBotId, parentId) : null;
     if (parentTask?.status !== 'active' || parent?.agent.archivedAt || !parentTask.specialists.includes(event.agent.id)) return;
     await context.paseo.agents.ref(parentId).send(

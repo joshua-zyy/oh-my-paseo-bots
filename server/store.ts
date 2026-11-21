@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { capabilityRequestSchema, type CapabilityRequest } from '../shared/capability-guidance.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { writeJsonFile } from './storage.js';
 import { StoreError } from './store-errors.js';
 import { addMemoryEntry, updateMemoryEntry, archiveMemoryEntry, restoreMemoryEntry } from './memory-entries.js';
-import { channelIdSchema, type ChannelId } from '../shared/channels.js';
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { CHIEF_BOT_ID, botDetailsSchema, botPatchSchema, type BotDetails, type BotDetailsInput, type BotPatch } from '../shared/bot.js';
@@ -24,7 +22,7 @@ export type { MemoryEntry, MemoryKind, MemorySource } from '../shared/memory.js'
  * 每个 Bot 一个 JSON 文件，写入为「临时文件 + rename」的原子替换。
  */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const BOT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:@-]+$/;
 
@@ -36,8 +34,7 @@ export interface BotIdentity extends BotDetails {
   id: string;
   createdAt: string;
   updatedAt: string;
-  archivedAt?: string;
-  capabilityRequest?: CapabilityRequest;
+
 }
 
 /** Bot 关联的一个 Paseo 原生会话。只存标识与最小标注，不存会话内容。 */
@@ -46,7 +43,6 @@ export interface SessionLink {
   title: string | null;
   workspaceId: string | null;
   linkedAt: string;
-  channelId?: ChannelId;
 }
 
 /**
@@ -62,23 +58,21 @@ export interface CreationIntent {
   status: 'pending' | 'created';
   /** 仅在用户 RPC 显式确认后为 true；原生回执不等于用户已看见。 */
   acknowledged: boolean;
-  channelId?: ChannelId;
 }
 
 /** 一个 Bot 的完整业务元数据快照。 */
 export interface BotRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   bot: BotIdentity;
   sessions: SessionLink[];
   memories: MemoryEntry[];
-  /** 旧存档缺失该字段时按 `[]` 读取。 */
+  /** v2 记录缺失该字段时按 `[]` 读取；不读取根层旧存档。 */
   creationIntents: CreationIntent[];
 }
 
 export interface PrepareCreationInput {
   requestId: string;
   fingerprint: string;
-  channelId?: ChannelId;
 }
 
 /**
@@ -100,7 +94,6 @@ export interface LinkSessionInput {
   sessionId: string;
   title?: string | null;
   workspaceId?: string | null;
-  channelId?: ChannelId;
 }
 
 export interface AddMemoryInput {
@@ -131,15 +124,12 @@ export { StoreError, type StoreErrorCode } from './store-errors.js';
 
 /** Windows 设备名即使带 `.json` 扩展名仍会被当作设备，不能作为存档文件名。 */
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
-// These root files belong to the existing auxiliary stores, never to a Bot identity.
-const AUXILIARY_STORE_IDS = new Set(['gmail-checks', 'team-memories']);
 
 export const botIdSchema = z
   .string()
   .max(64)
   .regex(BOT_ID_PATTERN, 'must start with [a-z0-9], use only [a-z0-9_-]')
-  .refine((value) => !WINDOWS_RESERVED_NAME.test(value), { message: 'must not be a Windows device name' })
-  .refine((value) => !AUXILIARY_STORE_IDS.has(value), { message: 'must not use a plugin metadata filename' });
+  .refine((value) => !WINDOWS_RESERVED_NAME.test(value), { message: 'must not be a Windows device name' });
 const sessionIdSchema = z.string().max(200).regex(SESSION_ID_PATTERN, 'must use only [A-Za-z0-9._:@-]');
 const labelSchema = z.string().min(1).max(200);
 const timestampSchema = z.string().min(1).max(64);
@@ -150,8 +140,7 @@ const botIdentitySchema = botDetailsSchema.extend({
   id: botIdSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
-  archivedAt: timestampSchema.optional(),
-  capabilityRequest: capabilityRequestSchema.optional(),
+
 });
 
 const sessionLinkSchema = z.object({
@@ -159,7 +148,6 @@ const sessionLinkSchema = z.object({
   title: z.string().nullable(),
   workspaceId: labelSchema.nullable(),
   linkedAt: timestampSchema,
-  channelId: channelIdSchema.optional(),
 });
 
 const creationIntentSchema = z.object({
@@ -168,7 +156,6 @@ const creationIntentSchema = z.object({
   agentId: z.string().min(1).max(200),
   status: z.enum(['pending', 'created']),
   acknowledged: z.boolean(),
-  channelId: channelIdSchema.optional(),
 });
 
 const botRecordSchema = z.object({
@@ -185,13 +172,11 @@ const linkSessionSchema = z.object({
   sessionId: sessionIdSchema,
   title: z.string().nullable().optional(),
   workspaceId: z.string().min(1).max(200).nullable().optional(),
-  channelId: channelIdSchema.optional(),
 });
 
 const prepareCreationSchema = z.object({
   requestId: requestIdSchema,
   fingerprint: fingerprintSchema,
-  channelId: channelIdSchema.optional(),
 });
 
 export const addMemorySchema = z.object({
@@ -225,35 +210,19 @@ export function selectInjectableMemories(memories: readonly MemoryEntry[]): Memo
   return memories.filter((memory) => memory.kind === 'confirmed' && !memory.archivedAt);
 }
 
-function mergeCapabilities(current: BotDetails['capabilities'], additions: BotDetails['capabilities']): BotDetails['capabilities'] {
-  return {
-    skills: [...current.skills.filter(skill => !additions.skills.some(item => item.path === skill.path)), ...additions.skills],
-    mcpServers: { ...current.mcpServers, ...additions.mcpServers },
-    ...(current.disabledMcpServers ? { disabledMcpServers: current.disabledMcpServers.filter(name => !Object.hasOwn(additions.mcpServers, name)) } : {}),
-  };
-}
-
 function propose(intent: CreationIntent): CreationProposal {
   return intent.status === 'created' ? { action: 'known', intent } : { action: 'retry_pending', intent };
 }
 
-/** 幂等关联原生会话：同一 sessionId 只更新标注，不重复追加。 */
+/** 同一 sessionId 只更新显式传入的标注，不改变 linkedAt。 */
 function upsertSession(document: BotRecord, value: LinkSessionInput, now: string): SessionLink {
-  const channelId = value.channelId ?? document.creationIntents.find(intent => intent.agentId === value.sessionId)?.channelId;
-  const existing = document.sessions.find((session) => session.sessionId === value.sessionId);
+  const existing = document.sessions.find(session => session.sessionId === value.sessionId);
   if (existing) {
     if (value.title !== undefined) existing.title = value.title;
     if (value.workspaceId !== undefined) existing.workspaceId = value.workspaceId;
-    if (channelId !== undefined) existing.channelId = channelId;
     return existing;
   }
-  const link: SessionLink = {
-    sessionId: value.sessionId,
-    title: value.title ?? null,
-    workspaceId: value.workspaceId ?? null,
-    linkedAt: now,
-    ...(channelId ? { channelId } : {}),
-  };
+  const link: SessionLink = { sessionId: value.sessionId, title: value.title ?? null, workspaceId: value.workspaceId ?? null, linkedAt: now };
   document.sessions.push(link);
   return link;
 }
@@ -279,7 +248,7 @@ export class BotStore {
     if (typeof baseDir !== 'string' || baseDir.trim() === '') {
       throw new StoreError('invalid_input', 'baseDir is required', { field: 'baseDir' });
     }
-    this.baseDir = nodePath.resolve(baseDir);
+    this.baseDir = nodePath.resolve(baseDir, 'v2');
   }
 
   /** 首次打开即有固定主入口；不改写已有身份，也不启动执行 Agent。 */
@@ -330,69 +299,6 @@ export class BotStore {
     });
   }
 
-  /** 普通技能索引直接配置；只有接收方未批准或已禁用/改变的MCP需要确认。 */
-  async configureCapabilities(botId: string, request: CapabilityRequest, additions: BotDetails['capabilities']): Promise<CapabilityRequest> {
-    const id = parseInput(botIdSchema, botId, 'botId');
-    return this.withLock(id, async () => {
-      const document = await this.requireDocument(id);
-      if (document.bot.archivedAt) throw new Error('同事已归档');
-      const previous = document.bot.capabilityRequest;
-      if (previous?.id === request.id) {
-        if (previous.fingerprint !== request.fingerprint) throw new Error('同一请求的能力方案已经变化；核对新来源后，请用新requestId提出新方案');
-        if (previous.state !== 'pending') return previous;
-        request = previous;
-      }
-      const current = document.bot.capabilities;
-      const authorized = Object.entries(additions.mcpServers).every(([name, config]) => !current.disabledMcpServers?.includes(name) && isDeepStrictEqual(current.mcpServers[name], config));
-      if (authorized) {
-        document.bot.capabilities = mergeCapabilities(current, additions);
-        request.state = 'applied';
-        request.decidedAt = new Date().toISOString();
-      }
-      document.bot.capabilityRequest = request;
-      document.bot.updatedAt = new Date().toISOString();
-      await this.writeDocument(id, document);
-      return request;
-    });
-  }
-
-  /** 用户决定绑定被展示的精确方案；同一决策重试只回查，不再合并。 */
-  async decideCapabilities(botId: string, requestId: string, decision: 'apply' | 'reject', additions?: BotDetails['capabilities']): Promise<CapabilityRequest> {
-    const id = parseInput(botIdSchema, botId, 'botId');
-    return this.withLock(id, async () => {
-      const document = await this.requireDocument(id);
-      if (document.bot.archivedAt) throw new Error('同事已归档');
-      const request = document.bot.capabilityRequest;
-      if (!request || request.id !== requestId) throw new Error('能力方案已经变化，请刷新后核对');
-      if (request.state !== 'pending') return request;
-      if (decision === 'apply') {
-        if (!additions) throw new Error('未读取能力来源，未应用配置');
-        document.bot.capabilities = mergeCapabilities(document.bot.capabilities, additions);
-      }
-      request.state = decision === 'apply' ? 'applied' : 'rejected';
-      request.decidedAt = document.bot.updatedAt = new Date().toISOString();
-      await this.writeDocument(id, document);
-      return request;
-    });
-  }
-
-  /** 仅改变同事可用状态；不删除记忆、会话、工作区或历史。 */
-  async setArchived(botId: string, archived: boolean): Promise<BotIdentity> {
-    const id = parseInput(botIdSchema, botId, 'botId');
-    if (archived && id === CHIEF_BOT_ID) throw new StoreError('invalid_input', '主 Bot Chief 不能归档');
-    return this.withLock(id, async () => {
-      const document = await this.requireDocument(id);
-      if (Boolean(document.bot.archivedAt) === archived) return document.bot;
-      if (archived && document.creationIntents.some(intent => intent.status === 'pending')) throw new StoreError('invalid_input', '存在未决创建，请先回查创建结果');
-      const now = new Date().toISOString();
-      if (archived) document.bot.archivedAt = now;
-      else delete document.bot.archivedAt;
-      document.bot.updatedAt = now;
-      await this.writeDocument(id, document);
-      return document.bot;
-    });
-  }
-
   async getBot(botId: string): Promise<BotRecord | null> {
     const id = parseInput(botIdSchema, botId, 'botId');
     return this.withLock(id, () => this.readDocument(id));
@@ -413,14 +319,27 @@ export class BotStore {
     return bots;
   }
 
-  /** 关联原生会话；同一 sessionId 重复关联为幂等更新。 */
+  /** 仅从 v2 注册会话/创建意图定位所有者；旧标签不能自动创建或认领记录。 */
+  async findSessionOwner(agentId: string): Promise<BotRecord | null> {
+    const id = parseInput(sessionIdSchema, agentId, 'sessionId');
+    for (const botId of await this.listStoreFiles()) {
+      const document = await this.getBot(botId);
+      if (document && (document.sessions.some(session => session.sessionId === id) || document.creationIntents.some(intent => intent.agentId === id))) return document;
+    }
+    return null;
+  }
+
+  /** 相同参数重复调用不更新时间、不写盘；显式新标注仍可更新。 */
   async linkSession(botId: string, input: LinkSessionInput): Promise<SessionLink> {
     const id = parseInput(botIdSchema, botId, 'botId');
     const value = parseInput(linkSessionSchema, input, 'session');
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
+      const previous = document.sessions.find(session => session.sessionId === value.sessionId);
+      const before = previous ? { ...previous } : undefined;
       const now = new Date().toISOString();
       const link = upsertSession(document, value, now);
+      if (isDeepStrictEqual(before, link)) return link;
       document.bot.updatedAt = now;
       await this.writeDocument(id, document);
       return link;
@@ -529,7 +448,6 @@ export class BotStore {
     return this.withLock(id, async () => {
       const document = await this.requireDocument(id);
 
-      if (document.bot.archivedAt) throw new StoreError('bot_archived', '同事已归档，请先恢复再派发工作');
       const byRequest = document.creationIntents.find((intent) => intent.requestId === value.requestId);
       if (byRequest) {
         if (byRequest.fingerprint !== value.fingerprint) {
@@ -551,7 +469,6 @@ export class BotStore {
         agentId: randomUUID(),
         status: 'pending',
         acknowledged: false,
-        ...(value.channelId ? { channelId: value.channelId } : {}),
       };
       document.creationIntents.push(intent);
       document.bot.updatedAt = new Date().toISOString();
@@ -630,9 +547,10 @@ export class BotStore {
    * 保证任何输入都无法读写 baseDir 之外的文件。
    */
   private fileFor(botId: string): string {
-    const file = nodePath.join(this.baseDir, `${botId}.json`);
+    const name = botId === CHIEF_BOT_ID ? 'chief.json' : nodePath.join('specialists', `${botId}.json`);
+    const file = nodePath.join(this.baseDir, name);
     const relative = nodePath.relative(this.baseDir, file);
-    if (relative !== `${botId}.json` || relative.startsWith('..') || nodePath.isAbsolute(relative)) {
+    if (relative !== name || relative.startsWith('..') || nodePath.isAbsolute(relative)) {
       throw new StoreError('invalid_input', `botId escapes the store directory: ${botId}`, { field: 'botId' });
     }
     return file;
@@ -664,6 +582,7 @@ export class BotStore {
       });
     }
     const document: BotRecord = result.data;
+    if (document.bot.id !== botId) throw new StoreError('corrupt_store', `store identity does not match filename: ${file}`);
     return document;
   }
 
@@ -675,15 +594,15 @@ export class BotStore {
   private async listStoreFiles(): Promise<string[]> {
     let names: string[];
     try {
-      names = await readdir(this.baseDir);
+      names = await readdir(nodePath.join(this.baseDir, 'specialists'));
     } catch (error) {
-      if (isErrnoCode(error, 'ENOENT')) return [];
+      if (isErrnoCode(error, 'ENOENT')) return [CHIEF_BOT_ID];
       throw error;
     }
-    return names
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => name.slice(0, -'.json'.length))
-      .filter((id) => botIdSchema.safeParse(id).success)
-      .sort();
+    return [CHIEF_BOT_ID, ...names
+      .filter(name => name.endsWith('.json'))
+      .map(name => name.slice(0, -'.json'.length))
+      .filter(id => id !== CHIEF_BOT_ID && botIdSchema.safeParse(id).success)
+      .sort()];
   }
 }

@@ -7,7 +7,6 @@ import { botPrompt } from './prompt.js';
 import type { BotMcp } from './mcp.js';
 import type { BotDetails } from '../shared/bot.js';
 import { CONVERSATION_PREVIOUS_LABEL } from '../shared/chat.js';
-import type { ChannelId } from '../shared/channels.js';
 
 export interface SessionInput {
   botId: string;
@@ -15,8 +14,7 @@ export interface SessionInput {
   title: string;
   prompt?: string;
   parentAgentId?: string;
-  kind?: 'conversation' | 'channel';
-  channelId?: ChannelId;
+  kind?: 'conversation';
   execution?: BotDetails['execution'];
   previousAgentId?: string;
 }
@@ -41,7 +39,7 @@ export async function startBotSession(
   store: BotStore,
   paseo: PaseoApi,
   input: SessionInput,
-  placement: { cwd: string; config: PaseoAgentConfig; teamConfirmedMemories?: readonly string[] },
+  placement: { cwd: string; config: PaseoAgentConfig },
   tools: Pick<BotMcp, 'mount'>,
 ): Promise<StartedSession> {
   const { cwd, config, systemPrompt: botSystemPrompt } = await botSessionConfig(store, input.botId, placement, input.kind ?? 'interactive', input.execution);
@@ -56,7 +54,6 @@ export async function startBotSession(
         prompt: input.prompt,
         parentAgentId: input.parentAgentId,
         kind: input.kind,
-        channelId: input.channelId,
         previousAgentId: input.previousAgentId,
         cwd,
         config,
@@ -65,7 +62,7 @@ export async function startBotSession(
     )
     .digest('hex');
 
-  const proposal = await store.prepareCreation(input.botId, { requestId: input.requestId, fingerprint, channelId: input.channelId });
+  const proposal = await store.prepareCreation(input.botId, { requestId: input.requestId, fingerprint });
   const botTools = await tools.mount(input.botId, proposal.intent.agentId);
   // 已 created 且未 ack 的同输入请求只能拿回已知 agentId，不再创建。
   if (proposal.action === 'known') return { agentId: proposal.intent.agentId, requestId: proposal.intent.requestId };
@@ -75,12 +72,13 @@ export async function startBotSession(
   if (!agent) {
     const options = {
       agentId: proposal.intent.agentId,
-      idempotencyKey: `paseo-guys:${input.botId}:${proposal.intent.requestId}`,
+      idempotencyKey: `oh-my-paseo-bots:v2:${input.botId}:${proposal.intent.requestId}`,
+      background: true,
       ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
       config: { ...config, systemPrompt, mcpServers: { ...config.mcpServers, 'paseo-guys': botTools } },
       title: input.title,
       prompt: input.prompt,
-      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.channelId ? { 'paseo-guys.channel': input.channelId } : {}), ...(input.kind ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
+      labels: { 'paseo-guys.bot': input.botId, 'paseo-guys.request': proposal.intent.requestId, ...(input.kind ? { 'paseo-guys.conversation': 'true', ...(input.previousAgentId ? { [CONVERSATION_PREVIOUS_LABEL]: input.previousAgentId } : {}) } : {}) },
     };
     // 隐藏的原生工作区按 Bot 与目录复用；位置不改变原生父子关系。
     const { workspace, replacementId } = await botWorkspace(store, paseo, input.botId, cwd);
@@ -91,7 +89,6 @@ export async function startBotSession(
 
   await store.completeCreation(input.botId, proposal.intent.requestId, {
     sessionId: agent.id,
-    channelId: input.channelId,
     title: input.title,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
   });
@@ -105,12 +102,12 @@ async function botWorkspace(store: BotStore, paseo: PaseoApi, botId: string, cwd
   for (const id of ids) {
     const workspace = paseo.workspaces.ref(id);
     const snapshot = await workspace.refresh(); // 请求失败是未知，不能按不存在重建。
-    // 例程临时位置也在会话关联中，但会被宿主收尾；只复用本 Bot 的专属位置。
-    if (snapshot?.title === `oh-my-paseo-bots:${botId}` && snapshot.background && !snapshot.archivingAt && snapshot.workspaceDirectory && !relative(cwd, snapshot.workspaceDirectory)) return { workspace };
+    // 只复用当前 v2 注册记录中的专属后台位置，不读取旧根层关联。
+    if (snapshot?.title === `oh-my-paseo-bots:v2:${botId}` && snapshot.background && !snapshot.archivingAt && snapshot.workspaceDirectory && !relative(cwd, snapshot.workspaceDirectory)) return { workspace };
   }
   const workspace = await paseo.workspaces.create({
     source: { kind: 'directory', path: cwd },
-    title: `oh-my-paseo-bots:${botId}`,
+    title: `oh-my-paseo-bots:v2:${botId}`,
     background: true,
     // 同一失效关联后的并发创建仍用同一键；新关联落盘后直接复用它。
     idempotencyKey: `${botWorkspaceKey(botId, cwd)}${ids[0] ? `:${ids[0]}` : ''}`,
@@ -119,7 +116,7 @@ async function botWorkspace(store: BotStore, paseo: PaseoApi, botId: string, cwd
 }
 
 export function botWorkspaceKey(botId: string, cwd: string): string {
-  return `oh-my-paseo-bots:workspace:${createHash('sha256').update(stable({ bot: botId, cwd })).digest('hex')}`;
+  return `oh-my-paseo-bots:v2:workspace:${createHash('sha256').update(stable({ bot: botId, cwd })).digest('hex')}`;
 }
 
 /** 只复用当前 checkout 的已登记项目；不把独立目录或嵌套 checkout 挂到外层项目。 */
@@ -144,11 +141,10 @@ export async function findRegisteredCheckoutProject(paseo: PaseoApi, cwd: string
   return projects.find(project => project.projectKind === 'git' && !relative(root, project.projectRootPath))?.projectId;
 }
 
-/** 普通会话、固定委派与独立例程共用配置映射及技能路径检查。 */
-export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig; teamConfirmedMemories?: readonly string[] }, kind: 'interactive' | 'routine' | 'conversation' | 'channel' = 'interactive', overrides?: BotDetails['execution']) {
+/** 主总管与专长委派复用配置映射及技能路径检查。 */
+export async function botSessionConfig(store: BotStore, botId: string, placement: { cwd: string; config: PaseoAgentConfig }, kind: 'interactive' | 'conversation' = 'interactive', overrides?: BotDetails['execution']) {
   const data = await store.getBot(botId);
   if (!data) throw new Error(`Bot 不存在：${botId}`);
-  if (data.bot.archivedAt) throw new Error('同事已归档，请先恢复再派发工作');
   const { skills, disabledMcpServers = [] } = data.bot.capabilities;
   const mcpServers = Object.fromEntries(Object.entries(data.bot.capabilities.mcpServers).filter(([name]) => !disabledMcpServers.includes(name)));
   for (const skill of skills) {
@@ -156,8 +152,8 @@ export async function botSessionConfig(store: BotStore, botId: string, placement
     if (!(await stat(skill.path)).isFile()) throw new Error(`技能路径必须指向 SKILL.md 文件：${skill.path}`);
   }
   // 持续聊天通过发送前附件或 get_bot_context 取得最新记忆，不固化到启动提示词。
-  const memories = kind === 'conversation' || kind === 'channel' ? [] : await store.getContextMemories(botId);
-  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), teamConfirmedMemories: kind === 'conversation' || kind === 'channel' ? [] : placement.teamConfirmedMemories, kind });
+  const memories = kind === 'conversation' ? [] : await store.getContextMemories(botId);
+  const systemPrompt = botPrompt({ id: data.bot.id, name: data.bot.name, role: data.bot.role, instructions: data.bot.instructions, skills, confirmedMemories: memories.map(memory => memory.content), kind });
   const execution = { ...data.bot.execution, ...overrides };
   const cwd = execution.cwd ?? placement.cwd;
   if (!isAbsolute(cwd)) throw new Error('Bot 工作目录必须为宿主绝对路径');

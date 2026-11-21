@@ -1,6 +1,5 @@
 // Adapted from oliexe/paseo-bots client/useChat.ts. See THIRD_PARTY_NOTICES.md.
 import type { PaseoApi, PaseoAgent } from '@getpaseo/client';
-import { readCapabilityStatus } from '../shared/capability-timeline.js';
 
 type Handle = ReturnType<PaseoApi['agents']['ref']>;
 type Page = Awaited<ReturnType<Handle['timeline']['refetch']>>;
@@ -19,13 +18,8 @@ export interface ChatState {
 export const EMPTY_CHAT: ChatState = { agentId: null, agent: null, entries: [], loading: false, loadingOlder: false, hasOlder: false, startCursor: null, endCursor: null, error: '' };
 
 function merge(current: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
-  const entries = new Map<string | number, ChatEntry>();
-  for (const entry of [...current, ...incoming]) {
-    const capability = readCapabilityStatus(entry.item);
-    const key = capability ? JSON.stringify(['capability', capability.botId, capability.requestId]) : entry.seqStart;
-    const previous = entries.get(key);
-    if (!previous || !capability || entry.seqEnd >= previous.seqEnd) entries.set(key, entry);
-  }
+  const entries = new Map<number, ChatEntry>();
+  for (const entry of [...current, ...incoming]) entries.set(entry.seqStart, entry);
   return [...entries.values()].sort((a, b) => a.seqStart - b.seqStart);
 }
 

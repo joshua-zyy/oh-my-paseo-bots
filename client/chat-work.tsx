@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePaseo } from '@getpaseo/plugin/client';
 import { useBotRpc as useRpc } from './attention-state.js';
 import type { RpcOutput } from '@getpaseo/plugin';
@@ -7,7 +7,6 @@ import { Icon } from '@getpaseo/plugin/client/ui';
 import { conversationWork } from '../shared/chat.js';
 import { cancelTask } from '../shared/tasks.js';
 import { observeAgentChanges } from './agent-changes.js';
-import { OfficeActions } from './office.js';
 import { Actions, Button, Copy, Notice, useUi } from './ui.js';
 
 export function ChatWork({ botId, agentId, previousAgentIds, signal, openAgent }: { botId: string; agentId: string; previousAgentIds: readonly string[]; signal: string; openAgent(id: string): void }) {
@@ -15,7 +14,7 @@ export function ChatWork({ botId, agentId, previousAgentIds, signal, openAgent }
   const read = useRpc(conversationWork);
   const cancel = useRpc(cancelTask);
   const { colors } = useUi();
-  const [value, setValue] = useState<RpcOutput<typeof conversationWork>>({ entries: [], mail: [] });
+  const [value, setValue] = useState<RpcOutput<typeof conversationWork>>({ entries: [] });
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -30,11 +29,6 @@ export function ChatWork({ botId, agentId, previousAgentIds, signal, openAgent }
     const observer = observeAgentChanges(api, [{ 'paseo-guys.bot': botId }, ...[...previousAgentIds, agentId].map(id => ({ 'paseo.parent-agent-id': id }))], () => setRevision(value => value + 1), failure => setError(String(failure)));
     return () => { void observer.release().catch(error => console.error('工作状态订阅清理失败', error)); };
   }, [api, botId, agentId, previousAgentIds]);
-  const mail = useMemo(() => {
-    const pending = value.mail.filter(action => !['sent', 'revoked'].includes(action.status));
-    const recent = value.mail.filter(action => ['sent', 'revoked'].includes(action.status)).slice(-2);
-    return [...new Set([...pending, ...recent].map(action => action.botId))].map(botId => ({ botId, actions: [...pending, ...recent].filter(action => action.botId === botId) }));
-  }, [value.mail]);
   const current = value.entries.filter(item => !item.status || !['completed', 'canceled'].includes(item.status));
   const recent = value.entries.filter(item => item.status && ['completed', 'canceled'].includes(item.status)).slice(-3);
   const statuses: Record<string, string> = { active: '进行中', stopping: '停止待确认', canceled: '已取消', completed: '已报告完成', awaiting_review: '待核对交付' };
@@ -60,6 +54,5 @@ export function ChatWork({ botId, agentId, previousAgentIds, signal, openAgent }
       {item.error && <Notice error={item.error} />}
       {item.status && !['completed', 'canceled'].includes(item.status) && <Actions><Button label="取消事项" disabled={busy} onPress={() => void stop(item.botId, item.agentId)} /></Actions>}
     </View>)}
-    {mail.map(group => <OfficeActions key={group.botId} botId={group.botId} inlineActions={group.actions} onChanged={refresh} />)}
   </>;
 }

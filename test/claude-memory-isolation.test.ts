@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,8 +9,6 @@ import type { PluginServerContext, PluginSessionOpenRequest } from '@getpaseo/pl
 import contribute from '../index.server.js';
 import { BotStore } from '../server/store.js';
 import { BotMcp } from '../server/mcp.js';
-import { BotRoutines } from '../server/routines.js';
-import type { RoutineRecord } from '../shared/routines.js';
 
 type Open = (event: { request: PluginSessionOpenRequest }, context: { paseo: PaseoApi }) => Promise<PluginSessionOpenRequest | void>;
 async function fixture(t: TestContext, run: (f: { store: BotStore; open: Open; associate: () => Promise<void>; request: PluginSessionOpenRequest; paseo: PaseoApi }) => Promise<void>) {
@@ -84,57 +82,4 @@ test('普通 Claude/未知 Bot 标签/其他 Provider 不改变自动记忆或�
     assert.equal(await f.open({ request }, { paseo: f.paseo }), undefined);
     assert.equal(request.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '0');
   }
-}));
-
-test('已登记 Bot 标签沿用既有自动纳管入口，首开即保护且不等待 create.after', async t => fixture(t, async f => {
-  assert.equal((await f.store.getBot('chief'))!.sessions.length, 0);
-  assert.equal((await f.open({ request: f.request }, { paseo: f.paseo }))?.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-  assert.equal((await f.store.getBot('chief'))!.sessions.length, 0, '开口不为记忆开关自行造会话关联');
-  await f.associate();
-  assert((await f.store.getBot('chief'))!.sessions.some(link => link.sessionId === f.request.agentId));
-  assert.equal((await f.open({ request: { ...f.request, reason: 'resume' } }, { paseo: f.paseo }))?.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-}));
-
-test('Claude Bot 归属元数据读取失败明确拒绝，其他 Provider 保持原开口容错', async t => fixture(t, async f => {
-  await writeFile(join(f.request.cwd, 'chief.json'), '{broken');
-  await assert.rejects(f.open({ request: f.request }, { paseo: f.paseo }), /Claude Bot.*记忆.*关闭/);
-  await assert.doesNotReject(f.open({ request: { ...f.request, provider: 'pi' } }, { paseo: f.paseo }));
-}));
-
-test('已归档 Bot 的合法历史仍关闭自动记忆，不恢复 Bot 或重开任务', async t => fixture(t, async f => {
-  await f.store.createBot({ id: 'archived-helper', name: '合成同事', role: '历史读取' });
-  await f.store.linkSession('archived-helper', { sessionId: f.request.agentId });
-  await f.store.setArchived('archived-helper', true);
-  const request = { ...f.request, purpose: 'history' as const, reason: 'resume' as const, labels: { 'paseo-guys.bot': 'archived-helper' } };
-  const result = await f.open({ request }, { paseo: f.paseo });
-  assert.equal(result?.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-  assert((await f.store.getBot('archived-helper'))!.bot.archivedAt);
-}));
-
-test('例程历史仅用已有归属关闭，不 bind/创建关联或挂载执行工具', async t => fixture(t, async f => {
-  await f.store.linkSession('chief', { sessionId: f.request.agentId });
-  t.mock.method(BotRoutines.prototype, 'owner', async (agentId: string) => agentId === f.request.agentId ? 'chief' : null);
-  const bind = t.mock.method(BotRoutines.prototype, 'bind', async () => { throw new Error('历史不得执行 bind'); });
-  const request = { ...f.request, purpose: 'history' as const, labels: { 'paseo.schedule-id': 'owned-schedule' } };
-  const result = await f.open({ request }, { paseo: f.paseo });
-  assert.deepEqual(result, { ...request, env: { ...request.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } });
-  assert.equal(bind.mock.callCount(), 0);
-}));
-
-test('已核实的原生 Bot 例程在每次打开合并关闭环境和 MCP；无关 schedule 不改', async t => fixture(t, async f => {
-  const routine: RoutineRecord = { id: randomUUID(), botId: 'chief', name: '合成例程', prompt: '合成核对', cron: '* * * * *', timezone: 'UTC', continuity: false, execution: { provider: 'claude/existing-model', cwd: f.request.cwd }, state: 'ready', nativeId: 'owned-schedule' };
-  t.mock.method(BotRoutines.prototype, 'bind', async (request: PluginSessionOpenRequest) => {
-    if (request.labels['paseo.schedule-id'] !== routine.nativeId) return null;
-    await f.store.linkSession('chief', { sessionId: request.agentId });
-    return routine;
-  });
-  for (const reason of ['create', 'resume', 'refresh'] as const) {
-    const request = { ...f.request, reason, labels: { 'paseo.schedule-id': 'owned-schedule', 'paseo.schedule-run': 'owned-run' } };
-    const result = await f.open({ request }, { paseo: f.paseo });
-    assert.equal(result?.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
-    assert.equal(result?.env.EXISTING_SESSION_VALUE, 'keep');
-    assert(result?.mcpServers['paseo-guys']);
-  }
-  const request = { ...f.request, labels: { 'paseo.schedule-id': 'unrelated' } };
-  assert.equal(await f.open({ request }, { paseo: f.paseo }), undefined);
 }));

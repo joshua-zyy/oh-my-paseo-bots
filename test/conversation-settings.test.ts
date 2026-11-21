@@ -122,7 +122,7 @@ test('跨后端切换首次消息交接可见原文与来源，切回包含新�
     ];
     host.history.set(first.agentId, firstItems);
     await host.invoke('bots.create', { id: 'other', name: '其他同事', role: '不参与此聊天' });
-    const other = await host.invoke('bots.conversation.create', { botId: 'other' }) as { agentId: string };
+    const other = await host.invoke('bots.start', { botId: 'other', title: '独立合成事项', prompt: '仅合成核对' }) as { agentId: string };
     host.history.set(other.agentId, [{ type: 'user_message', text: 'OTHER-BOT-PRIVATE' }]);
     const second = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { provider: 'codex/new-model' } }) as { agentId: string };
     host.history.set(second.agentId, []);
@@ -280,7 +280,7 @@ test('读取当前配置不创建默认目录；选择 Bot 工作区时才准备
   try {
     const first = await host.invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
     const configuration = await host.invoke('bots.conversation.configuration', { botId: 'chief', agentId: first.agentId }) as { defaultCwd: string };
-    assert.equal(configuration.defaultCwd, join(host.directory, 'paseo', 'oh-my-paseo-bots', 'workspaces', 'chief'));
+    assert.equal(configuration.defaultCwd, join(host.directory, 'v2', 'workspace', 'chief'));
     await assert.rejects(() => stat(configuration.defaultCwd), { code: 'ENOENT' });
     const result = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { cwd: configuration.defaultCwd } }) as { agentId: string };
     assert.equal((await stat(configuration.defaultCwd)).isDirectory(), true);
@@ -295,7 +295,7 @@ test('显式项目的聊天配置读取和模型切换不依赖默认工作区�
     const first = await host.invoke('bots.conversation.create', { botId: 'chief' }) as { agentId: string };
     const configuration = await host.invoke('bots.conversation.configuration', { botId: 'chief', agentId: first.agentId }) as { execution: { cwd: string }; defaultCwd?: string };
     assert.equal(configuration.execution.cwd, host.directory);
-    assert.equal(configuration.defaultCwd, undefined);
+    assert.equal(configuration.defaultCwd, join(host.directory, 'v2', 'workspace', 'chief'));
     const changed = await host.invoke('bots.conversation.change', { botId: 'chief', agentId: first.agentId, requestId: randomUUID(), execution: { provider: 'codex/new-model' } }) as { agentId: string };
     assert.equal(host.created.find(input => input.agentId === changed.agentId)!.cwd, host.directory);
   } finally { await host.close(); }

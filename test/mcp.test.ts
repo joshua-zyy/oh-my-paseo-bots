@@ -8,7 +8,6 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { BotJournal } from '../server/journal.js';
 import { BotMcp, createBotMcpServer, type BotMcpToolScope } from '../server/mcp.js';
 import { BotStore } from '../server/store.js';
 
@@ -20,13 +19,12 @@ import { BotStore } from '../server/store.js';
 interface Workspace {
   dir: string;
   store: BotStore;
-  journal: BotJournal;
 }
 
 async function withWorkspace(task: (workspace: Workspace) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'paseo-guys-mcp-'));
   try {
-    await task({ dir, store: new BotStore({ baseDir: dir }), journal: new BotJournal({ baseDir: join(dir, 'journal') }) });
+    await task({ dir, store: new BotStore({ baseDir: dir }) });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -94,12 +92,12 @@ const initializeBody = JSON.stringify({
 });
 
 test('端点状态可见且不泄露凭证，损坏文件保留原字节并提示恢复影响', async () => {
-  await withWorkspace(async ({ dir, store, journal }) => {
-    const endpoint = new BotMcp({ baseDir: dir, store, journal });
+  await withWorkspace(async ({ dir, store }) => {
+    const endpoint = new BotMcp({ baseDir: dir, store });
     try {
       assert.deepEqual(await endpoint.status(), { state: 'idle' });
-      await mkdir(join(dir, 'mcp'), { recursive: true });
-      const file = join(dir, 'mcp', 'endpoint.json');
+      await mkdir(join(dir, 'v2', 'mcp'), { recursive: true });
+      const file = join(dir, 'v2', 'mcp', 'endpoint.json');
       const corrupted = '{"secret":"do-not-return-this"';
       await writeFile(file, corrupted);
       const status = await endpoint.status();
@@ -112,9 +110,9 @@ test('端点状态可见且不泄露凭证，损坏文件保留原字节并提�
 });
 
 test('propose_memory 只写候选，Agent 无法自填 confirmed 或 source', async () => {
-  await withWorkspace(async ({ store, journal }) => {
+  await withWorkspace(async ({ store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     try {
       const proposal = await client.callTool({ name: 'propose_memory', arguments: { content: '用户偏好简洁回复' } });
       const payload = parse<{ memoryId: string; status: string; confirmed: boolean; needsUserConfirmation: boolean }>(textOf(proposal));
@@ -157,14 +155,14 @@ test('propose_memory 只写候选，Agent 无法自填 confirmed 或 source', as
 });
 
 test('read_memories 只返回本 Bot 的已确认记忆，不含候选或其他 Bot 数据', async () => {
-  await withWorkspace(async ({ store, journal }) => {
+  await withWorkspace(async ({ store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
     const confirmed = await store.addMemory('chief', { kind: 'confirmed', content: '用户明确记忆', source: 'user' });
     await store.addMemory('chief', { kind: 'candidate', content: '推断候选内容' });
     await store.addMemory('other', { kind: 'confirmed', content: '其他 Bot 的机密记忆' });
 
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     try {
       const result = await client.callTool({ name: 'read_memories', arguments: {} });
       const text = textOf(result);
@@ -183,7 +181,7 @@ test('read_memories 只返回本 Bot 的已确认记忆，不含候选或其他 
 });
 
 test('read_memories 按关键词查回确认记忆，先匹配再分页且不传候选或他人记忆', async () => {
-  await withWorkspace(async ({ store, journal }) => {
+  await withWorkspace(async ({ store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
     await store.addMemory('chief', { kind: 'confirmed', content: '发布规范：Release 保留 changelog' });
@@ -191,7 +189,7 @@ test('read_memories 按关键词查回确认记忆，先匹配再分页且不传
     await store.addMemory('chief', { kind: 'confirmed', content: '会议纪要用中文' });
     await store.addMemory('chief', { kind: 'candidate', content: '发布规范 release 候选秘密' });
     await store.addMemory('other', { kind: 'confirmed', content: '发布规范 release 其他 Bot 的机密' });
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     type Page = { total: number; offset: number; nextOffset: number | null; memories: { content: string }[] };
     try {
       const query = ' 发布规范  ReLEASe ';
@@ -221,7 +219,7 @@ test('read_memories 按关键词查回确认记忆，先匹配再分页且不传
 });
 
 test('read_memories 按稳定 ID 查当前正文，旧线索失效后仍能准确读到纠正值', async () => {
-  await withWorkspace(async ({ store, journal }) => {
+  await withWorkspace(async ({ store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
     const target = await store.addMemory('chief', { kind: 'confirmed', content: '北桥汇报约定：OLD-FORMAT' });
@@ -231,7 +229,7 @@ test('read_memories 按稳定 ID 查当前正文，旧线索失效后仍能准�
     await store.removeMemory('chief', archived.id);
     const foreign = await store.addMemory('other', { kind: 'confirmed', content: '他人秘密' });
     await store.updateMemory('chief', target.id, { content: '北桥汇报约定：CURRENT-FORMAT' });
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     type Page = { total: number; nextOffset: number | null; memories: { id: string; content: string }[] };
     const read = async (args: Record<string, unknown>) => {
       const result = await client.callTool({ name: 'read_memories', arguments: args });
@@ -263,54 +261,15 @@ test('read_memories 按稳定 ID 查当前正文，旧线索失效后仍能准�
   });
 });
 
-test('read_journal 只读本 Bot 日志，默认返回最近若干条', async () => {
-  await withWorkspace(async ({ store, journal }) => {
-    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
-    await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
-    await journal.append('chief', { agentId: 'agent-1', turnId: 'turn-1', kind: 'turn_started' });
-    await journal.append('chief', { agentId: 'agent-1', turnId: 'turn-1', kind: 'turn_ended', outcome: 'completed' });
-    await journal.append('other', { agentId: 'agent-9', turnId: null, kind: 'turn_started' });
-
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
-    try {
-      const all = parse<{ entries: { agentId: string; kind: string }[]; truncated: boolean }>(
-        textOf(await client.callTool({ name: 'read_journal', arguments: {} })),
-      );
-      assert.deepEqual(
-        all.entries.map((entry) => [entry.agentId, entry.kind]),
-        [
-          ['agent-1', 'turn_started'],
-          ['agent-1', 'turn_ended'],
-        ],
-      );
-      assert.equal(all.truncated, false);
-
-      const last = parse<{ entries: { kind: string }[]; truncated: boolean }>(
-        textOf(await client.callTool({ name: 'read_journal', arguments: { limit: 1 } })),
-      );
-      assert.deepEqual(last.entries.map((entry) => entry.kind), ['turn_ended']);
-      assert.equal(last.truncated, true);
-      const older = parse<{ entries: { kind: string }[]; nextOffset: number | null; offset: number }>(
-        textOf(await client.callTool({ name: 'read_journal', arguments: { limit: 1, offset: 1 } })),
-      );
-      assert.deepEqual(older.entries.map(entry => entry.kind), ['turn_started']);
-      assert.equal(older.offset, 1);
-      assert.equal(older.nextOffset, null);
-    } finally {
-      await close();
-    }
-  });
-});
-
 test('明确记忆超过 200 条后可继续读取旧页，候选不占分页位置', async () => {
-  await withWorkspace(async ({ dir, store, journal }) => {
+  await withWorkspace(async ({ dir, store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     const sample = await store.addMemory('chief', { kind: 'confirmed', content: 'fixture' });
     const record = (await store.getBot('chief'))!;
     record.memories = Array.from({ length: 201 }, (_, index) => ({ ...sample, id: `m-${index}`, content: `明确-${index}` }));
     record.memories.push({ ...sample, id: 'candidate', content: '候选秘密', kind: 'candidate', source: 'agent', confirmedAt: null });
-    await writeFile(join(dir, 'chief.json'), JSON.stringify(record));
-    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    await writeFile(join(dir, 'v2', 'chief.json'), JSON.stringify(record));
+    const { client, close } = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     try {
       const first = parse<{ total: number; memories: { content: string }[]; nextOffset: number }>(textOf(await client.callTool({ name: 'read_memories', arguments: {} })));
       assert.equal(first.total, 201);
@@ -320,7 +279,7 @@ test('明确记忆超过 200 条后可继续读取旧页，候选不占分页位
       const older = parse<{ memories: { content: string }[]; nextOffset: number | null }>(textOf(await client.callTool({ name: 'read_memories', arguments: { offset: first.nextOffset } })));
       assert.deepEqual(older.memories.map(item => item.content), ['明确-0']);
       assert.equal(older.nextOffset, null);
-      for (const name of ['read_memories', 'read_journal']) {
+      for (const name of ['read_memories', ]) {
         assert.equal((await client.callTool({ name, arguments: { offset: -1 } })).isError, true);
       }
     } finally { await close(); }
@@ -328,12 +287,12 @@ test('明确记忆超过 200 条后可继续读取旧页，候选不占分页位
 });
 
 test('remember_explicit 仅在有宿主回调时注册，绑定与回执由服务端决定', async () => {
-  await withWorkspace(async ({ store, journal }) => {
+  await withWorkspace(async ({ store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
 
-    const withoutCallback = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store, journal });
+    const withoutCallback = await connectInMemory({ botId: 'chief', agentId: 'agent-1', store });
     try {
-      assert.deepEqual(toolNames(await withoutCallback.client.listTools()), ['propose_memory', 'read_journal', 'read_memories']);
+      assert.deepEqual(toolNames(await withoutCallback.client.listTools()), ['propose_memory', 'read_memories']);
     } finally {
       await withoutCallback.close();
     }
@@ -343,7 +302,6 @@ test('remember_explicit 仅在有宿主回调时注册，绑定与回执由服�
       botId: 'chief',
       agentId: 'agent-1',
       store,
-      journal,
       rememberExplicit: async (botId, agentId, input) => {
         calls.push({ botId, agentId, input });
         const memory = await store.addMemory(botId, { kind: 'confirmed', content: input.content, source: 'user' });
@@ -353,7 +311,6 @@ test('remember_explicit 仅在有宿主回调时注册，绑定与回执由服�
     try {
       assert.deepEqual(toolNames(await withCallback.client.listTools()), [
         'propose_memory',
-        'read_journal',
         'read_memories',
         'remember_explicit',
       ]);
@@ -375,11 +332,11 @@ test('remember_explicit 仅在有宿主回调时注册，绑定与回执由服�
 });
 
 test('回环 HTTP 端点可供标准 MCP 客户端挂载并调用工具', async () => {
-  await withWorkspace(async ({ dir, store, journal }) => {
+  await withWorkspace(async ({ dir, store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.linkSession('chief', { sessionId: 'agent-1' });
     await store.addMemory('chief', { kind: 'confirmed', content: '用户明确记忆', source: 'user' });
-    const mcp = new BotMcp({ baseDir: dir, store, journal });
+    const mcp = new BotMcp({ baseDir: dir, store });
     try {
       const config = await mcp.mount('chief', 'agent-1');
       assert.equal(config.type, 'http');
@@ -390,7 +347,7 @@ test('回环 HTTP 端点可供标准 MCP 客户端挂载并调用工具', async 
       const transport = new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } });
       await client.connect(transport);
       try {
-        assert.deepEqual(toolNames(await client.listTools()), ['propose_memory', 'read_journal', 'read_memories']);
+        assert.deepEqual(toolNames(await client.listTools()), ['propose_memory', 'read_memories']);
         const payload = parse<{ memories: { content: string }[] }>(
           textOf(await client.callTool({ name: 'read_memories', arguments: {} })),
         );
@@ -408,12 +365,12 @@ test('回环 HTTP 端点可供标准 MCP 客户端挂载并调用工具', async 
 });
 
 test('回环 HTTP 端点拒绝错误 token、跨 Bot token、跨源请求与非法 Host', async () => {
-  await withWorkspace(async ({ dir, store, journal }) => {
+  await withWorkspace(async ({ dir, store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.createBot({ id: 'other', name: '其他 Bot', role: '专家' });
     await store.linkSession('chief', { sessionId: 'agent-1' });
     await store.linkSession('other', { sessionId: 'agent-1' });
-    const mcp = new BotMcp({ baseDir: dir, store, journal });
+    const mcp = new BotMcp({ baseDir: dir, store });
     try {
       const config = await mcp.mount('chief', 'agent-1');
       const otherConfig = await mcp.mount('other', 'agent-1');
@@ -471,21 +428,21 @@ test('回环 HTTP 端点拒绝错误 token、跨 Bot token、跨源请求与非�
 });
 
 test('端口与密钥持久化：重启复用同一地址与 token，端口被占用时报错而不静默换端口', async () => {
-  await withWorkspace(async ({ dir, store, journal }) => {
+  await withWorkspace(async ({ dir, store }) => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.linkSession('chief', { sessionId: 'agent-1' });
-    const first = new BotMcp({ baseDir: dir, store, journal });
+    const first = new BotMcp({ baseDir: dir, store });
     const config = await first.mount('chief', 'agent-1');
     const port = Number(new URL(config.url).port);
     await first.close();
 
-    const state = parse<{ port: number; secret: string }>(await readFile(join(dir, 'mcp', 'endpoint.json'), 'utf8'));
+    const state = parse<{ port: number; secret: string }>(await readFile(join(dir, 'v2', 'mcp', 'endpoint.json'), 'utf8'));
     assert.equal(state.port, port);
     assert.match(state.secret, /^[a-f0-9]{64}$/);
     // 端点状态不落在 Bot 存档命名空间里，Bot 列表不受影响。
     assert.deepEqual((await store.listBots()).map((bot) => bot.id), ['chief']);
 
-    const second = new BotMcp({ baseDir: dir, store, journal });
+    const second = new BotMcp({ baseDir: dir, store });
     try {
       const reused = await second.mount('chief', 'agent-1');
       assert.equal(reused.url, config.url);
@@ -504,7 +461,7 @@ test('端口与密钥持久化：重启复用同一地址与 token，端口被�
       });
     });
     try {
-      const third = new BotMcp({ baseDir: dir, store, journal });
+      const third = new BotMcp({ baseDir: dir, store });
       await assert.rejects(() => third.mount('chief', 'agent-1'), /已被占用/);
       await third.close();
     } finally {

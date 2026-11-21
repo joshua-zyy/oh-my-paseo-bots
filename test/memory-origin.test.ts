@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,13 +8,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { PaseoApi } from '@getpaseo/client';
 import type { MemoryOrigin } from '../shared/memory.js';
 import { BotStore } from '../server/store.js';
-import { BotJournal } from '../server/journal.js';
-import { TeamMemoryStore } from '../server/team-memory.js';
-import { ChannelStore } from '../server/channels.js';
-import { ChannelContextStore } from '../server/channel-context.js';
-import { channelIdSchema } from '../shared/channels.js';
 import { createBotMcpServer, type BotMcpToolScope } from '../server/mcp.js';
-import { rememberExplicit, correctExplicitMemory, publishExplicitTeamMemory } from '../server/memory.js';
+import { rememberExplicit, correctExplicitMemory } from '../server/memory.js';
 
 const quote = (text: string): MemoryOrigin => ({ type: 'message', agentId: 'native-chief', userQuote: text });
 const manual: MemoryOrigin = { type: 'manual' };
@@ -33,18 +27,17 @@ async function reader(scope: BotMcpToolScope) {
     close: async () => { await client.close(); await server.close(); },
   };
 }
-async function fixture(run: (f: { dir: string; file: string; store: BotStore; team: TeamMemoryStore; scope: BotMcpToolScope; api: PaseoApi; message(value: string): void; read(args?: Record<string, unknown>): Promise<Result> }) => Promise<void>) {
+async function fixture(run: (f: { dir: string; file: string; store: BotStore; scope: BotMcpToolScope; api: PaseoApi; message(value: string): void; read(args?: Record<string, unknown>): Promise<Result> }) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'paseo-memory-origin-'));
   let connected: Awaited<ReturnType<typeof reader>> | undefined;
   try {
     const store = new BotStore({ baseDir: dir }); await store.ensureChief(); await store.linkSession('chief', { sessionId: 'native-chief' });
     await store.createBot({ id: 'other', name: '其他同事', role: '验证' });
-    const team = new TeamMemoryStore(dir), journal = new BotJournal({ baseDir: join(dir, 'journal') });
-    const scope: BotMcpToolScope = { botId: 'chief', agentId: 'native-chief', store, journal, readTeamMemories: () => team.confirmed() };
+    const scope: BotMcpToolScope = { botId: 'chief', agentId: 'native-chief', store };
     let message = '';
     const api = { agents: { ref: () => ({ timeline: { refetch: async () => ({ error: null, epoch: 'e', hasOlder: false, entries: [{ item: { type: 'user_message', text: message } }] }) } }) } } as unknown as PaseoApi;
     connected = await reader(scope);
-    await run({ dir, file: join(dir, 'chief.json'), store, team, scope, api, message: value => { message = value; }, read: connected.read });
+    await run({ dir, file: join(dir, 'v2', 'chief.json'), store, scope, api, message: value => { message = value; }, read: connected.read });
   } finally { await connected?.close(); await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -108,7 +101,8 @@ test('按数组操作顺序读最后正文写入，不按相同/倒退时间排�
   raw.memories[0].history.forEach((event: { at: string }, index: number) => { event.at = index < 2 ? '2026-11-09T10:00:00Z' : '2026-11-08T10:00:00Z'; });
   await writeFile(f.file, JSON.stringify(raw));
   const shared = (await f.store.getContextMemories('chief'))[0], before = JSON.stringify(shared);
-  const local = await reader({ ...f.scope, memoryStore: { getContextMemories: async () => [shared], addMemory: async () => { throw new Error('read must not write'); } } });
+  f.store.getContextMemories = async () => [shared];
+  const local = await reader(f.scope);
   try {
     assert.deepEqual((await local.read()).memories[0].contentOrigin, quote('最后写回A'));
     assert.deepEqual((await local.read()).memories[0].contentOrigin, quote('最后写回A'));
@@ -150,33 +144,4 @@ test('合法片段引文不必包含全文，contentOrigin不扩写或补造用�
   const entry = await rememberExplicit(f.store, f.api, 'chief', 'native-chief', { content: '固定值是蓝色', userQuote: '请记住下面的安排。' });
   const row = (await f.read({ memoryIds: [entry.id] })).memories[0];
   assert.deepEqual(row.contentOrigin, quote('请记住下面的安排。'));
-}));
-
-test('团队发布/修改只使用团队自己的manual来源，不扩散私聊出处或历史', async () => fixture(async f => {
-  const entry = await f.store.addMemory('chief', { content: '可共享正文', kind: 'confirmed', origin: quote('PRIVATE-ORIGINAL-QUOTE') });
-  const message = '请发布这条已确认记忆给团队'; f.message(message);
-  await publishExplicitTeamMemory(f.store, f.api, 'chief', 'native-chief', { memoryId: entry.id, currentContent: entry.content, userQuote: message }, f.team);
-  const team = (await f.read({ scope: 'team' })).memories[0];
-  assert.deepEqual(team.origin, manual); assert.deepEqual(team.contentOrigin, manual); assert.doesNotMatch(JSON.stringify(team), /PRIVATE-ORIGINAL-QUOTE|native-chief|history/);
-  await f.team.updateMemory(team.id, { content: '已修改团队正文', kind: 'confirmed' });
-  const updated = (await f.read({ scope: 'team' })).memories[0]; assert.deepEqual(updated.contentOrigin, manual); assert.doesNotMatch(JSON.stringify(updated), /PRIVATE-ORIGINAL-QUOTE/);
-}));
-
-test('频道读口只投影本群正文出处，不能因同一Bot绑定读到个人原话', async () => fixture(async f => {
-  const privateEntry = await f.store.addMemory('chief', { content: 'PRIVATE-CONTENT', kind: 'confirmed', origin: quote('PRIVATE-QUOTE') });
-  const channels = new ChannelStore({ baseDir: f.dir, bots: f.store });
-  const id = channelIdSchema.parse(randomUUID());
-  await channels.create({ id, name: '合成群', adminBotId: 'chief', memberIds: ['chief'], cwd: f.dir, instructions: '' });
-  const context = new ChannelContextStore(f.dir, f.store, channels);
-  const origin: MemoryOrigin = { type: 'message', agentId: 'group-native', userQuote: '本群原话' };
-  const current: MemoryOrigin = { type: 'message', agentId: 'group-native', userQuote: '本群正文纠正' };
-  const entry = await context.addMemory(id, { content: '本群旧值', kind: 'confirmed', origin });
-  await context.updateMemory(id, entry.id, { content: '本群新值', origin: current });
-  const scoped = await reader({ ...f.scope, channelId: id, memoryStore: { getContextMemories: () => context.confirmed(id), addMemory: (_botId, input) => context.addMemory(id, input) } });
-  try {
-    const rows = (await scoped.read()).memories; assert.equal(rows.length, 1);
-    assert.deepEqual(rows[0].origin, origin); assert.deepEqual(rows[0].contentOrigin, current);
-    assert.doesNotMatch(JSON.stringify(rows), /PRIVATE-CONTENT|PRIVATE-QUOTE|native-chief|history/);
-    assert.deepEqual((await scoped.read({ memoryIds: [privateEntry.id] })).memories, []);
-  } finally { await scoped.close(); }
 }));

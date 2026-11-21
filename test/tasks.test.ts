@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import type { PaseoApi, PaseoAgentSendOptions } from '@getpaseo/client';
 
 import { BotStore } from '../server/store.js';
-import { TaskError, TaskTracker, type TaskCli, type TaskErrorCode, type TaskExecute } from '../server/tasks.js';
+import { TaskError, TaskTracker, type TaskErrorCode, type TaskExecute } from '../server/tasks.js';
 
 /**
  * 离线测试：fake 原生 CLI + fake Paseo SDK，只用临时目录。
@@ -77,7 +76,6 @@ class FakePaseo {
   } as unknown as PaseoApi;
 }
 
-const CLI: TaskCli = { command: '/opt/paseo/bin/paseo', cwd: '/workspace/chief' };
 
 interface Harness {
   dir: string;
@@ -86,7 +84,7 @@ interface Harness {
   paseo: FakePaseo;
   tracker: TaskTracker;
   trackFile(botId?: string): string;
-  restart(overrides?: { cli?: TaskCli | (() => Promise<TaskCli>); execute?: TaskExecute }): TaskTracker;
+  restart(): TaskTracker;
 }
 
 async function setup(): Promise<Harness> {
@@ -101,13 +99,11 @@ async function setup(): Promise<Harness> {
 
   const cli = new FakeCli();
   const paseo = new FakePaseo();
-  const build = (overrides?: { cli?: TaskCli | (() => Promise<TaskCli>); execute?: TaskExecute }) =>
+  const build = () =>
     new TaskTracker({
       baseDir: dir,
       store,
       getPaseo: () => paseo.api,
-      cli: overrides?.cli ?? CLI,
-      execute: overrides?.execute ?? cli.execute,
     });
 
   return {
@@ -116,17 +112,11 @@ async function setup(): Promise<Harness> {
     cli,
     paseo,
     tracker: build(),
-    trackFile: (botId = 'chief') => path.join(dir, 'tasks', `${botId}.json`),
+    trackFile: (botId = 'chief') => path.join(dir, 'v2', 'tasks', `${botId}.json`),
     restart: build,
   };
 }
 
-const followup = {
-  name: '每日跟进',
-  prompt: '检查指定邮件并汇总未解决事项',
-  cron: '0 9 * * 1-5',
-  timezone: 'Asia/Shanghai',
-};
 
 async function expectTaskError(task: () => Promise<unknown>, code: TaskErrorCode): Promise<void> {
   await assert.rejects(task, (error: unknown) => {
@@ -152,7 +142,6 @@ describe('原生跟进关联', () => {
     assert.equal((await restart().get('chief', 'agent-chief') as { conversation?: true })?.conversation, true);
     await expectTaskError(() => tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '回复结束', evidence: ['回复'] }), 'invalid_input');
     await expectTaskError(() => tracker.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '取消一个工作' }), 'invalid_input');
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', followup), 'invalid_input');
     assert.equal((await tracker.requireActive('chief', 'agent-chief')).status, 'active');
     assert.deepEqual(paseo.archived, []);
     assert.deepEqual(cli.calls, []);
@@ -196,15 +185,6 @@ describe('原生跟进关联', () => {
     assert.equal((await restart().get('chief', 'agent-chief'))?.title, title);
   });
 
-  it('同 Bot 不同 Agent 的同名例程分别绑定各自 target', async () => {
-    const { tracker, cli } = await setup();
-    const first = await tracker.follow('chief', 'agent-chief', followup);
-    const second = await tracker.follow('chief', 'agent-legacy', { ...followup, cron: '0 10 * * *' });
-    assert.equal(first.followups[0].key, second.followups[0].key);
-    assert.deepEqual(cli.calls.map(call => call.env.PASEO_AGENT_ID), ['agent-chief', 'agent-legacy']);
-    assert.equal((await tracker.get('chief', 'agent-chief'))?.followups[0].cron, followup.cron);
-  });
-
   it('并发 cancel/complete 只归档一次，先准入的终态与证据不被覆盖', async t => {
     const { tracker, paseo, store } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
@@ -239,7 +219,6 @@ describe('原生跟进关联', () => {
     assert.equal(first.status, 'active');
     assert.equal(first.title, '跨应用跟进');
     assert.equal(first.goal, '汇总未解决事项');
-    assert.deepEqual(first.followups, []);
 
     const again = await tracker.ensure('chief', 'agent-chief', { title: '跨应用跟进' });
     assert.deepEqual(again, first, '已存在的关联不被改写');
@@ -267,12 +246,9 @@ describe('原生跟进关联', () => {
   it('原生归档观察收尾未结事项和跟进，不重复归档或伪报删除', async () => {
     const { tracker, paseo, cli, restart } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '固定同事子任务' });
-    await tracker.follow('chief', 'agent-chief', followup);
     const calls = cli.calls.length;
     const stopped = await tracker.observeArchived('chief', 'agent-chief');
     assert.equal(stopped?.status, 'canceled');
-    assert.equal(stopped?.followups[0].status, 'inactive');
-    assert.match(stopped?.followups[0].detail ?? '', /删除未确认/);
     assert.equal(cli.calls.length, calls);
     assert.deepEqual(paseo.archived, []);
     assert.deepEqual(await tracker.observeArchived('chief', 'agent-chief'), stopped);
@@ -311,149 +287,9 @@ describe('原生跟进关联', () => {
     }
   });
 
-  it('原生例程父会话没有 Bot 标签时，按已登记归属回报；已收尾例程不唤醒', async () => {
-    for (const finished of [false, true]) {
-      const { tracker, store, paseo, dir, cli } = await setup();
-      await tracker.ensure('chief', 'agent-chief', { title: '例程主事项', routine: { id: randomUUID(), runId: 'run-1', prompt: '核对合成报告' } });
-      await tracker.ensure('other', 'agent-other', { title: '子事项' });
-      await tracker.observeSpecialist('chief', 'agent-chief', 'agent-other');
-      paseo.labels.set('agent-other', { 'paseo.parent-agent-id': 'agent-chief' });
-      paseo.labels.set('agent-chief', { 'paseo.schedule-id': 'native-schedule' });
-      if (finished) await tracker.observeArchived('chief', 'agent-chief');
-      const reporting = new TaskTracker({ baseDir: dir, store, cli: CLI, execute: cli.execute, getPaseo: () => paseo.api,
-        routineOwner: async (id: string) => id === 'agent-chief' ? 'chief' : null,
-      });
-      await reporting.stop('other', 'agent-other', { outcome: 'completed', summary: '数字已核对', evidence: ['findings.md'] });
-      assert.equal(paseo.sent.length, finished ? 0 : 1);
-      if (!finished) {
-        assert.equal(paseo.sent[0].agentId, 'agent-chief');
-        assert.match(paseo.sent[0].text, /数字已核对/);
-        assert.deepEqual(paseo.sent[0].options, { sourceAgentId: 'agent-other', activeTurnBehavior: 'steer', messageId: 'paseo-guys:delivery:agent-other' });
-      }
-      assert.equal((await tracker.get('chief', 'agent-chief'))?.status, finished ? 'awaiting_review' : 'active');
-    }
-  });
-
-  it('follow 先落盘意图再调用原生 CLI，回执后置 active', async () => {
-    const { tracker, restart, cli, trackFile } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跨应用跟进' });
-    const gate = deferred();
-    const entered = deferred();
-    let seen = '';
-    cli.behavior.create = async () => {
-      seen = await readFile(trackFile(), 'utf8');
-      entered.resolve();
-      await gate.promise;
-      return { stdout: JSON.stringify({ id: 'hb-native-1', status: 'active' }), stderr: '' };
-    };
-
-    const pending = tracker.follow('chief', 'agent-chief', followup);
-    await entered.promise;
-    const intent = JSON.parse(seen) as { tasks: Array<{ followups: Array<{ status: string; key: string }> }> };
-    assert.equal(intent.tasks[0]?.followups[0]?.status, 'pending');
-    assert.match(intent.tasks[0]?.followups[0]?.key ?? '', /^paseo-guys-daily|^paseo-guys-/);
-
-    gate.resolve();
-    const done = await pending;
-    assert.equal(done.followups[0]?.status, 'active');
-    assert.equal(done.followups[0]?.nativeId, 'hb-native-1');
-    assert.equal(cli.createdNames[0], done.followups[0]?.key);
-    assert.equal((await restart().get('chief', 'agent-chief'))?.followups[0]?.nativeId, 'hb-native-1');
-  });
-
-  it('同参数幂等、不同参数同 key 冲突', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    const first = await tracker.follow('chief', 'agent-chief', followup);
-    const second = await tracker.follow('chief', 'agent-chief', followup);
-    assert.equal(cli.createdNames.length, 1, '同参数不重复创建');
-    assert.deepEqual(second, first);
-
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', { ...followup, cron: '0 10 * * *' }), 'follow_conflict');
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', { ...followup, prompt: '换了内容' }), 'follow_conflict');
-    assert.equal(cli.createdNames.length, 1);
-    assert.equal((await tracker.get('chief', 'agent-chief'))?.followups.length, 1);
-  });
-
-  it('CLI 参数、Agent 绑定 env 与 --home 处理正确', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    await tracker.follow('chief', 'agent-chief', followup);
-    const call = cli.calls[0]!;
-    assert.equal(call.command, CLI.command);
-    assert.equal(call.cwd, CLI.cwd);
-    assert.deepEqual(call.args.slice(0, 3), ['heartbeat', 'create', followup.prompt]);
-    assert.deepEqual(call.args.slice(3), [
-      '--cron',
-      followup.cron,
-      '--timezone',
-      followup.timezone,
-      '--name',
-      cli.createdNames[0],
-      '--json',
-    ]);
-    assert.equal(call.env.PASEO_AGENT_ID, 'agent-chief');
-    assert.equal(call.env.PASEO_AGENT_CWD, CLI.cwd);
-    assert.equal(call.args.includes('--home'), false);
-
-    const previousHost = process.env.PASEO_HOST;
-    process.env.PASEO_HOST = 'http://wrong-host';
-    try {
-      const homed = await setup();
-      const homedTracker = homed.restart({ cli: { ...CLI, home: '/home/paseo/.paseo' } });
-      await homedTracker.ensure('chief', 'agent-chief', { title: '跟进' });
-      await homedTracker.follow('chief', 'agent-chief', followup);
-      const homedCall = homed.cli.calls[0]!;
-      const at = homedCall.args.indexOf('--home');
-      assert.notEqual(at, -1);
-      assert.equal(homedCall.args[at + 1], '/home/paseo/.paseo');
-      assert.equal(homedCall.env.PASEO_HOST, undefined, '指定 home 后清掉 PASEO_HOST');
-    } finally {
-      if (previousHost === undefined) delete process.env.PASEO_HOST;
-      else process.env.PASEO_HOST = previousHost;
-    }
-  });
-
-  it('创建回执丢失或中断后保留未知，不重复调用会新建例程的 CLI', async () => {
-    const { tracker, restart, cli, trackFile } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    cli.behavior.create = async () => {
-      // 模拟服务端已创建，只丢失返回。CLI 每次 create 都会铸造不同 id。
-      throw new Error('read ETIMEDOUT');
-    };
-    const lost = await tracker.follow('chief', 'agent-chief', followup);
-    assert.equal(lost.followups[0]?.status, 'unknown');
-    assert.equal(lost.followups[0]?.nativeId, undefined);
-
-    cli.behavior.create = undefined;
-    const retried = await restart().follow('chief', 'agent-chief', followup);
-    assert.equal(retried.followups.length, 1);
-    assert.equal(retried.followups[0]?.status, 'unknown');
-    assert.equal(cli.createdNames.length, 1, '未知结果不再调用非幂等 create');
-    assert.match(retried.followups[0]?.detail ?? '', /人工核对/);
-    const disk = JSON.parse(await readFile(trackFile(), 'utf8'));
-    disk.tasks[0].followups[0].status = 'pending';
-    await writeFile(trackFile(), JSON.stringify(disk));
-    const pending = await restart().follow('chief', 'agent-chief', followup);
-    assert.equal(pending.followups[0].status, 'unknown');
-    assert.equal(cli.createdNames.length, 1, '进程中断留下 pending 同样不能假设未创建');
-
-  });
-
-  it('未配置 CLI 时 follow 报未配置，其他能力不受影响', async () => {
-    const { tracker, cli, restart } = await setup();
-    const unconfigured = restart({ cli: async () => ({ command: '', cwd: '' }) });
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    await expectTaskError(() => unconfigured.follow('chief', 'agent-chief', followup), 'not_configured');
-    assert.equal(cli.calls.length, 0);
-    assert.deepEqual((await unconfigured.get('chief', 'agent-chief'))?.followups, []);
-    assert.equal((await unconfigured.requireActive('chief', 'agent-chief')).status, 'active');
-  });
-
   it('工具交付先返回，重开追踪器后才收尾；重复完成、取消和并发观察不覆盖报告', async () => {
     const { tracker, restart, paseo, cli } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '合成交付' });
-    await tracker.follow('chief', 'agent-chief', followup);
     const report = { outcome: 'completed' as const, summary: '已核对 42', evidence: ['report.md'] };
     const saved = await tracker.stop('chief', 'agent-chief', report, { deferArchive: true });
     assert.equal(saved.status, 'completed');
@@ -475,7 +311,7 @@ describe('原生跟进关联', () => {
     assert.equal(final?.completionPending, undefined);
     assert.deepEqual(final?.evidence, report.evidence);
     assert.deepEqual(paseo.archived, ['agent-chief']);
-    assert.deepEqual(cli.deleted, ['hb_1']);
+    assert.deepEqual(cli.deleted, [], '不再管理原生例程');
     await restored.settleCompletion('chief', 'agent-chief');
     assert.deepEqual(paseo.archived, ['agent-chief'], '重复结束事件不重复归档');
   });
@@ -498,19 +334,9 @@ describe('原生跟进关联', () => {
     assert.equal((await restart().get('chief', 'agent-chief'))?.summary, report.summary);
   });
 
-  it('独立原生例程上报后不参与普通事项的延迟归档', async () => {
-    const { tracker, paseo } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '例程', routine: { id: randomUUID(), runId: randomUUID(), prompt: '合成核对' } });
-    const saved = await tracker.stop('chief', 'agent-chief', { outcome: 'completed', summary: '例程已核对', evidence: ['report.md'] }, { deferArchive: true });
-    assert.equal(saved.completionPending, undefined);
-    await tracker.settleCompletion('chief', 'agent-chief');
-    assert.deepEqual(paseo.archived, [], '由原生调度负责例程收尾');
-  });
-
   it('stop 先持久 stopping 再 archive，期间拒绝新推进', async () => {
     const { tracker, restart, cli, paseo } = await setup();
     await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    await tracker.follow('chief', 'agent-chief', followup);
     const gate = deferred();
     const entered = deferred();
     paseo.behavior.archive = async () => {
@@ -528,8 +354,7 @@ describe('原生跟进关联', () => {
     assert.equal((await restart().get('chief', 'agent-chief'))?.status, 'stopping');
     assert.equal((await restart().get('chief', 'agent-chief'))?.summary, '已核对交付物');
     await expectTaskError(() => restart().requireActive('chief', 'agent-chief'), 'task_not_active');
-    await expectTaskError(() => restart().follow('chief', 'agent-chief', { ...followup, name: '新增例程' }), 'task_not_active');
-    assert.equal(cli.createdNames.length, 1, 'stopping 期间不得新建例程');
+    assert.equal(cli.createdNames.length, 0, '停止不创建任何例程');
     assert.deepEqual(paseo.archived, ['agent-chief'], 'archive 已发起');
 
     gate.resolve();
@@ -537,7 +362,6 @@ describe('原生跟进关联', () => {
     assert.equal(stopped.status, 'completed');
     assert.equal(stopped.summary, '已核对交付物');
     assert.deepEqual(stopped.evidence, ['docs/report.md']);
-    assert.equal(stopped.followups[0]?.status, 'deleted');
   });
 
   it('archive 失败保留 stopping 且可幂等重试', async () => {
@@ -553,7 +377,6 @@ describe('原生跟进关联', () => {
     const stuck = await restart().get('chief', 'agent-chief');
     assert.equal(stuck?.status, 'stopping');
     assert.match(stuck?.detail ?? '', /可重试 stop/);
-    await expectTaskError(() => restart().follow('chief', 'agent-chief', followup), 'task_not_active');
 
     paseo.behavior.archive = undefined;
     const stopped = await restart().stop('chief', 'agent-chief', { outcome: 'canceled', summary: '用户取消' });
@@ -570,8 +393,6 @@ describe('原生跟进关联', () => {
       evidence: ['docs/report.md'],
     });
     const calls = cli.calls.length;
-
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', followup), 'task_not_active');
     const again = await tracker.stop('chief', 'agent-chief', {
       outcome: 'completed',
       summary: '另一个 summary',
@@ -583,116 +404,12 @@ describe('原生跟进关联', () => {
     assert.equal(cli.calls.length, calls);
   });
 
-  it('停止时在途的创建回执随后到达也不复活任务', async () => {
-    const { tracker, restart, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    const gate = deferred();
-    const entered = deferred();
-    cli.behavior.create = async () => {
-      entered.resolve();
-      await gate.promise;
-      return { stdout: JSON.stringify({ id: 'hb-late-1', status: 'active' }), stderr: '' };
-    };
-
-    const inFlight = tracker.follow('chief', 'agent-chief', followup);
-    await entered.promise;
-    const stopped = await tracker.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '用户取消' });
-    assert.equal(stopped.status, 'canceled');
-
-    gate.resolve();
-    const settled = await inFlight;
-    assert.equal(settled.status, 'canceled', '任务不被迟到回执复活');
-    const followupAfter = settled.followups[0]!;
-    assert.equal(followupAfter.status, 'deleted');
-    assert.equal(followupAfter.nativeId, 'hb-late-1', '迟到 id 被记录以便删除');
-    assert.match(followupAfter.detail ?? '', /已确认删除/);
-    assert.deepEqual(cli.deleted, ['hb-late-1'], '迟到 id 会尝试删除');
-    assert.equal((await restart().get('chief', 'agent-chief'))?.status, 'canceled');
-  });
-
-  it('删除回执未确认 deleted 时不声称已删除', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    await tracker.follow('chief', 'agent-chief', followup);
-    cli.behavior.delete = async () => ({ stdout: '{}', stderr: '' });
-
-    const stopped = await tracker.stop('chief', 'agent-chief', {
-      outcome: 'completed',
-      summary: '交付完成',
-      evidence: ['docs/report.md'],
-    });
-    const record = stopped.followups[0]!;
-    assert.equal(record.status, 'inactive', '退出码 0 不等于已删除');
-    assert.match(record.detail ?? '', /删除未确认/);
-    assert.match(stopped.detail ?? '', /删除未确认/);
-  });
-
-  it('停止时没有已确认原生 id 的例程标 inactive，不声称不存在', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    cli.behavior.create = async () => {
-      throw new Error('read ETIMEDOUT');
-    };
-    await tracker.follow('chief', 'agent-chief', followup);
-
-    const stopped = await tracker.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '用户取消' });
-    const record = stopped.followups[0]!;
-    assert.equal(record.status, 'inactive');
-    assert.equal(record.nativeId, undefined);
-    assert.match(record.detail ?? '', /无已确认的原生 id，删除未确认/);
-    assert.equal(cli.deleted.length, 0);
-  });
-
-  it('删除已知例程失败时不谎报完全停止', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    const active = await tracker.follow('chief', 'agent-chief', followup);
-    assert.ok(active.followups[0]?.nativeId);
-    cli.behavior.delete = async () => {
-      throw new Error('permission denied');
-    };
-
-    const stopped = await tracker.stop('chief', 'agent-chief', {
-      outcome: 'completed',
-      summary: '交付完成',
-      evidence: ['docs/report.md'],
-    });
-    assert.equal(stopped.status, 'completed');
-    assert.match(stopped.detail ?? '', /原生例程删除未确认/);
-    assert.match(stopped.detail ?? '', /archive 已使其不再执行/);
-    assert.equal(stopped.followups[0]?.status, 'inactive');
-    assert.match(stopped.followups[0]?.detail ?? '', /删除未确认/);
-  });
-
-  it('独立事项不被 unknown 例程卡死', async () => {
-    const { tracker, cli } = await setup();
-    await tracker.ensure('chief', 'agent-chief', { title: '跟进 A' });
-    await tracker.ensure('other', 'agent-other', { title: '跟进 B' });
-    cli.behavior.create = async () => {
-      throw new Error('read ETIMEDOUT');
-    };
-    const lost = await tracker.follow('chief', 'agent-chief', followup);
-    assert.equal(lost.followups[0]?.status, 'unknown');
-
-    cli.behavior.create = undefined;
-    const second = await tracker.follow('chief', 'agent-chief', { ...followup, name: '另一条例程' });
-    assert.equal(second.followups.length, 2);
-    assert.equal(second.followups[1]?.status, 'active');
-
-    const other = await tracker.follow('other', 'agent-other', followup);
-    assert.equal(other.followups[0]?.status, 'active');
-    assert.equal((await tracker.get('chief', 'agent-chief'))?.followups[0]?.status, 'unknown', '旧的未知保持可见');
-  });
-
   it('全空白输入与空证据被拒绝，且不落盘', async () => {
     const { tracker, paseo } = await setup();
     await expectTaskError(() => tracker.ensure('chief', 'agent-chief', { title: '   ' }), 'invalid_input');
     assert.equal(await tracker.get('chief', 'agent-chief'), null, '非法输入不写存档');
 
     await tracker.ensure('chief', 'agent-chief', { title: '跟进' });
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', { ...followup, name: '  ' }), 'invalid_input');
-    await expectTaskError(() => tracker.follow('chief', 'agent-chief', { ...followup, prompt: '\n ' }), 'invalid_input');
-    assert.deepEqual((await tracker.get('chief', 'agent-chief'))?.followups, [], '非法例程不落盘');
 
     await expectTaskError(
       () => tracker.stop('chief', 'agent-chief', { outcome: 'canceled', summary: '   ' }),

@@ -1,6 +1,5 @@
 import { defineRpc } from '@getpaseo/plugin';
 import { z } from 'zod';
-import { mailAction } from './office.js';
 import { botExecutionSchema } from './bot.js';
 
 export const CONVERSATION_PREVIOUS_LABEL = 'paseo-guys.conversation.previous';
@@ -28,6 +27,5 @@ export const conversationWork = defineRpc({
       status: z.enum(['active', 'stopping', 'canceled', 'completed', 'awaiting_review']).optional(),
       summary: z.string().optional(), evidence: z.array(z.string()).optional(), detail: z.string().optional(),
     })),
-    mail: z.array(mailAction.extend({ botId: z.string() })),
   }),
 });

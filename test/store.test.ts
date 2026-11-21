@@ -32,7 +32,7 @@ describe('固定 Bot 身份', () => {
     assert.deepEqual(created.map(bot => bot.id), ['chief', 'chief', 'chief']);
     assert.equal((await store.listBots()).length, 1);
     await store.updateBot('chief', { name: '我的协调同事', instructions: '保留工作方式', execution: { provider: 'known/model' } });
-    const file = path.join(baseDir, 'chief.json');
+    const file = path.join(baseDir, 'v2', 'chief.json');
     const before = await readFile(file, 'utf8');
     assert.equal((await new BotStore({ baseDir }).ensureChief()).name, '我的协调同事');
     assert.equal(await readFile(file, 'utf8'), before);
@@ -45,7 +45,7 @@ describe('固定 Bot 身份', () => {
     const { baseDir, store } = await makeStore();
     const created = await store.createBot({ id: 'chief', name: '主 Bot', role: '负责澄清与分工' });
 
-    assert.equal(created.schemaVersion, 1);
+    assert.equal(created.schemaVersion, 2);
     assert.equal(created.bot.id, 'chief');
     assert.equal(created.bot.name, '主 Bot');
     assert.equal(created.bot.role, '负责澄清与分工');
@@ -87,41 +87,17 @@ describe('固定 Bot 身份', () => {
       ['chief', 'writer'],
     );
   });
-  it('辅助Gmail和团队记忆文件不作为Bot枚举或损坏身份，不能由Bot写入覆盖', async () => {
-    const { baseDir, store } = await makeStore();
-    await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
-    const auxiliary = {
-      'gmail-checks': JSON.stringify({ version: 1, checks: [] }),
-      'team-memories': JSON.stringify({ version: 1, memories: [] }),
-    };
-    for (const [id, raw] of Object.entries(auxiliary)) await writeFile(path.join(baseDir, id + '.json'), raw);
-    const corrupt: string[] = [];
-    assert.deepEqual((await store.listBots()).map(bot => bot.id), ['chief']);
-    assert.deepEqual((await store.listBots(id => corrupt.push(id))).map(bot => bot.id), ['chief']);
-    assert.deepEqual(corrupt, []);
-    for (const [id, raw] of Object.entries(auxiliary)) {
-      await assert.rejects(() => store.createBot({ id, name: '冲突身份', role: '不得覆盖辅助存档' }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
-      await assert.rejects(() => store.getBot(id), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
-      assert.equal(await readFile(path.join(baseDir, id + '.json'), 'utf8'), raw);
-    }
-    // 已知辅助文件即使坏了也由自身模块报告；不变成另一个Bot或被重建。
-    await writeFile(path.join(baseDir, 'gmail-checks.json'), '{broken');
-    assert.deepEqual((await store.listBots()).map(bot => bot.id), ['chief']);
-    assert.equal(await readFile(path.join(baseDir, 'gmail-checks.json'), 'utf8'), '{broken');
-    await assert.rejects(() => new BotStore({ baseDir }).createBot({ id: 'gmail-checks', name: '冲突', role: '不得重建' }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
-    assert.equal(await readFile(path.join(baseDir, 'gmail-checks.json'), 'utf8'), '{broken');
-  });
 
   it('聚合可报告损坏存档并继续列出其他 Bot，单独读取仍严格报错', async () => {
     const { baseDir, store } = await makeStore();
     await store.createBot({ id: 'chief', name: '主 Bot', role: '核对' });
     await store.createBot({ id: 'expert', name: '专家', role: '执行' });
-    await writeFile(path.join(baseDir, 'broken.json'), '{');
+    await writeFile(path.join(baseDir, 'v2', 'specialists', 'broken.json'), '{');
     const corrupt: string[] = [];
     assert.deepEqual((await store.listBots(id => corrupt.push(id))).map(bot => bot.id), ['chief', 'expert']);
     assert.deepEqual(corrupt, ['broken']);
     await assert.rejects(() => store.getBot('broken'), (error: unknown) => error instanceof StoreError && error.code === 'corrupt_store');
-    assert.equal(await readFile(path.join(baseDir, 'broken.json'), 'utf8'), '{');
+    assert.equal(await readFile(path.join(baseDir, 'v2', 'specialists', 'broken.json'), 'utf8'), '{');
   });
 });
 
@@ -163,10 +139,10 @@ describe('Bot 独立配置兼容', () => {
     const reset = await restarted.updateBot('researcher', { execution: {}, instructions: '' });
     assert.deepEqual(reset.execution, {});
     assert.equal(reset.instructions, '');
-    const before = await readFile(path.join(baseDir, 'researcher.json'), 'utf8');
+    const before = await readFile(path.join(baseDir, 'v2', 'specialists', 'researcher.json'), 'utf8');
     await assert.rejects(() => restarted.updateBot('researcher', {}), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
     await assert.rejects(() => restarted.updateBot('researcher', { execution: { provider: 'invalid' } }), (error: unknown) => error instanceof StoreError && error.code === 'invalid_input');
-    assert.equal(await readFile(path.join(baseDir, 'researcher.json'), 'utf8'), before);
+    assert.equal(await readFile(path.join(baseDir, 'v2', 'specialists', 'researcher.json'), 'utf8'), before);
   });
 
   it('旧存档补空说明和执行覆盖，不改写原文件，记忆和会话保留', async () => {
@@ -174,17 +150,17 @@ describe('Bot 独立配置兼容', () => {
     await store.createBot({ id: 'legacy', name: '旧同事', role: '整理资料' });
     await store.linkSession('legacy', { sessionId: 'legacy-native' });
     await store.addMemory('legacy', { kind: 'confirmed', content: '保留旧记忆' });
-    const legacy = JSON.parse(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'));
+    const legacy = JSON.parse(await readFile(path.join(baseDir, 'v2', 'specialists', 'legacy.json'), 'utf8'));
     delete legacy.bot.instructions;
     delete legacy.bot.execution;
     delete legacy.bot.capabilities;
     const before = JSON.stringify(legacy);
-    await writeFile(path.join(baseDir, 'legacy.json'), before);
+    await writeFile(path.join(baseDir, 'v2', 'specialists', 'legacy.json'), before);
     const reloaded = await new BotStore({ baseDir }).getBot('legacy');
     assert.deepEqual(reloaded?.bot, { ...legacy.bot, instructions: '', execution: {}, capabilities: { skills: [], mcpServers: {} } });
     assert.equal(reloaded?.sessions[0].sessionId, 'legacy-native');
     assert.equal(reloaded?.memories[0].content, '保留旧记忆');
-    assert.equal(await readFile(path.join(baseDir, 'legacy.json'), 'utf8'), before);
+    assert.equal(await readFile(path.join(baseDir, 'v2', 'specialists', 'legacy.json'), 'utf8'), before);
   });
 });
 
@@ -417,7 +393,7 @@ describe('输入校验与路径穿越', () => {
   it('损坏或不兼容的存档报 corrupt_store，且不静默清空', async () => {
     const { baseDir, store } = await makeStore();
     await store.createBot({ id: 'chief', name: '主 Bot', role: '澄清' });
-    const file = path.join(baseDir, 'chief.json');
+    const file = path.join(baseDir, 'v2', 'chief.json');
 
     await writeFile(file, '{ this is not json', 'utf8');
     await assert.rejects(
@@ -471,7 +447,7 @@ describe('持久化形态', () => {
     assert.equal(doc?.sessions.length, 5);
     assert.equal(new Set(doc?.memories.map((memory) => memory.id)).size, 20);
 
-    const raw = await readFile(path.join(baseDir, 'chief.json'), 'utf8');
+    const raw = await readFile(path.join(baseDir, 'v2', 'chief.json'), 'utf8');
     assert.equal(JSON.parse(raw).memories.length, 20);
   });
 
@@ -481,10 +457,10 @@ describe('持久化形态', () => {
     await store.linkSession('chief', { sessionId: 'sess-1' });
     await store.addMemory('chief', { kind: 'confirmed', content: '默认本地工作区' });
 
-    const entries = await readdir(baseDir);
+    const entries = await readdir(path.join(baseDir, 'v2'));
     assert.deepEqual(entries, ['chief.json']);
 
-    const parsed = JSON.parse(await readFile(path.join(baseDir, 'chief.json'), 'utf8'));
+    const parsed = JSON.parse(await readFile(path.join(baseDir, 'v2', 'chief.json'), 'utf8'));
     assert.deepEqual(Object.keys(parsed).sort(), ['bot', 'creationIntents', 'memories', 'schemaVersion', 'sessions']);
     assert.deepEqual(Object.keys(parsed.bot).sort(), ['capabilities', 'createdAt', 'execution', 'id', 'instructions', 'name', 'role', 'updatedAt']);
     assert.deepEqual(Object.keys(parsed.sessions[0]).sort(), ['linkedAt', 'sessionId', 'title', 'workspaceId']);
@@ -601,16 +577,16 @@ describe('原生创建意图', () => {
     await store.createBot({ id: 'chief', name: '主 Bot', role: '澄清' });
     await store.prepareCreation('chief', { requestId: 'r1', fingerprint: f('a') });
 
-    const parsed = JSON.parse(await readFile(path.join(baseDir, 'chief.json'), 'utf8'));
+    const parsed = JSON.parse(await readFile(path.join(baseDir, 'v2', 'chief.json'), 'utf8'));
     assert.deepEqual(Object.keys(parsed.creationIntents[0]).sort(), ['acknowledged', 'agentId', 'fingerprint', 'requestId', 'status']);
 
     const legacy = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       bot: parsed.bot,
       sessions: parsed.sessions,
       memories: parsed.memories,
     };
-    await writeFile(path.join(baseDir, 'chief.json'), JSON.stringify(legacy), 'utf8');
+    await writeFile(path.join(baseDir, 'v2', 'chief.json'), JSON.stringify(legacy), 'utf8');
     const readBack = await new BotStore({ baseDir }).getBot('chief');
     assert.deepEqual(readBack?.creationIntents, []);
     assert.equal((await store.prepareCreation('chief', { requestId: 'r2', fingerprint: f('a') })).action, 'create');

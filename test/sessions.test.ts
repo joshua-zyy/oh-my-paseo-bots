@@ -40,13 +40,13 @@ test('持续聊天创建不重复读取或注入全量记忆，事项和例程�
     await store.addMemory('chief', { kind: 'confirmed', content: 'NEW-MEMORY-AFTER-CREATION' });
     assert.equal((await botSessionConfig(store, 'chief', placement(directory), 'conversation')).systemPrompt, conversation.systemPrompt);
     assert.equal(reads, 0, '记忆变化不重写聊天启动提示词');
-    for (const kind of ['interactive', 'routine'] as const) {
+    for (const kind of ['interactive'] as const) {
       const mapped = await botSessionConfig(store, 'chief', placement(directory), kind);
       assert.match(mapped.systemPrompt, /CONFIRMED-STARTUP-ONLY/);
       assert.match(mapped.systemPrompt, /NEW-MEMORY-AFTER-CREATION/);
       assert.doesNotMatch(mapped.systemPrompt, /CANDIDATE-NEVER-CONTEXT|ARCHIVED-NEVER-CONTEXT/);
     }
-    assert.equal(reads, 2, '独立事项与例程各读取自己的确认记忆');
+    assert.equal(reads, 1, '独立事项读取自己的确认记忆');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -124,7 +124,7 @@ test('同输入并发启动复用一个意图、Agent 和原生幂等键', { tim
     assert.deepEqual(a, b);
     assert.equal(a.requestId, 'r1');
     assert.equal(created.length, 2, '请求并发到达宿主；实际启动去重由原生 receipt 负责');
-    assert.deepEqual([...new Set(created.map(item => item.idempotencyKey))], ['paseo-guys:chief:r1']);
+    assert.deepEqual([...new Set(created.map(item => item.idempotencyKey))], ['oh-my-paseo-bots:v2:chief:r1']);
     assert.deepEqual([...new Set(created.map(item => item.agentId))], [a.agentId]);
     assert.deepEqual((await store.listPendingCreations('chief')).map(item => [item.requestId, item.status]), [['r1', 'created']]);
     assert.deepEqual((await store.listSessions('chief')).map(item => item.sessionId), [a.agentId]);
@@ -183,7 +183,7 @@ test('Bot 会话和固定委派使用后台工作区，保留目录并按 Bot �
     assert.equal(created[0].cwd, directory);
     assert.equal(created[2].cwd, join(directory, 'reader'));
     assert.equal(created[2].parent, first.agentId, '隔离位置不改变原生父子关系');
-    assert.equal(created[2].background, undefined, '后台标记属于工作区创建，不传给已有工作区内的 Agent');
+    assert.equal(created[2].background, true, '工作区与子 Agent 都使用宿主后台标记');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -213,61 +213,6 @@ test('普通会话不复用例程临时、其他 Bot、可见或正在归档的�
       assert.equal((await store.listSessions('reader')).at(-1)?.workspaceId, ownWorkspaceId);
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
-});
-
-test('归档工作区后恢复 Bot，创建新聊天不复用失效的原生创建回执', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'paseo-bots-restored-workspace-'));
-  const workspaces = new Map<string, { id: string; title: string; workspaceDirectory: string; background: boolean }>();
-  const receipts = new Map<string, string>();
-  const agentReceipts = new Map<string, string>();
-  const created: PaseoAgentCreateOptions[] = [];
-  let count = 0;
-  const handle = (id: string) => ({
-    id,
-    refresh: async () => workspaces.get(id) ?? null,
-    agents: { create: async (input: PaseoAgentCreateOptions) => {
-      const prior = agentReceipts.get(input.idempotencyKey!);
-      if (prior && prior !== id) throw new Error('agent_request_key_conflict');
-      agentReceipts.set(input.idempotencyKey!, id);
-      const workspace = workspaces.get(id);
-      if (!workspace) throw new Error(`Workspace ${id} not found`);
-      created.push(input);
-      return { id: input.agentId!, workspaceId: id };
-    } },
-  });
-  const api = { agents: { ref: () => ({ refresh: async () => null }) }, workspaces: {
-    ref: handle,
-    create: async (options: PaseoWorkspaceCreateOptions) => {
-      let id = receipts.get(options.idempotencyKey!);
-      if (!id) {
-        id = `workspace-${++count}`;
-        receipts.set(options.idempotencyKey!, id);
-        assert.equal(options.source.kind, 'directory');
-        workspaces.set(id, { id, title: options.title ?? '', workspaceDirectory: directory, background: options.background === true });
-      }
-      return handle(id);
-    },
-  } } as unknown as PaseoApi;
-  try {
-    const store = new BotStore({ baseDir: directory });
-    await store.createBot({ id: 'reader', name: '合成同事', role: '合成验收' });
-    const first = await startBotSession(store, api, { botId: 'reader', requestId: 'first', title: '原聊天', kind: 'conversation' }, placement(directory), tools);
-    await store.acknowledgeCreation('reader', first.requestId);
-    const oldWorkspaceId = (await store.listSessions('reader'))[0].workspaceId!;
-    workspaces.delete(oldWorkspaceId); // 归档删除工作区，但宿主保留旧幂等回执。
-    await store.setArchived('reader', true);
-    await store.setArchived('reader', false);
-    agentReceipts.set('paseo-guys:reader:restored', oldWorkspaceId); // 旧版打开失败后留下的原生 Agent 回执。
-    const restored = await startBotSession(store, api, { botId: 'reader', requestId: 'restored', title: '恢复后的聊天', kind: 'conversation' }, placement(directory), tools);
-    const links = await store.listSessions('reader');
-    assert.notEqual(links[1].workspaceId, oldWorkspaceId);
-    assert.equal(workspaces.get(links[1].workspaceId!)?.background, true);
-    await startBotSession(store, api, { botId: 'reader', requestId: 'next', title: '新事项' }, placement(directory), tools);
-    assert.equal(count, 2, '恢复后的后续事项复用新的有效工作区');
-    assert.deepEqual(await startBotSession(store, api, { botId: 'reader', requestId: 'restored', title: '恢复后的聊天', kind: 'conversation' }, placement(directory), tools), restored);
-    assert.equal(created.length, 3, '同一请求回执不重复创建 Agent');
-    assert.equal((await store.listSessions('reader'))[2].workspaceId, links[1].workspaceId);
-  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('关联工作区回查失败时保留未知，不新建工作区或 Agent', async () => {
@@ -311,7 +256,7 @@ test('Bot 新会话传递确认记忆，使用原生幂等键并持久化会话�
     assert.equal(created.length, 1);
     assert.equal(first.requestId, 'stable-request');
     assert.equal(first.agentId, created[0].agentId);
-    assert.equal(created[0].idempotencyKey, 'paseo-guys:chief:stable-request');
+    assert.equal(created[0].idempotencyKey, 'oh-my-paseo-bots:v2:chief:stable-request');
     assert.ok(created[0].config.systemPrompt?.includes('明确记忆标记'));
     assert.equal(created[0].config.systemPrompt?.includes('候选秘密标记'), false);
     assert.equal(created[0].config.modeId, undefined);
@@ -377,7 +322,7 @@ test('身份提示词改变后原requestId不能静默复用旧身份', async ()
     await startBotSession(store, api, input, placement(directory), tools);
     const record = (await store.getBot('chief'))!;
     record.bot.role = '更新后的职责';
-    await writeFile(join(directory, 'chief.json'), JSON.stringify(record));
+    await writeFile(join(directory, 'v2', 'chief.json'), JSON.stringify(record));
     await assert.rejects(() => startBotSession(store, api, input, placement(directory), tools), (error: unknown) => error instanceof StoreError && error.code === 'request_conflict');
     assert.equal(created.length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -425,7 +370,7 @@ test('原生创建成功后落盘失败：UI 丢 requestId 重试复用同一意
     const retried = await startBotSession(new BotStore({ baseDir: directory }), api, { ...input, requestId: 'r2' }, placement(directory), tools);
     assert.deepEqual(retried, { agentId: created[0].agentId, requestId: 'r1' });
     const keys = new Set(created.map((options) => options.idempotencyKey));
-    assert.deepEqual([...keys], ['paseo-guys:chief:r1']);
+    assert.deepEqual([...keys], ['oh-my-paseo-bots:v2:chief:r1']);
     assert.equal(created.length, 2, '原生仍会用同一 agentId/幂等键再调一次，由原生幂等去重');
 
     const store = new BotStore({ baseDir: directory });
